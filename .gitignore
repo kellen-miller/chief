@@ -123,6 +123,7 @@ build/Release
 
 # Dependency directories
 node_modules/
+.worktrees/
 jspm_packages/
 
 # Snowpack dependency directory (https://snowpack.dev/)
@@ -239,4 +240,3 @@ Icon
 Network Trash Folder
 Temporary Items
 .apdisk
-
