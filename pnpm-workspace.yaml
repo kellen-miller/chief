@@ -1,0 +1,11 @@
+allowBuilds:
+  '@discordjs/opus': true
+  better-sqlite3: true
+  esbuild: true
+  protobufjs: true
+minimumReleaseAgeExclude:
+  - '@openai/agents-core@0.13.2'
+  - '@openai/agents-openai@0.13.2'
+  - '@openai/agents-realtime@0.13.2'
+  - '@openai/agents@0.13.2'
+  - eslint@10.7.0

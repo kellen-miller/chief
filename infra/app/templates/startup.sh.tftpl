@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install --yes --no-install-recommends ca-certificates curl docker.io gnupg
+install -d -m 0755 /usr/share/keyrings
+curl --fail --silent --show-error https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+  | gpg --dearmor --yes --output /usr/share/keyrings/google-cloud.gpg
+cat >/etc/apt/sources.list.d/google-cloud-ops-agent.list <<'EOF'
+deb [signed-by=/usr/share/keyrings/google-cloud.gpg] https://packages.cloud.google.com/apt google-cloud-ops-agent-bookworm-all main
+deb [signed-by=/usr/share/keyrings/google-cloud.gpg] https://packages.cloud.google.com/apt cloud-sdk-bookworm main
+EOF
+apt-get update
+apt-get install --yes --no-install-recommends google-cloud-cli google-cloud-ops-agent
+
+DATA_DEVICE=/dev/disk/by-id/google-chief-data
+until [[ -e "$DATA_DEVICE" ]]; do sleep 1; done
+if ! blkid "$DATA_DEVICE" >/dev/null 2>&1; then
+  mkfs.ext4 -F "$DATA_DEVICE"
+fi
+install -d -m 0750 /var/lib/chief
+if ! grep -qF "$DATA_DEVICE /var/lib/chief" /etc/fstab; then
+  printf '%s\n' "$DATA_DEVICE /var/lib/chief ext4 defaults,nofail 0 2" >>/etc/fstab
+fi
+mountpoint -q /var/lib/chief || mount /var/lib/chief
+chown 1000:1000 /var/lib/chief
+
+if [[ ! -f /swapfile ]]; then
+  fallocate -l 2G /swapfile
+  chmod 0600 /swapfile
+  mkswap /swapfile
+fi
+swapon --show | grep -qF /swapfile || swapon /swapfile
+grep -qF '/swapfile none swap sw 0 0' /etc/fstab || printf '%s\n' '/swapfile none swap sw 0 0' >>/etc/fstab
+
+install -d -m 0750 /etc/chief /opt/chief /run/chief
+install -d -o 1000 -g 1000 -m 0750 /var/lib/chief/backups
+cat >/etc/chief/chief.env <<'EOF'
+CHIEF_DATA_DIR=/var/lib/chief
+CHIEF_HEALTH_PORT=8080
+DISCORD_APPLICATION_ID=${discord_application_id}
+DISCORD_GUILD_ID=${discord_guild_id}
+DISCORD_MAIN_TEXT_CHANNEL_ID=${discord_text_channel_id}
+DISCORD_MAIN_VOICE_CHANNEL_ID=${discord_voice_channel_id}
+EOF
+chmod 0640 /etc/chief/chief.env
+
+cat >/opt/chief/run-container.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source /etc/chief/chief.env
+source /var/lib/chief/deploy.env
+install -d -m 0700 /run/chief
+umask 077
+DISCORD_TOKEN="$(gcloud secrets versions access latest --project='${project_id}' --secret=chief-discord-token)"
+OPENAI_API_KEY="$(gcloud secrets versions access latest --project='${project_id}' --secret=chief-openai-api-key)"
+{
+  cat /etc/chief/chief.env
+  printf 'DISCORD_TOKEN=%s\n' "$DISCORD_TOKEN"
+  printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
+} >/run/chief/runtime.env
+gcloud auth print-access-token | docker login --username oauth2accesstoken --password-stdin '${region}-docker.pkg.dev'
+docker rm --force chief >/dev/null 2>&1 || true
+exec docker run --name chief \
+  --env-file /run/chief/runtime.env \
+  --publish 127.0.0.1:8080:8080 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+  --volume /var/lib/chief:/var/lib/chief \
+  "$IMAGE"
+EOF
+chmod 0750 /opt/chief/run-container.sh
+
+cat >/opt/chief/backup.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+on_error() {
+  logger -t chief '{"msg":"chief_backup_failed"}'
+}
+trap on_error ERR
+if ! docker inspect chief >/dev/null 2>&1; then
+  logger -t chief '{"msg":"chief_backup_failed","reason":"container_unavailable"}'
+  exit 1
+fi
+backup="$(docker exec chief node dist/cli.js backup --database /var/lib/chief/chief.db --destination /var/lib/chief/backups)"
+docker exec chief node dist/cli.js verify-restore --backup "$backup"
+gcloud storage cp "$backup" 'gs://${backup_bucket}/'
+trap - ERR
+EOF
+chmod 0750 /opt/chief/backup.sh
+
+cat >/opt/chief/health-watchdog.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if ! curl --fail --silent --max-time 5 http://127.0.0.1:8080/healthz >/dev/null; then
+  logger -t chief '{"msg":"chief_health_failed"}'
+  exit 1
+fi
+EOF
+chmod 0750 /opt/chief/health-watchdog.sh
+
+cat >/etc/systemd/system/chief.service <<'EOF'
+[Unit]
+Description=Chief Discord bot
+After=docker.service network-online.target var-lib-chief.mount
+Wants=network-online.target
+Requires=docker.service
+ConditionPathExists=/var/lib/chief/deploy.env
+
+[Service]
+Type=simple
+ExecStart=/opt/chief/run-container.sh
+ExecStop=-/usr/bin/docker stop --time 20 chief
+Restart=on-failure
+RestartSec=15
+StartLimitIntervalSec=300
+StartLimitBurst=5
+RuntimeDirectory=chief
+RuntimeDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat >/etc/systemd/system/chief-health.service <<'EOF'
+[Unit]
+Description=Check Chief health
+
+[Service]
+Type=oneshot
+ExecStart=/opt/chief/health-watchdog.sh
+EOF
+
+cat >/etc/systemd/system/chief-health.timer <<'EOF'
+[Unit]
+Description=Run Chief health watchdog
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Unit=chief-health.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+cat >/etc/systemd/system/chief-backup.service <<'EOF'
+[Unit]
+Description=Back up Chief SQLite database
+After=chief.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/chief/backup.sh
+EOF
+
+cat >/etc/systemd/system/chief-backup.timer <<'EOF'
+[Unit]
+Description=Nightly Chief backup
+
+[Timer]
+OnCalendar=*-*-* 06:00:00 UTC
+Persistent=true
+RandomizedDelaySec=20min
+Unit=chief-backup.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+install -d -m 0755 /etc/systemd/journald.conf.d
+cat >/etc/systemd/journald.conf.d/chief.conf <<'EOF'
+[Journal]
+SystemMaxUse=200M
+MaxRetentionSec=14day
+EOF
+
+cat >/etc/google-cloud-ops-agent/config.yaml <<'EOF'
+logging:
+  receivers:
+    journald:
+      type: systemd_journald
+  service:
+    pipelines:
+      chief:
+        receivers: [journald]
+metrics:
+  service:
+    pipelines:
+      host:
+        receivers: [hostmetrics]
+EOF
+
+systemctl daemon-reload
+systemctl restart systemd-journald
+systemctl restart google-cloud-ops-agent
+systemctl enable --now docker chief-health.timer chief-backup.timer
+systemctl enable chief.service
+if [[ -f /var/lib/chief/deploy.env ]]; then systemctl restart chief.service; fi

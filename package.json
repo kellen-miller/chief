@@ -1,0 +1,48 @@
+{
+  "name": "chief-discord-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "chief": "tsx src/cli.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build"
+  },
+  "dependencies": {
+    "@discordjs/opus": "0.10.0",
+    "@discordjs/voice": "0.19.2",
+    "@google-cloud/secret-manager": "6.2.0",
+    "@google-cloud/storage": "7.21.0",
+    "@openai/agents": "0.13.2",
+    "better-sqlite3": "12.11.1",
+    "discord.js": "14.26.5",
+    "openai": "6.46.0",
+    "pino": "10.3.1",
+    "sqlite-vec": "0.1.9",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "24.10.4",
+    "@vitest/coverage-v8": "4.1.10",
+    "eslint": "10.7.0",
+    "prettier": "3.9.5",
+    "typescript": "6.0.3",
+    "tsx": "4.21.0",
+    "typescript-eslint": "8.63.0",
+    "vitest": "4.1.10"
+  }
+}

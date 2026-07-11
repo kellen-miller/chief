@@ -240,3 +240,14 @@ Icon
 Network Trash Folder
 Temporary Items
 .apdisk
+
+# Local adversarial-review transport logs
+.agent/work/*/adversarial/*.stream.jsonl
+
+# Terraform local state and working data
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+infra/bootstrap/.local-state/
