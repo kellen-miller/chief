@@ -27,6 +27,9 @@ The design reduces complexity by deepening three existing concepts instead of ad
 - [x] (2026-07-12 19:19Z) Completed recent-work and formal Standards/Spec review, resolved every verified finding, and passed focused re-review with no remaining findings. Three bounded Claude implementation-review attempts emitted no result; `adversarial/implementation-review.md` records the external reviewer as unavailable rather than approved.
 - [x] (2026-07-12 19:20Z) Passed the fresh pre-publication gate: formatting, ESLint, typecheck, 180 tests, 81.44% branch coverage, build, Actionlint, ShellCheck, Terraform formatting/validation, and `git diff --check`.
 - [x] (2026-07-12 19:20Z) Re-ran the owner-authorized paid evaluation against `gpt-5.4-mini` at reasoning `low`: `polk-no-military` passed with 595 input/98 output tokens in 2330 ms; `chief-self-reference` passed with 552 input/67 output tokens in 1332 ms; `those-outcomes-follow-up` passed with 572 input/142 output tokens in 1980 ms.
+- [x] (2026-07-12 20:00Z) Production text acceptance proved shared follow-up context and constraint preservation: Chief explained the prior outcomes and selected Oregon rather than a military academy. A corrected explicit remember invocation reached the synchronous memory path but was falsely rejected as sensitive.
+- [x] (2026-07-12 20:00Z) Systematic debugging localized the false rejection to under-specified model input. Exact live probes produced nondeterministic `sensitive`, `no-op`, and `0.42-0.72` confidence results from the raw conversational sentence. The corrected sensitivity/calibration contract removed false sensitivity, while deterministic framing as `Explicit communal memory request: <payload>` produced five of five `create`, `sensitivity: none`, `0.90-0.95` results. Two focused tests were observed red before the prompt and framing fixes, then passed with typechecking.
+- [ ] Review, publish, deploy, and repeat the explicit-memory production acceptance for the follow-up fix on `codex/fix-memory-sensitivity`.
 - [ ] Commit, push with an explicit remote head ref, open a PR, watch required checks, merge when green, watch the `main` deployment, and perform the production Discord/VM acceptance that can be safely automated or observed.
 
 ## Surprises & Discoveries
@@ -41,6 +44,10 @@ The design reduces complexity by deepening three existing concepts instead of ad
   Evidence: `src/runtime.ts` initializes `maintenanceAt` before any sweep and calls `memory.maintain` only from the interval.
 - Observation: A raw `event.id < currentHumanId` boundary drops a causally earlier Chief reply when a second human message arrives while the first request is generating.
   Evidence: The red causal-as-of test inserted first human, second human, then first Chief reply and initially returned only the first human.
+- Observation: Discord role mentions and bot-user mentions render similarly. The first live remember attempt used a role mention and was later edited to the bot mention; MessageCreate correctly treated the original role mention as ambient and does not process edits.
+  Evidence: Read-only Discord metadata showed one original role mention, a later edit, and no original bot-user mention; no IDs or content were emitted.
+- Observation: The memory extractor's `confidence` was under-specified and the raw conversational wrapper obscured explicit intent from `gpt-5.4-nano`.
+  Evidence: Bounded owner-authorized probes varied between false-sensitive, no-op, and sub-threshold create results until the explicit payload was deterministically framed; five framed calls were stable above the `0.75` floor.
 
 ## Decision Log
 
@@ -65,10 +72,13 @@ The design reduces complexity by deepening three existing concepts instead of ad
 - Decision: Define as-of context by the addressed human turn, not only physical insertion ID.
   Rationale: Human arrival IDs still exclude later humans, while a Chief reply associated with an earlier human remains causally prior even when it is inserted after the current human row.
   Date/Author: 2026-07-12 / Codex from red concurrency evidence.
+- Decision: Preserve the `0.75` explicit-memory floor and frame the parsed remember payload instead of clamping model confidence or upgrading the memory model.
+  Rationale: The framing produced five stable, non-sensitive results at `0.90-0.95` while keeping the agreed threshold, inexpensive model, original provenance, and sensitive-data rejection intact.
+  Date/Author: 2026-07-12 / Codex from production and differential probe evidence.
 
 ## Outcomes & Retrospective
 
-The five implementation milestones and formal review are locally complete. The deterministic Teddy/Polk replay selects New Mexico while preserving the no-military constraint, text and voice share persisted human/Chief turns, explicit memory receipts follow atomic commits, and the fresh repository gate passes 180 tests at 81.44% branch coverage. The paid `gpt-5.4-mini` evaluation passes constraint-following, Chief self-reference, and “those outcomes” cases at reasoning `low`. External Claude implementation review was attempted three ways but returned no output, so it is documented as unavailable rather than approved. Publication, deployment, and production acceptance remain before final closeout.
+The five original implementation milestones are merged and deployed. Production text acceptance proves shared follow-up context and constraint preservation, but it exposed an explicit-memory extraction calibration bug. The follow-up fix now has red-green coverage and live differential evidence; review, publication, redeployment, repeated explicit-memory acceptance, and the documented voice gate remain before final closeout.
 
 ## Context and Orientation
 
