@@ -64,6 +64,9 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_PRODUCTION_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
 
+      - name: Reconfigure gcloud deployment identity
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
       - name: Build and publish immutable image
         id: image
         env:
