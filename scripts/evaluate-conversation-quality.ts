@@ -8,7 +8,7 @@ if (apiKey === undefined || apiKey.length === 0) {
   throw new Error('OPENAI_API_KEY is required for the paid conversation eval');
 }
 
-const textModel = process.env.CHIEF_MODEL_TEXT ?? 'gpt-5.4-mini';
+const textModel = process.env.CHIEF_MODEL_TEXT ?? 'gpt-5.6-luna';
 const memoryModel = process.env.CHIEF_MODEL_MEMORY ?? 'gpt-5.4-nano';
 const execute = createExecution(apiKey, textModel);
 const cases = [

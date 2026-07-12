@@ -9,7 +9,7 @@ const environmentSchema = z.object({
   CHIEF_HEALTH_PORT: z.coerce.number().int().min(1).max(65_535).default(8_080),
   CHIEF_MODEL_EMBEDDING: z.string().min(1).default('text-embedding-3-small'),
   CHIEF_MODEL_MEMORY: z.string().min(1).default('gpt-5.4-nano'),
-  CHIEF_MODEL_TEXT: z.string().min(1).default('gpt-5.4-mini'),
+  CHIEF_MODEL_TEXT: z.string().min(1).default('gpt-5.6-luna'),
   CHIEF_MODEL_TRANSCRIPTION: z
     .string()
     .min(1)
@@ -19,8 +19,8 @@ const environmentSchema = z.object({
   CHIEF_PRICE_MEMORY_INPUT: z.coerce.number().nonnegative().default(0.2),
   CHIEF_PRICE_MEMORY_OUTPUT: z.coerce.number().nonnegative().default(1.25),
   CHIEF_PRICE_SEARCH_CALL: z.coerce.number().nonnegative().default(0.01),
-  CHIEF_PRICE_TEXT_INPUT: z.coerce.number().nonnegative().default(0.75),
-  CHIEF_PRICE_TEXT_OUTPUT: z.coerce.number().nonnegative().default(4.5),
+  CHIEF_PRICE_TEXT_INPUT: z.coerce.number().nonnegative().default(1),
+  CHIEF_PRICE_TEXT_OUTPUT: z.coerce.number().nonnegative().default(6),
   CHIEF_PRICE_TRANSCRIPTION_FALLBACK_MINUTE: z.coerce
     .number()
     .nonnegative()

@@ -26,7 +26,7 @@ Make Chief follow a fast-moving group conversation across text and voice, persis
 ### Input interpretation and personality
 
 - A leading Discord mention is an address and is removed from the request. A mid-sentence or trailing mention is replaced with the literal word “Chief.” A bare mention remains a greeting.
-- Keep `gpt-5.4-mini` as the text model default and change reasoning effort from `none` to `low`. Keep model identifiers configurable and evaluate before considering a model-family change.
+- Use `gpt-5.6-luna` as the text model default at reasoning effort `low`. Keep model identifiers configurable. Voice, transcription, embeddings, and the `gpt-5.4-nano` memory extractor remain unchanged.
 - Chief recognizes references to himself, holds an opinion until given a substantive reason to change it, corrects false premises directly, and may answer direct insults with a concise dry roast.
 - Chief may mirror ordinary profanity sparingly. He never uses protected-class slurs, threats, or sustained personal harassment. When declining, he states the boundary briefly without a corporate lecture and redirects or jokes when appropriate.
 
@@ -84,12 +84,13 @@ No product or architecture decisions remain open. Exact phrasing of deterministi
 
 - Decisions were confirmed through the July 12, 2026 `grill-plan-build` conversation following diagnosis of `/Users/kellen/.codex/attachments/2fdc5af3-8510-47e2-b4b9-0d0ec88ccf7c/pasted-text.txt`.
 - Production evidence before planning showed thirty-six completed memory jobs, zero failed jobs, and zero durable memories. A deterministic orchestrator replay showed that a follow-up reached the text model with only the current prompt and an empty memory list.
-- Live diagnostic probes showed `gpt-5.4-mini` at reasoning `none` violated the supplied military-academy exclusion, while the same model at `low` and `gpt-5.6-luna` at `low` selected an allowed team. The low-cost existing model therefore remains the baseline.
+- Live diagnostic probes showed `gpt-5.4-mini` at reasoning `none` violated the supplied military-academy exclusion, while the same model at `low` and `gpt-5.6-luna` at `low` selected an allowed team. GPT-5.4 Mini was the initial low-cost baseline. After the conversation-quality rollout, the user explicitly selected GPT-5.6 Luna at `low`; a fresh three-case text replay and a content-redacted native web-search probe passed before publication.
 
 ## Workflow records
 
 - Worktree: `/Users/kellen/development/github/kellen-miller/chief/.worktrees/conversation-quality`
 - Branch: `codex/improve-conversation-quality`
+- Model-upgrade follow-up branch: `codex/use-gpt-5-6-luna`
 - Base ref and initial commit: `origin/main` at `999b190a0d65e89cc2351d53b49c5c21e3f2add3`
 - Upstream at planning time: `origin/main`
 - `CONTEXT.md`: intentionally skipped because the recent-conversation and durable-memory terms are local to this feature and are fully recorded here and in the executable plan.

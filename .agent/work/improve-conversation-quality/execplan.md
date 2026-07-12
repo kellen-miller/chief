@@ -4,7 +4,7 @@ This ExecPlan is a living document. Maintain it in accordance with `.agent/PLANS
 
 ## Purpose / Big Picture
 
-Before the first five milestones, Chief answered each Discord text mention as an isolated request. Ambient messages were queued for long-term memory extraction, but no recent dialogue or Chief reply was supplied to the text model. Production had thirty-six completed memory jobs and zero durable memories, so follow-ups such as “those outcomes” and “pick one for Polk” had neither working conversation nor durable recall. Those milestones and the Milestone 6 sensitivity-calibration repair are now merged and deployed. The remaining follow-up defect is deterministic intent recognition: the natural addressed command “remember @Chief, no military academies” is normalized to `remember Chief, no military academies`, but the recognizer accepts only `Chief remember ...`, so ordinary text generation can promise memory without a SQLite commit.
+Before the first five milestones, Chief answered each Discord text mention as an isolated request. Ambient messages were queued for long-term memory extraction, but no recent dialogue or Chief reply was supplied to the text model. Production had thirty-six completed memory jobs and zero durable memories, so follow-ups such as “those outcomes” and “pick one for Polk” had neither working conversation nor durable recall. Milestones 1 through 7 are now merged and deployed. Live use proves recent conversation recall, but production still has zero durable memories because no post-fix explicit remember command has received the deterministic commit receipt. The current follow-up upgrades only the text model from GPT-5.4 Mini to GPT-5.6 Luna at the existing `low` reasoning effort, with matching standard token prices.
 
 After this work, members of the private allowlisted server can carry one conversation across ambient text, addressed text, and voice. Recent dialogue survives process restarts for seven days, while durable communal memory remains a separate long-lived store. Explicit remember, correct, and forget requests report success only after SQLite commits. Chief understands references to himself, retains a confident dry personality, and still responds only when the existing text or voice addressing policy says he should. The behavior is visible through a deterministic replay of the reported Teddy Roosevelt/JFK/Polk conversation and an optional live-model evaluation.
 
@@ -42,7 +42,12 @@ The design reduces complexity by deepening three existing concepts instead of ad
 - [x] (2026-07-12 21:45Z) Final Standards and Spec re-reviews returned zero findings. The fresh repository gate passed formatting, ESLint, typechecking, 201 tests, 82.20% branch coverage, build, Actionlint, ShellCheck, Terraform formatting/validation, and `git diff --check`.
 - [x] (2026-07-12 21:45Z) The optional paid evaluation passed all three text cases and all three sensitive-rejection trials on both runs. One harmless-preference trial failed on the first run; the immediate fresh rerun passed three of three, so the required passing aggregate was obtained while the observed model nondeterminism remains recorded.
 - [x] (2026-07-12 21:57Z) The external adversarial reviewer remained alive for more than eleven minutes without emitting a result and was stopped at the announced ceiling. `adversarial/memory-intent-review.md` records it as unavailable, not approved; the two independent formal reviews and fresh deterministic gate remain the available review evidence.
-- [ ] Publish, deploy, and repeat production acceptance for Milestone 7 on `codex/fix-imperative-memory-intent`.
+- [x] (2026-07-12 22:00Z) PR #14 passed Format, Lint, Test, and Build, merged as `d7dabaa`, and deployed successfully in run `29210592019` on immutable digest `sha256:cef645a5...`; the service was active, the container matched that digest, readiness reported every check true, and migrations `0001_initial` plus `0002_conversation_events` remained applied.
+- [x] (2026-07-12 22:38Z) Read-only production evidence separated apparent memory from durable memory: Chief had 55 recent conversation events and answered follow-ups coherently, while 76 completed automatic jobs had produced zero durable memories and no post-deploy deterministic commit receipt was present.
+- [x] (2026-07-12 22:39Z) Milestone 8 began on `codex/use-gpt-5-6-luna`. The config-default test failed red with GPT-5.4 Mini and `$0.75/$4.50`, then passed with GPT-5.6 Luna and `$1.00/$6.00`; the text agent's existing explicit `low` reasoning setting and all non-text model defaults remain unchanged.
+- [x] (2026-07-12 22:40Z) The owner-authorized paid Luna replay passed `polk-no-military`, `chief-self-reference`, and `those-outcomes-follow-up`; the unchanged memory extractor passed all three harmless and all three synthetic-sensitive trials. A content-redacted Responses API probe also returned reasoning, native `web_search_call`, a cited message, and successful usage accounting.
+- [ ] Review, publish, deploy, and verify Milestone 8 on `codex/use-gpt-5-6-luna`.
+- [ ] Repeat durable-memory and Polk-selection acceptance for deployed Milestone 7.
 - [ ] Complete the documented two-human voice acceptance and record final production evidence.
 
 ## Surprises & Discoveries
@@ -75,6 +80,10 @@ The design reduces complexity by deepening three existing concepts instead of ad
   Evidence: Three payload-bearing terminal-question cases failed red; the imperative grammar now rejects a terminal question mark while address-first requests such as “Chief, can you remember ...?” retain their existing semantics.
 - Observation: The optional `gpt-5.4-nano` harmless-preference evaluation remains probabilistic despite unchanged framing and prompt code.
   Evidence: The first final run passed two of three harmless trials; an immediate fresh rerun passed three of three. Both runs passed every text and synthetic-sensitive case, and the deterministic 201-test gate remained green.
+- Observation: Coherent follow-ups in production prove recent conversation retrieval but do not prove durable memory.
+  Evidence: Read-only counts showed 55 seven-day conversation events, 76 completed automatic memory jobs, and zero durable memories; no deterministic explicit commit receipt appeared after the Milestone 7 deployment.
+- Observation: GPT-5.6 Luna supports Chief's existing Responses API and native web-search path without an adapter change.
+  Evidence: The paid replay passed all three text cases at `low`, and a content-redacted probe returned `reasoning`, `web_search_call`, and a message containing a URL citation.
 
 ## Decision Log
 
@@ -85,7 +94,10 @@ The design reduces complexity by deepening three existing concepts instead of ad
   Rationale: They have different retention, retrieval, mutation, and truthfulness rules. Combining them would make transient dialogue depend on asynchronous extraction.
   Date/Author: 2026-07-12 / user and Codex.
 - Decision: Keep `gpt-5.4-mini` and set reasoning effort to `low` before considering a model upgrade.
-  Rationale: A direct differential probe showed the existing model succeeds under the improved setting, preserving the cost goal.
+  Rationale: This was the initial rollout baseline because a direct differential probe showed the existing model succeeded under the improved setting while preserving the cost goal.
+  Date/Author: 2026-07-12 / user and Codex.
+- Decision: Supersede the initial text baseline with `gpt-5.6-luna` at reasoning effort `low`, priced at `$1.00` input and `$6.00` output per million standard tokens.
+  Rationale: The user explicitly chose Luna after reviewing current quality and cost options. OpenAI positions Luna for efficient high-volume workloads, the existing `low` setting is supported, and the Chief-specific replay plus native web-search probe passed. Voice and memory models remain independent and unchanged.
   Date/Author: 2026-07-12 / user and Codex.
 - Decision: Use additive migration `0002` and a new `conversation_events` table without historical backfill.
   Rationale: Production data and rollback are explicit compatibility constraints; existing source rows omit Chief replies and are not trustworthy history.
@@ -117,11 +129,11 @@ The design reduces complexity by deepening three existing concepts instead of ad
 
 ## Outcomes & Retrospective
 
-The five original milestones and Milestone 6 are merged and deployed. Shared recent context, constraint preservation, model calibration, and safe/sensitive evaluation are proven, but the first post-deploy durable-memory smoke exposed an address-order gap before any memory row was created. Milestone 7 implementation and formal review are complete, and the attempted external review is recorded as unavailable; publication, repeated durable-memory and Polk-selection smoke, and the documented voice gate remain before final closeout.
+Milestones 1 through 7 are merged and deployed. Shared recent context, constraint preservation, model calibration, safe/sensitive evaluation, and both address orders for explicit memory are locally proven. Live recent-context behavior is working, but durable-memory acceptance still requires a real explicit command and production count increase. Milestone 8's Luna configuration and paid compatibility evidence are complete locally; review, publication, deployment, repeated durable-memory/Polk smoke, and the documented voice gate remain before final closeout.
 
 ## Context and Orientation
 
-The repository is a Node 24, TypeScript, pnpm application. `src/discord/gateway.ts` receives Discord events, `src/discord/invocation-policy.ts` qualifies and normalizes allowed text, and `src/discord/text-controller.ts` delegates one normalized turn to `ConversationOrchestrator`. `src/app/conversation-orchestrator.ts` now owns synchronous conversation recording, the paid FIFO, recent-context selection, durable recall or explicit mutation, provider calls, and Chief reply persistence. `src/agent/openai-chief-agent.ts` receives recent conversation and communal memory as separate labeled inputs and runs `gpt-5.4-mini` at reasoning `low`. `src/agent/openai-voice.ts` seeds typed persisted history into each new Realtime session and exposes the same durable-memory receipts through narrow tools.
+The repository is a Node 24, TypeScript, pnpm application. `src/discord/gateway.ts` receives Discord events, `src/discord/invocation-policy.ts` qualifies and normalizes allowed text, and `src/discord/text-controller.ts` delegates one normalized turn to `ConversationOrchestrator`. `src/app/conversation-orchestrator.ts` now owns synchronous conversation recording, the paid FIFO, recent-context selection, durable recall or explicit mutation, provider calls, and Chief reply persistence. `src/agent/openai-chief-agent.ts` receives recent conversation and communal memory as separate labeled inputs and runs the configured text model at reasoning `low`; Milestone 8 changes its default to `gpt-5.6-luna`. `src/agent/openai-voice.ts` seeds typed persisted history into each new Realtime session and exposes the same durable-memory receipts through narrow tools.
 
 `src/memory/database.ts` now runs immutable migrations `0001_initial` and `0002_conversation_events`. `src/conversation/conversation-store.ts` owns the seven-day bounded recent timeline. `src/memory/memory-store.ts` persists raw sources, restart-safe jobs, durable memories, FTS5 rows, and sqlite-vec embeddings. `src/memory/memory-service.ts` is the single public durable-memory boundary: it owns automatic work, explicit remember/correct/forget sequencing, confidence floors, sensitivity rejection, embeddings, atomic mutations, and truthful receipts. The former `memory-worker.ts` and `memory-context.ts` modules no longer exist.
 
@@ -220,6 +232,14 @@ In `src/memory/memory-service.ts`, deepen `explicitMemoryMatch` rather than addi
 
 Run focused intent, invocation-policy, orchestrator, and memory-service tests plus typechecking. Review the diff formally and adversarially for command/question ambiguity, correction/forget regressions, payload loss, and false acknowledgement. Run the full repository and optional paid gates, publish with the explicit branch ref `codex/fix-imperative-memory-intent`, merge only after Format/Lint/Test/Build pass, watch `main` deploy, and repeat the exact Discord command. Acceptance requires the deterministic committed receipt and a durable-memory count increase from zero without reading memory content; the subsequent Polk selection must come from the supplied list and exclude Navy and Air Force.
 
+### Milestone 8: Upgrade text generation to GPT-5.6 Luna
+
+Change only the configurable text-model default from `gpt-5.4-mini` to `gpt-5.6-luna`. Preserve the existing explicit reasoning effort `low`, Responses API, Agents SDK orchestration, native web search, guarded fetch tool, recent/durable context separation, usage ceiling, and every voice, transcription, embedding, and memory-model default. Update the standard text prices from `$0.75/$4.50` to `$1.00/$6.00` per million input/output tokens so reservation and reconciliation remain conservative and accurate.
+
+Drive the change from `test/unit/config.test.ts`: first require the Luna model and prices and observe the old defaults fail, then update `src/config/config.ts` and the optional evaluation default. Run the focused config and text-agent tests plus typechecking. Use the owner-controlled API key to run the three aggregate text replays on Luna at `low` and a content-redacted native web-search compatibility probe. Record only model, aggregate pass/fail, latency, token usage, output item types, and citation presence.
+
+Review the narrow diff, run the complete deterministic gate, publish with `git push origin HEAD:refs/heads/codex/use-gpt-5-6-luna`, and merge only after Format, Lint, Test, and Build pass. Watch the `main` deploy, then verify non-content health and runtime configuration from inside the container. Acceptance requires the container to report `gpt-5.6-luna`, text prices `1` and `6`, readiness true, and one live Discord response with the exact suffix.
+
 ## Concrete Steps
 
 All commands run from `/Users/kellen/development/github/kellen-miller/chief/.worktrees/conversation-quality` unless a command says otherwise.
@@ -250,7 +270,7 @@ The command must not be added to required CI. Record only case names, pass/fail 
 
 When implementation and review are complete, commit with Conventional Commits, push explicitly, and create a PR:
 
-    git push origin HEAD:refs/heads/codex/fix-imperative-memory-intent
+    git push origin HEAD:refs/heads/codex/use-gpt-5-6-luna
 
 Watch Format, Lint, Test, Build, and any triggered Terraform Plan job. Merge only when required checks pass and review findings are resolved. Then watch the `main` deploy job through completion and run the non-content VM health/database checks plus the manual Discord scenarios in `docs/manual-acceptance.md` before declaring production acceptance.
 
@@ -264,7 +284,7 @@ Recent-context acceptance requires restart-safe text and voice events, display-n
 
 Durable-memory acceptance requires a non-sensitive explicit proposal at `0.75` to commit and acknowledge, one at `0.74` to be truthfully rejected, a sensitive proposal to reject without a row, a correction to supersede, ambiguity to retain conflict and request clarification, forgetting to remove indexes, and automatic extraction below `0.85` to remain rejected. Remember framing must retain multiline payloads and same-message referents without adding irrelevant prefix text to complete requests. The optional real-model evaluation must pass three harmless-preference and three synthetic-sensitive trials on `gpt-5.4-nano`. A multi-proposal transaction failure must leave no partial memory or index rows. A database, budget, extraction, or embedding failure must never produce “I’ll remember.” There is still no list/dump command.
 
-Provider acceptance requires `gpt-5.4-mini` as default, reasoning `low`, recent conversation and durable memory as separate labeled inputs, personality instructions matching `decision.md`, and no content-bearing logs. Voice must receive text-only typed history through the Realtime transport exactly once per new session, must not embed raw dialogue in fixed instructions, and must not claim a memory mutation succeeded unless its tool receipt committed.
+Provider acceptance requires `gpt-5.6-luna` as the text default at reasoning `low`, with standard prices `$1.00/$6.00` per million input/output tokens, recent conversation and durable memory as separate labeled inputs, personality instructions matching `decision.md`, and no content-bearing logs. Voice must receive text-only typed history through the Realtime transport exactly once per new session, must not embed raw dialogue in fixed instructions, and must not claim a memory mutation succeeded unless its tool receipt committed.
 
 Operational acceptance requires the additive migration to preserve a fixture representing the deployed `0001_initial` schema, database backup and restore to retain the new table, and failed deployment rollback tests to pass. The optional live evaluation and post-deploy Discord smoke are realistic evidence; deterministic CI is the mandatory regression gate. GitHub Actions remains free of paid API calls and repository secrets on pull requests.
 
@@ -365,3 +385,5 @@ Plan revision note (2026-07-12T21:43:00Z): Extended the ambiguity repair to payl
 Plan revision note (2026-07-12T21:45:00Z): Recorded zero-finding final formal re-reviews, the fresh 201-test and infrastructure gate, and both the initially mixed and subsequently passing optional paid-model evaluation results.
 
 Plan revision note (2026-07-12T21:57:00Z): Recorded the bounded external adversarial review as unavailable after it emitted no result, preserving the clean two-review and deterministic-gate evidence without claiming third-party approval.
+
+Plan revision note (2026-07-12T22:39:24Z): Recorded the merged Milestone 7 rollout, distinguished live recent conversation from still-empty durable memory, and added the user-selected GPT-5.6 Luna text-only upgrade with red-green defaults, current pricing, paid replay, native web-search evidence, and a dedicated rollout branch.

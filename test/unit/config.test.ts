@@ -23,10 +23,11 @@ describe('loadConfig', () => {
       models: {
         embedding: 'text-embedding-3-small',
         memory: 'gpt-5.4-nano',
-        text: 'gpt-5.4-mini',
+        text: 'gpt-5.6-luna',
         transcription: 'gpt-4o-mini-transcribe-2025-12-15',
         voice: 'gpt-realtime-2.1-mini',
       },
+      pricing: { textInput: 1, textOutput: 6 },
       usage: { ceilingUsd: 10, warningUsd: 5 },
     });
   });
