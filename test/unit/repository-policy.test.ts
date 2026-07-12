@@ -84,6 +84,18 @@ describe('repository policy', () => {
     expect(app).not.toContain('roles/storage.objectAdmin');
   });
 
+  it('aligns the DELTA uptime metric before absence checks', async () => {
+    const app = await read('infra/app/main.tf');
+    const policyStart = app.indexOf(
+      'resource "google_monitoring_alert_policy" "vm_uptime"',
+    );
+    expect(policyStart).toBeGreaterThanOrEqual(0);
+    expect(app.slice(policyStart)).toContain(`aggregations {
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_RATE"
+      }`);
+  });
+
   it('rejects authoritative IAM bindings and policies', async () => {
     for (const type of [
       'google_project_iam_binding',

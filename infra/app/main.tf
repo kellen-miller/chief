@@ -328,6 +328,10 @@ resource "google_monitoring_alert_policy" "vm_uptime" {
     condition_absent {
       duration = "300s"
       filter   = "metric.type=\"compute.googleapis.com/instance/uptime\" AND resource.type=\"gce_instance\" AND resource.label.instance_id=\"${google_compute_instance.chief.instance_id}\""
+      aggregations {
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_RATE"
+      }
     }
   }
 }
