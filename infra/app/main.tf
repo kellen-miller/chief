@@ -239,16 +239,16 @@ resource "google_compute_instance" "chief" {
 
   metadata = {
     enable-oslogin = "TRUE"
+    startup-script = templatefile("${path.module}/templates/startup.sh.tftpl", {
+      backup_bucket            = google_storage_bucket.backups.name
+      discord_application_id   = var.discord_application_id
+      discord_guild_id         = var.discord_guild_id
+      discord_text_channel_id  = var.discord_text_channel_id
+      discord_voice_channel_id = var.discord_voice_channel_id
+      project_id               = var.project_id
+      region                   = var.region
+    })
   }
-  metadata_startup_script = templatefile("${path.module}/templates/startup.sh.tftpl", {
-    backup_bucket            = google_storage_bucket.backups.name
-    discord_application_id   = var.discord_application_id
-    discord_guild_id         = var.discord_guild_id
-    discord_text_channel_id  = var.discord_text_channel_id
-    discord_voice_channel_id = var.discord_voice_channel_id
-    project_id               = var.project_id
-    region                   = var.region
-  })
 
   service_account {
     email  = google_service_account.runtime.email
