@@ -12,6 +12,7 @@ if [[ ! "$CANDIDATE_IMAGE" =~ @sha256:[0-9a-f]{64}$ ]]; then
   echo "--image must be an immutable sha256 digest" >&2
   exit 2
 fi
+REGISTRY="${CANDIDATE_IMAGE%%/*}"
 
 DATA_DIR="${CHIEF_DATA_DIR:-/var/lib/chief}"
 DATA_UID="${CHIEF_DATA_UID:-1000}"
@@ -27,6 +28,8 @@ if [[ -f "$STATE_FILE" ]]; then
   PREVIOUS_IMAGE="$(sed -n 's/^IMAGE=//p' "$STATE_FILE")"
 fi
 
+gcloud auth print-access-token \
+  | docker login --username oauth2accesstoken --password-stdin "$REGISTRY"
 docker pull "$CANDIDATE_IMAGE"
 systemctl stop chief.service || true
 docker stop --time 20 chief >/dev/null 2>&1 || true

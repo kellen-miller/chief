@@ -21,6 +21,11 @@ describe('deploy transaction', () => {
     expect(await readFile(join(fixture.data, 'chief.db'), 'utf8')).toBe(
       'migrated',
     );
+    const commands = await readFile(fixture.commandLog, 'utf8');
+    expect(commands.indexOf('docker login')).toBeGreaterThanOrEqual(0);
+    expect(commands.indexOf('docker login')).toBeLessThan(
+      commands.indexOf('docker pull'),
+    );
   });
 
   it('restores the old digest and database when candidate health fails', async () => {
@@ -39,11 +44,13 @@ describe('deploy transaction', () => {
 
 async function createFixture(failCandidate: boolean): Promise<{
   readonly bin: string;
+  readonly commandLog: string;
   readonly data: string;
   readonly failCandidate: boolean;
 }> {
   const root = await mkdtemp(join(tmpdir(), 'chief-deploy-test-'));
   const bin = join(root, 'bin');
+  const commandLog = join(root, 'commands.log');
   const data = join(root, 'data');
   await mkdir(bin);
   await mkdir(data);
@@ -55,7 +62,9 @@ async function createFixture(failCandidate: boolean): Promise<{
 set -euo pipefail
 command_name="\${1:-}"
 shift || true
+printf 'docker %s\n' "$command_name" >>"$COMMAND_LOG"
 case "$command_name" in
+  login) cat >/dev/null; exit 0 ;;
   pull|stop) exit 0 ;;
   run)
     args=" $* "
@@ -78,6 +87,7 @@ case "$command_name" in
 esac
 `,
   );
+  await executable(join(bin, 'gcloud'), '#!/usr/bin/env bash\nprintf token\n');
   await executable(join(bin, 'systemctl'), '#!/usr/bin/env bash\nexit 0\n');
   await executable(join(bin, 'sleep'), '#!/usr/bin/env bash\nexit 0\n');
   await executable(
@@ -90,7 +100,7 @@ fi
 exit 0
 `,
   );
-  return { bin, data, failCandidate };
+  return { bin, commandLog, data, failCandidate };
 }
 
 async function executable(path: string, content: string): Promise<void> {
@@ -100,6 +110,7 @@ async function executable(path: string, content: string): Promise<void> {
 
 async function runDeploy(fixture: {
   readonly bin: string;
+  readonly commandLog: string;
   readonly data: string;
   readonly failCandidate: boolean;
 }): Promise<{ readonly code: number | null; readonly stderr: string }> {
@@ -116,6 +127,7 @@ async function runDeploy(fixture: {
           typeof process.getuid === 'function'
             ? process.getuid().toString()
             : '1000',
+        COMMAND_LOG: fixture.commandLog,
         FAIL_CANDIDATE: fixture.failCandidate ? '1' : '0',
         PATH: `${fixture.bin}:${process.env.PATH ?? ''}`,
       },
