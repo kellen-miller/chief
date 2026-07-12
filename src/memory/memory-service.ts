@@ -19,6 +19,8 @@ export interface MemoryProposal {
 }
 
 export interface ExtractionResult {
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
   readonly proposals: readonly MemoryProposal[];
   readonly usageUsd: number;
 }
@@ -57,7 +59,7 @@ export interface MemoryServiceOptions {
       readonly id: number;
     }[];
     readonly content: string;
-    readonly explicitRemember: boolean;
+    readonly explicitIntent: ExplicitMemoryIntent | null;
   }) => Promise<ExtractionResult>;
   readonly leaseDurationMs?: number;
   readonly limit?: number;
@@ -146,13 +148,27 @@ export class MemoryService {
           : { memoryIds, status: 'forgotten' };
       }
 
+      const extractionContent =
+        input.intent === 'remember'
+          ? explicitRememberExtractionContent(input.source.content)
+          : input.source.content;
+      if (extractionContent === null) {
+        this.#options.store.applyPreparedMutationBatch({
+          completedAt: input.now,
+          mutations: [],
+          sourceEventId: input.sourceEventId,
+        });
+        this.#options.budget.cancel(reservation.id);
+        return { status: 'ambiguous' };
+      }
+
       const extraction = await this.#options.extract({
         candidateMemories: this.#options.store.findLexical(
           input.source.content,
           10,
         ),
-        content: input.source.content,
-        explicitRemember: true,
+        content: extractionContent,
+        explicitIntent: input.intent,
       });
       if (
         extraction.proposals.some(
@@ -246,7 +262,7 @@ export class MemoryService {
       const extraction = await this.#options.extract({
         candidateMemories: this.#options.store.findLexical(source.content, 10),
         content: source.content,
-        explicitRemember: false,
+        explicitIntent: null,
       });
       const prepared = await this.#prepareMutations(
         extraction.proposals,
@@ -362,8 +378,45 @@ function extractForgetTarget(content: string): string | null {
 }
 
 function explicitMemoryMatch(content: string): RegExpExecArray | null {
-  return /\bchief\s*[,—:-]?\s*(?:(?:please|kindly)\s+)?(?:(?:can|could|would|will)\s+you\s+)?(?:(?:please|kindly)\s+)?(remember|correct|forget)\b\s*(.*)/iu.exec(
+  return /\bchief\s*[,—:-]?\s*(?:(?:please|kindly)\s+)?(?:(?:can|could|would|will)\s+you\s+)?(?:(?:please|kindly)\s+)?(remember|correct|forget)\b\s*([\s\S]*)/iu.exec(
     content,
+  );
+}
+
+function explicitRememberExtractionContent(content: string): string | null {
+  const match = explicitMemoryMatch(content);
+  if (match?.[1]?.toLowerCase() !== 'remember') return content;
+  const requestedMemory = (match[2] ?? '')
+    .replace(/^(?:[\t ]*[,;:—-]+)+[\t ]*/u, '')
+    .trim();
+  const semanticMemory = requestedMemory.replace(/[.!?]+$/u, '').trim();
+  if (semanticMemory.length === 0) {
+    return null;
+  }
+  const sameMessageContext = content.slice(0, match.index).trim();
+  if (
+    sameMessageContext.length === 0 &&
+    isBareSameMessageReference(semanticMemory)
+  ) {
+    return null;
+  }
+  const request = `Explicit communal memory request: ${requestedMemory}`;
+  const needsSameMessageContext =
+    /\b(?:above|both|each|following|former|it|latter|pair|that|them|these|this|those|two)\b/iu.test(
+      semanticMemory,
+    );
+  return sameMessageContext.length === 0 || !needsSameMessageContext
+    ? request
+    : `${request}\nSame-message context before request: ${sameMessageContext}`;
+}
+
+function isBareSameMessageReference(content: string): boolean {
+  return (
+    /^(?:above|following|former|it|latter|them)$/iu.test(content) ||
+    /^(?:both|each|that|these|this|those)(?:\s+[\p{L}\p{N}_-]+)?$/iu.test(
+      content,
+    ) ||
+    /^(?:the\s+)?(?:pair|two)(?:\s+(?:of\s+)?[\p{L}\p{N}_-]+)?$/iu.test(content)
   );
 }
 

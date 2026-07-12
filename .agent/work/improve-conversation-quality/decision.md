@@ -78,7 +78,7 @@ No product or architecture decisions remain open. Exact phrasing of deterministi
 - Text-adapter tests prove bounded conversation plus durable memory serialization, reasoning effort `low`, confident personality instructions, and non-content telemetry.
 - Voice tests prove new-session context seeding, human and Chief transcript persistence, memory-tool wiring, and unchanged solo/group addressing and interruption.
 - `pnpm verify`, `actionlint`, `shellcheck scripts/*.sh`, `terraform fmt -check -recursive infra`, and `terraform -chdir=infra/app validate -no-color` pass. Mandatory CI performs no paid OpenAI calls.
-- Optional live evaluation with `OPENAI_API_KEY` proves the configured text model obeys the no-military-academy constraint and handles self-reference without model-family replacement.
+- Optional live evaluation with `OPENAI_API_KEY` proves the configured text model obeys the no-military-academy constraint and handles self-reference, while the configured memory model accepts the harmless preference and rejects a synthetic credential without model-family replacement.
 
 ## Source notes
 

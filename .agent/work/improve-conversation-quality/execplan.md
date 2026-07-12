@@ -4,7 +4,7 @@ This ExecPlan is a living document. Maintain it in accordance with `.agent/PLANS
 
 ## Purpose / Big Picture
 
-Chief currently answers each Discord text mention as an isolated request. Ambient messages are queued for long-term memory extraction, but no recent dialogue or Chief reply is supplied to the text model. In production, all thirty-six observed memory jobs completed while producing zero memories, so follow-ups such as “those outcomes” and “pick one for Polk” had neither working conversation nor durable recall. Discord mention removal also corrupts mid-sentence self-reference, and the text adapter forces reasoning effort to `none`.
+Before the first five milestones, Chief answered each Discord text mention as an isolated request. Ambient messages were queued for long-term memory extraction, but no recent dialogue or Chief reply was supplied to the text model. Production had thirty-six completed memory jobs and zero durable memories, so follow-ups such as “those outcomes” and “pick one for Polk” had neither working conversation nor durable recall. Those milestones are now merged and deployed: recent conversation, truthful explicit-memory receipts, corrected mention handling, and low-reasoning text generation are current behavior. The remaining follow-up defect is that `gpt-5.4-nano` falsely classified the harmless explicit request “remember no military academy” as sensitive.
 
 After this work, members of the private allowlisted server can carry one conversation across ambient text, addressed text, and voice. Recent dialogue survives process restarts for seven days, while durable communal memory remains a separate long-lived store. Explicit remember, correct, and forget requests report success only after SQLite commits. Chief understands references to himself, retains a confident dry personality, and still responds only when the existing text or voice addressing policy says he should. The behavior is visible through a deterministic replay of the reported Teddy Roosevelt/JFK/Polk conversation and an optional live-model evaluation.
 
@@ -29,6 +29,11 @@ The design reduces complexity by deepening three existing concepts instead of ad
 - [x] (2026-07-12 19:20Z) Re-ran the owner-authorized paid evaluation against `gpt-5.4-mini` at reasoning `low`: `polk-no-military` passed with 595 input/98 output tokens in 2330 ms; `chief-self-reference` passed with 552 input/67 output tokens in 1332 ms; `those-outcomes-follow-up` passed with 572 input/142 output tokens in 1980 ms.
 - [x] (2026-07-12 20:00Z) Production text acceptance proved shared follow-up context and constraint preservation: Chief explained the prior outcomes and selected Oregon rather than a military academy. A corrected explicit remember invocation reached the synchronous memory path but was falsely rejected as sensitive.
 - [x] (2026-07-12 20:00Z) Systematic debugging localized the false rejection to under-specified model input. Exact live probes produced nondeterministic `sensitive`, `no-op`, and `0.42-0.72` confidence results from the raw conversational sentence. The corrected sensitivity/calibration contract removed false sensitivity, while deterministic framing as `Explicit communal memory request: <payload>` produced five of five `create`, `sensitivity: none`, `0.90-0.95` results. Two focused tests were observed red before the prompt and framing fixes, then passed with typechecking.
+- [x] (2026-07-12 20:21Z) Adversarial and formal review exposed multiline truncation, lossy same-message references, malformed separators, a tautological prompt test, shared-prompt behavior drift, and the lack of a paid memory-model evaluation. Red-green tests now preserve multiline and referential content, reject empty framing, and isolate the calibrated contract to remember requests.
+- [x] (2026-07-12 20:21Z) Extended the optional paid evaluation to the configured `gpt-5.4-nano` memory extractor. Three of three harmless-preference trials and three of three synthetic-credential rejection trials passed; the three existing `gpt-5.4-mini` text cases also passed. Output contained only aggregate case metadata.
+- [x] (2026-07-12 20:34Z) Focused re-review found that stripping a leading `that` still lost common back-references and that syntactically empty requests still reached the model. Seven focused framing cases were observed red; the parser now preserves bare/qualified `that`, `both`, and counted referents, while `Chief remember that`, `Chief remember that.`, and repeated separators return `ambiguous` without extraction, embedding, or mutation.
+- [x] (2026-07-12 20:46Z) Final Standards and Spec re-reviews returned zero findings. Final external re-review returned zero critical/high/medium and one non-blocking low finding for contextless plural references; four additional cases were observed red and then passed after `both`, `that game`, `those teams`, and `the two cities` were short-circuited without a model call.
+- [x] (2026-07-12 20:47Z) Passed the fresh pre-publication gate: formatting, ESLint, typecheck, 195 tests, 81.79% branch coverage, build, Actionlint, ShellCheck, Terraform formatting/validation, `git diff --check`, and a hardcoded OpenAI-key scan. All `.agent` work-item changes remain tracked for publication.
 - [ ] Review, publish, deploy, and repeat the explicit-memory production acceptance for the follow-up fix on `codex/fix-memory-sensitivity`.
 - [ ] Commit, push with an explicit remote head ref, open a PR, watch required checks, merge when green, watch the `main` deployment, and perform the production Discord/VM acceptance that can be safely automated or observed.
 
@@ -48,6 +53,12 @@ The design reduces complexity by deepening three existing concepts instead of ad
   Evidence: Read-only Discord metadata showed one original role mention, a later edit, and no original bot-user mention; no IDs or content were emitted.
 - Observation: The memory extractor's `confidence` was under-specified and the raw conversational wrapper obscured explicit intent from `gpt-5.4-nano`.
   Evidence: Bounded owner-authorized probes varied between false-sensitive, no-op, and sub-threshold create results until the explicit payload was deterministically framed; five framed calls were stable above the `0.75` floor.
+- Observation: Adding the prefix “This list” as same-message context made the complete no-military request unstable again, while meaningful context is necessary for a request such as “remember those teams.”
+  Evidence: Three live calls with the irrelevant prefix returned confidence `0.78`, `0.90`, and `0.74`; the final referent-aware framing omits that prefix for a complete request and the paid evaluation then passed three of three trials.
+- Observation: The existing paid evaluation exercised only the text agent on `gpt-5.4-mini`; it never called the memory extractor or `gpt-5.4-nano`.
+  Evidence: Adversarial review traced `scripts/evaluate-conversation-quality.ts` to `createExecution` and the text model. The script now directly evaluates the memory adapter on both safe and sensitive synthetic cases.
+- Observation: Removing a leading `that` before referent detection converted “We are switching to decaf. Chief remember that.” into a punctuation-only request and dropped the fact.
+  Evidence: Focused adversarial re-review reproduced the loss. New integration cases retain bare and qualified back-references and short-circuit the same forms when no preceding fact exists.
 
 ## Decision Log
 
@@ -75,18 +86,27 @@ The design reduces complexity by deepening three existing concepts instead of ad
 - Decision: Preserve the `0.75` explicit-memory floor and frame the parsed remember payload instead of clamping model confidence or upgrading the memory model.
   Rationale: The framing produced five stable, non-sensitive results at `0.90-0.95` while keeping the agreed threshold, inexpensive model, original provenance, and sensitive-data rejection intact.
   Date/Author: 2026-07-12 / Codex from production and differential probe evidence.
+- Decision: Use a dedicated calibrated extractor prompt only when the explicit intent is `remember`; retain the original prompt for automatic extraction and corrections.
+  Rationale: This fixes the reported remember behavior without changing the meaning of confidence or sensitivity for the automatic `0.85` path and correction flow.
+  Date/Author: 2026-07-12 / Codex resolving adversarial review.
+- Decision: Preserve text before `Chief remember` only when the parsed request contains a same-message referent such as “those” or “them.”
+  Rationale: Complete requests remain concise and stable, while requests such as “Oregon and Syracuse — Chief, remember those teams” retain the words needed to resolve the referent.
+  Date/Author: 2026-07-12 / Codex resolving formal Spec review and live model evidence.
+- Decision: Preserve referential `that` rather than treating it as a removable filler word, and short-circuit unresolved or punctuation-only payloads before extraction.
+  Rationale: “Remember that” is meaningful only with preceding same-message context; without that context it cannot truthfully create a durable memory and should return `ambiguous` without spending model budget.
+  Date/Author: 2026-07-12 / Codex resolving focused formal and adversarial re-review.
 
 ## Outcomes & Retrospective
 
-The five original implementation milestones are merged and deployed. Production text acceptance proves shared follow-up context and constraint preservation, but it exposed an explicit-memory extraction calibration bug. The follow-up fix now has red-green coverage and live differential evidence; review, publication, redeployment, repeated explicit-memory acceptance, and the documented voice gate remain before final closeout.
+The five original implementation milestones are merged and deployed. Production text acceptance proves shared follow-up context and constraint preservation, but it exposed an explicit-memory extraction calibration bug. The follow-up now has red-green framing coverage, isolated prompt policy, repeatable real-model acceptance/rejection evidence, clean final Standards/Spec review, no external review blockers, and a passing local repository gate. Publication, redeployment, repeated explicit-memory acceptance, and the documented voice gate remain before final closeout.
 
 ## Context and Orientation
 
-The repository is a Node 24, TypeScript, pnpm application. `src/discord/gateway.ts` receives Discord events. `src/discord/invocation-policy.ts` decides whether an allowed text message is ambient observation, a bare greeting, or a request. `src/discord/text-controller.ts` currently records a human source through `SqliteMemoryStore.observe` and separately calls `ConversationOrchestrator.handleText`, which is the sequencing leak this plan removes.
+The repository is a Node 24, TypeScript, pnpm application. `src/discord/gateway.ts` receives Discord events, `src/discord/invocation-policy.ts` qualifies and normalizes allowed text, and `src/discord/text-controller.ts` delegates one normalized turn to `ConversationOrchestrator`. `src/app/conversation-orchestrator.ts` now owns synchronous conversation recording, the paid FIFO, recent-context selection, durable recall or explicit mutation, provider calls, and Chief reply persistence. `src/agent/openai-chief-agent.ts` receives recent conversation and communal memory as separate labeled inputs and runs `gpt-5.4-mini` at reasoning `low`. `src/agent/openai-voice.ts` seeds typed persisted history into each new Realtime session and exposes the same durable-memory receipts through narrow tools.
 
-`src/app/conversation-orchestrator.ts` owns the paid FIFO, usage reservations, text calls, and cached Realtime voice session. Its text request currently contains only `prompt` and `requestId`. `src/agent/openai-chief-agent.ts` formats either the raw prompt or a JSON object containing durable `communalMemory` and `userRequest`; it does not accept recent conversation. Its `createExecution` function sets `reasoning.effort` to `none`. `src/agent/openai-voice.ts` constructs the Realtime agent and session with static instructions and no persisted conversation or durable-memory tools.
+`src/memory/database.ts` now runs immutable migrations `0001_initial` and `0002_conversation_events`. `src/conversation/conversation-store.ts` owns the seven-day bounded recent timeline. `src/memory/memory-store.ts` persists raw sources, restart-safe jobs, durable memories, FTS5 rows, and sqlite-vec embeddings. `src/memory/memory-service.ts` is the single public durable-memory boundary: it owns automatic work, explicit remember/correct/forget sequencing, confidence floors, sensitivity rejection, embeddings, atomic mutations, and truthful receipts. The former `memory-worker.ts` and `memory-context.ts` modules no longer exist.
 
-`src/memory/database.ts` contains one applied migration named `0001_initial`. `migrateChiefDatabase` currently exits after validating that checksum, so it must become an ordered migration runner without changing the existing migration identifier, checksum, or effective SQL. The bookkeeping table remains created lazily outside migration bodies; the deployed `0001` checksum and its current bookkeeping-table stripping behavior remain compatible. `src/memory/memory-store.ts` persists raw human source events, restart-safe extraction jobs, durable memories, FTS5 rows, and sqlite-vec embeddings. `src/memory/memory-worker.ts` currently owns automatic extraction sequencing, while `src/memory/memory-context.ts` owns embedding plus recall. Runtime constructs one of each, but `src/memory/openai-memory.ts` also imports worker-owned result types. Milestone 3 moves those shared types, replaces the two public concepts with one deep `MemoryService`, and rewires every source and test importer.
+The active Milestone 6 repair is confined to `MemoryService` and `src/memory/openai-memory.ts`. `MemoryService` deterministically converts a syntactically valid remember command into a concise extraction payload while preserving multiline content and same-message referents; syntactically empty requests return `ambiguous` before any model call. The OpenAI adapter selects a dedicated calibrated agent only for `remember`, leaving the original automatic/correction prompt unchanged. `scripts/evaluate-conversation-quality.ts` provides the optional paid real-model check for both safe preference acceptance and synthetic credential rejection.
 
 In this plan, a conversation event is one normalized human or Chief message stored for short-term dialogue. A durable memory is a long-lived canonical fact stored in the existing `memories` table. An as-of context contains only conversation events with IDs earlier than the current human request, preventing later concurrently received messages from leaking into an earlier model call. Approximate tokens are a deterministic conservative character-based estimate used only to bound recent history.
 
@@ -163,6 +183,16 @@ Run the optional live evaluation once with the owner-provided local `.env` key a
 
 Expect all commands to exit zero. Run the migration/backup/restore and deploy rollback integration tests to prove the new table survives the existing transaction. No local validation may print or commit `.env` values.
 
+### Milestone 6: Calibrate explicit remember extraction without weakening other memory flows
+
+Treat the production false-sensitive reply as a follow-up repair on `codex/fix-memory-sensitivity`. In `src/memory/memory-service.ts`, parse only the explicit remember payload before extraction, preserve embedded newlines and referential words such as `that`, and strip only address separators. Return `ambiguous` before extraction when no durable payload or resolvable back-reference remains. Prefix a valid model input with `Explicit communal memory request:`. Preserve text before the Chief trigger only when the payload contains a same-message referent such as “those teams”; a complete payload such as “no military academy” must not receive the irrelevant “This list” prefix. The source event, provenance, and stored content remain the original Discord message.
+
+In `src/memory/openai-memory.ts`, replace the ambiguous boolean with the explicit intent or `null`. Select a dedicated calibrated prompt only for `remember`; automatic extraction and correction continue using the original prompt verbatim. The remember prompt defines sensitivity as private personal data rather than topic vocabulary, defines confidence as paraphrase clarity, requires clear safe memories to use at least `0.90`, and requires a clear sensitive request to emit a sensitive proposal so Chief can truthfully decline. Keep `gpt-5.4-nano`, reasoning `none`, the `0.75` and `0.85` service floors, and all commit-before-acknowledgement sequencing.
+
+Extend `test/integration/memory-service.test.ts` with the production sentence, a same-message referent, a multiline list, separator punctuation, and an empty “remember that” case. Replace the old instruction-dependent fake in `test/unit/openai-memory.test.ts` with a wiring contract that proves only remember selects the calibrated agent. Extend `scripts/evaluate-conversation-quality.ts` rather than adding a second harness: retain the text cases and add three trials each for a harmless group preference and a synthetic credential on the configured memory model. The optional command remains outside CI and emits no prompts or secrets.
+
+Run the focused tests and typecheck, then the optional paid evaluation from the owner-controlled `.env`. Acceptance is three of three safe creations at `sensitivity: none` and confidence at least `0.90`, three of three sensitive classifications for the synthetic credential, and all text cases passing. Then run formal and adversarial focused re-review before the full repository gate and production rollout.
+
 ## Concrete Steps
 
 All commands run from `/Users/kellen/development/github/kellen-miller/chief/.worktrees/conversation-quality` unless a command says otherwise.
@@ -187,13 +217,13 @@ Before review, run:
 
 Run the optional live evaluation only when `.env` contains the current owner-controlled API key:
 
-    node --env-file=.env --import tsx scripts/evaluate-conversation-quality.ts
+    node --env-file=../../.env --import tsx scripts/evaluate-conversation-quality.ts
 
 The command must not be added to required CI. Record only case names, pass/fail outcomes, model name, reasoning level, latency, and token usage; never record prompts or the key.
 
 When implementation and review are complete, commit with Conventional Commits, push explicitly, and create a PR:
 
-    git push origin HEAD:refs/heads/codex/improve-conversation-quality
+    git push origin HEAD:refs/heads/codex/fix-memory-sensitivity
 
 Watch Format, Lint, Test, Build, and any triggered Terraform Plan job. Merge only when required checks pass and review findings are resolved. Then watch the `main` deploy job through completion and run the non-content VM health/database checks plus the manual Discord scenarios in `docs/manual-acceptance.md` before declaring production acceptance.
 
@@ -205,7 +235,7 @@ Mention acceptance requires exact cases for a leading mention, middle mention, t
 
 Recent-context acceptance requires restart-safe text and voice events, display-name attribution, chronological order, seven-day expiry, at most thirty messages, and the approximate six-thousand-token bound. The Teddy/Polk follow-up must receive the prior list and no-military constraint. Text-to-voice and voice-to-text tests must include both human and Chief turns. No request may receive an event that arrived later than its as-of boundary.
 
-Durable-memory acceptance requires a non-sensitive explicit proposal at `0.75` to commit and acknowledge, one at `0.74` to be truthfully rejected, a sensitive proposal to reject without a row, a correction to supersede, ambiguity to retain conflict and request clarification, forgetting to remove indexes, and automatic extraction below `0.85` to remain rejected. A multi-proposal transaction failure must leave no partial memory or index rows. A database, budget, extraction, or embedding failure must never produce “I’ll remember.” There is still no list/dump command.
+Durable-memory acceptance requires a non-sensitive explicit proposal at `0.75` to commit and acknowledge, one at `0.74` to be truthfully rejected, a sensitive proposal to reject without a row, a correction to supersede, ambiguity to retain conflict and request clarification, forgetting to remove indexes, and automatic extraction below `0.85` to remain rejected. Remember framing must retain multiline payloads and same-message referents without adding irrelevant prefix text to complete requests. The optional real-model evaluation must pass three harmless-preference and three synthetic-sensitive trials on `gpt-5.4-nano`. A multi-proposal transaction failure must leave no partial memory or index rows. A database, budget, extraction, or embedding failure must never produce “I’ll remember.” There is still no list/dump command.
 
 Provider acceptance requires `gpt-5.4-mini` as default, reasoning `low`, recent conversation and durable memory as separate labeled inputs, personality instructions matching `decision.md`, and no content-bearing logs. Voice must receive text-only typed history through the Realtime transport exactly once per new session, must not embed raw dialogue in fixed instructions, and must not claim a memory mutation succeeded unless its tool receipt committed.
 
@@ -221,7 +251,7 @@ Temporary transcript replay and live-evaluation output must remain outside versi
 
 ## Artifacts and Notes
 
-The work item is `.agent/work/improve-conversation-quality/`. Planning and implementation reviews belong under its `adversarial/` directory. The source transcript remains outside the repository at `/Users/kellen/.codex/attachments/2fdc5af3-8510-47e2-b4b9-0d0ec88ccf7c/pasted-text.txt`; the repository fixture should copy only the minimum sanitized turns needed for deterministic tests.
+The work item is `.agent/work/improve-conversation-quality/`. Planning and implementation reviews belong under its `adversarial/` directory. The explicit-memory follow-up review and its initial blocking verdict are recorded in `adversarial/memory-fix-review.md`; a focused re-review must append the final disposition before publication. The source transcript remains outside the repository at `/Users/kellen/.codex/attachments/2fdc5af3-8510-47e2-b4b9-0d0ec88ccf7c/pasted-text.txt`; the repository fixture should copy only the minimum sanitized turns needed for deterministic tests.
 
 The baseline at `999b190` passed 137 tests across 23 files. Production diagnostic evidence is summarized in `decision.md`; no production message content, memory content, secrets, or Discord IDs should be copied into the work item or logs.
 
@@ -288,3 +318,11 @@ Plan revision note (2026-07-12T17:29:00Z): Improvement pass 2 replaced the propo
 Plan revision note (2026-07-12T17:31:00Z): Improvement pass 3 verified the installed Realtime SDK’s `updateHistory`/`resetHistory` path, moved historical dialogue out of fixed instructions into typed text-only history, and required a transport-level contract test. Usefulness score: 9/10 - removed a prompt-injection-prone voice bootstrap and grounded the plan in the shipped SDK interface.
 
 Plan revision note (2026-07-12T17:42:00Z): Independent review resolved startup-retention starvation, split retrieval/expiry indexes, specified atomic prepared memory batches and the `0.75` explicit boundary, enumerated type-import rewiring, corrected the Realtime import path and transcript lifecycle, added readiness acknowledgement and hostile-history tests, and made rollback pairing explicit. Usefulness score: 10/10 - converted every verified high-severity ambiguity into a concrete invariant and acceptance test.
+
+Plan revision note (2026-07-12T20:21:22Z): Added Milestone 6 after production exposed a false-sensitive explicit remember reply. The revision incorporates formal and adversarial findings across the plan, narrows framing to complete payloads plus only meaningful same-message context, isolates the calibrated prompt from automatic/correction flows, and adds repeatable real-model safe/sensitive evaluation before rollout.
+
+Plan revision note (2026-07-12T20:34:00Z): Rewrote Purpose and Context for the merged architecture, documented the focused review's back-reference and empty-request findings, and changed Milestone 6 to preserve referential `that` while short-circuiting unresolved or punctuation-only requests before any model call.
+
+Plan revision note (2026-07-12T20:46:30Z): Recorded clean final Standards/Spec re-reviews, the external review's sole non-blocking contextless-group-reference finding, and the red-green repair that now short-circuits those unresolved forms before extraction.
+
+Plan revision note (2026-07-12T20:47:54Z): Recorded the fresh 195-test pre-publication gate and updated Outcomes to distinguish locally verified completion from the remaining PR, deployment, text smoke, and voice acceptance work.
