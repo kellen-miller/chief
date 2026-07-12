@@ -71,6 +71,8 @@ describe('repository policy', () => {
     expect(app).not.toContain('metadata_startup_script');
     expect(deploy).toContain('/opt/chief/run-container.sh');
     expect(deploy).toContain('google-startup-scripts.service');
+    expect(deploy).toContain("--image '${{ steps.image.outputs.reference }}'");
+    expect(deploy).not.toContain("--image='");
   });
 
   it('uses short-lived scoped WIF without secret or plan artifacts', async () => {
