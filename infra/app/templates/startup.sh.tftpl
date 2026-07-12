@@ -2,14 +2,23 @@
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
+rm -f /etc/apt/sources.list.d/google-cloud-ops-agent.list
 apt-get update
 apt-get install --yes --no-install-recommends ca-certificates curl docker.io gnupg
+
+if [[ ! -f /swapfile ]]; then
+  fallocate -l 2G /swapfile
+  chmod 0600 /swapfile
+  mkswap /swapfile
+fi
+swapon --show | grep -qF /swapfile || swapon /swapfile
+grep -qF '/swapfile none swap sw 0 0' /etc/fstab || printf '%s\n' '/swapfile none swap sw 0 0' >>/etc/fstab
+
 install -d -m 0755 /usr/share/keyrings
 curl --fail --silent --show-error https://packages.cloud.google.com/apt/doc/apt-key.gpg \
   | gpg --dearmor --yes --output /usr/share/keyrings/google-cloud.gpg
 cat >/etc/apt/sources.list.d/google-cloud-ops-agent.list <<'EOF'
 deb [signed-by=/usr/share/keyrings/google-cloud.gpg] https://packages.cloud.google.com/apt google-cloud-ops-agent-bookworm-all main
-deb [signed-by=/usr/share/keyrings/google-cloud.gpg] https://packages.cloud.google.com/apt cloud-sdk-bookworm main
 EOF
 apt-get update
 apt-get install --yes --no-install-recommends google-cloud-cli google-cloud-ops-agent
@@ -25,14 +34,6 @@ if ! grep -qF "$DATA_DEVICE /var/lib/chief" /etc/fstab; then
 fi
 mountpoint -q /var/lib/chief || mount /var/lib/chief
 chown 1000:1000 /var/lib/chief
-
-if [[ ! -f /swapfile ]]; then
-  fallocate -l 2G /swapfile
-  chmod 0600 /swapfile
-  mkswap /swapfile
-fi
-swapon --show | grep -qF /swapfile || swapon /swapfile
-grep -qF '/swapfile none swap sw 0 0' /etc/fstab || printf '%s\n' '/swapfile none swap sw 0 0' >>/etc/fstab
 
 install -d -m 0750 /etc/chief /opt/chief /run/chief
 install -d -o 1000 -g 1000 -m 0750 /var/lib/chief/backups

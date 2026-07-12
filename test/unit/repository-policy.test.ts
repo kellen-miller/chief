@@ -51,6 +51,28 @@ describe('repository policy', () => {
     );
   });
 
+  it('uses one Cloud SDK source and waits for VM provisioning', async () => {
+    const startup = await read('infra/app/templates/startup.sh.tftpl');
+    const deploy = await read('.github/workflows/deploy.yml');
+    const app = await read('infra/app/main.tf');
+    expect(startup).toContain('google-cloud-ops-agent-bookworm-all main');
+    expect(startup).not.toContain('cloud-sdk-bookworm main');
+    const staleSourceCleanup = startup.indexOf(
+      'rm -f /etc/apt/sources.list.d/google-cloud-ops-agent.list',
+    );
+    expect(staleSourceCleanup).toBeGreaterThanOrEqual(0);
+    expect(staleSourceCleanup).toBeLessThan(startup.indexOf('apt-get update'));
+    expect(startup.indexOf('fallocate -l 2G /swapfile')).toBeLessThan(
+      startup.indexOf(
+        'apt-get install --yes --no-install-recommends google-cloud-cli',
+      ),
+    );
+    expect(app).toContain('startup-script = templatefile(');
+    expect(app).not.toContain('metadata_startup_script');
+    expect(deploy).toContain('/opt/chief/run-container.sh');
+    expect(deploy).toContain('google-startup-scripts.service');
+  });
+
   it('uses short-lived scoped WIF without secret or plan artifacts', async () => {
     const plan = await read('.github/workflows/terraform-plan.yml');
     const deploy = await read('.github/workflows/deploy.yml');
