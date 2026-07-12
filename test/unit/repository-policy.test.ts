@@ -36,6 +36,21 @@ describe('repository policy', () => {
     );
   });
 
+  it('reconfigures gcloud after switching deployment identities', async () => {
+    const deploy = await read('.github/workflows/deploy.yml');
+    const authStart = deploy.indexOf(
+      '- name: Authenticate deployment identity',
+    );
+    const buildStart = deploy.indexOf(
+      '- name: Build and publish immutable image',
+    );
+    expect(authStart).toBeGreaterThanOrEqual(0);
+    expect(buildStart).toBeGreaterThan(authStart);
+    expect(deploy.slice(authStart, buildStart)).toContain(
+      'uses: google-github-actions/setup-gcloud@',
+    );
+  });
+
   it('uses short-lived scoped WIF without secret or plan artifacts', async () => {
     const plan = await read('.github/workflows/terraform-plan.yml');
     const deploy = await read('.github/workflows/deploy.yml');
