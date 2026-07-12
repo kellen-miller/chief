@@ -8,6 +8,12 @@ source /etc/chief/chief.env
 source /var/lib/chief/deploy.env
 install -d -m 0700 /run/chief
 umask 077
+GCP_PROJECT_ID="${GCP_PROJECT_ID:-$(
+  curl --fail --silent --show-error \
+    --connect-timeout 2 --max-time 5 \
+    --header 'Metadata-Flavor: Google' \
+    http://metadata.google.internal/computeMetadata/v1/project/project-id
+)}"
 DISCORD_TOKEN="$(gcloud secrets versions access latest --project="$GCP_PROJECT_ID" --secret=chief-discord-token)"
 OPENAI_API_KEY="$(gcloud secrets versions access latest --project="$GCP_PROJECT_ID" --secret=chief-openai-api-key)"
 {
