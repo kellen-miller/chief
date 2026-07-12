@@ -2,14 +2,14 @@
   "id": "improve-conversation-quality",
   "title": "Improve Chief conversation quality",
   "stage": "implementation",
-  "state": "completed",
+  "state": "active",
   "created_at": "2026-07-12T17:24:47Z",
-  "updated_at": "2026-07-12T19:20:26Z",
+  "updated_at": "2026-07-12T20:00:11Z",
   "worktree": {
     "path": "/Users/kellen/development/github/kellen-miller/chief/.worktrees/conversation-quality",
-    "branch": "codex/improve-conversation-quality",
+    "branch": "codex/fix-memory-sensitivity",
     "base_ref": "origin/main",
-    "base_commit": "999b190a0d65e89cc2351d53b49c5c21e3f2add3",
+    "base_commit": "924bb50d78be94c230776234ca7846139d2ad92d",
     "upstream": "origin/main"
   },
   "artifacts": {
