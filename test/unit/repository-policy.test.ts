@@ -17,6 +17,11 @@ describe('repository policy', () => {
     for (const name of ['Format', 'Lint', 'Test', 'Build']) {
       expect(ruleset).toContain(`context: "${name}"`);
     }
+    expect(ruleset).toContain('required_approving_review_count: 0');
+    expect(ruleset).toContain('custom_branch_policies: true');
+    expect(ruleset).toContain('deployment-branch-policies');
+    expect(ruleset).toContain('name: "main"');
+    expect(ruleset).toContain('--method PUT');
   });
 
   it('pins every external workflow action to a full commit', async () => {
@@ -57,6 +62,7 @@ describe('repository policy', () => {
     const app = await read('infra/app/main.tf');
     const health = await read('src/health/health-server.ts');
     const runtime = await read('src/runtime.ts');
+    const deployScript = await read('scripts/deploy.sh');
     expect(startup).toContain('google-cloud-ops-agent-bookworm-all main');
     expect(startup).not.toContain('cloud-sdk-bookworm main');
     const staleSourceCleanup = startup.indexOf(
@@ -72,11 +78,18 @@ describe('repository policy', () => {
     expect(app).toContain('startup-script = templatefile(');
     expect(app).not.toContain('metadata_startup_script');
     expect(deploy).toContain('/opt/chief/run-container.sh');
+    expect(deploy).toContain('scripts/run-container.sh');
+    expect(deploy).toContain(
+      'install -m 0750 /tmp/run-container.sh /opt/chief/run-container.sh',
+    );
     expect(deploy).toContain('google-startup-scripts.service');
     expect(deploy).toContain("--image '${{ steps.image.outputs.reference }}'");
     expect(deploy).not.toContain("--image='");
     expect(health).toContain("this.#options.host ?? '127.0.0.1'");
     expect(runtime).toContain("host: '0.0.0.0'");
+    expect(startup).not.toContain('docker login');
+    expect(deployScript).toContain('DOCKER_CONFIG');
+    expect(deployScript).toContain('docker-config.XXXXXX');
   });
 
   it('uses short-lived scoped WIF without secret or plan artifacts', async () => {

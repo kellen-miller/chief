@@ -54,7 +54,7 @@ Do not pass those values through Terraform variables; data-source secret reads w
 
 ## 3. GitHub configuration
 
-Create a GitHub environment named `production`. The approved design deploys automatically after a reviewed merge to `main`, so do not add a required reviewer unless you want a second manual gate.
+Create a GitHub environment named `production`. The approved design deploys automatically after a green pull request merges to `main`, so do not add a required reviewer unless you want a second manual gate. Restrict the environment to the custom `main` branch policy.
 
 Set repository/environment variables from bootstrap outputs and application inputs:
 
@@ -67,7 +67,7 @@ Set repository/environment variables from bootstrap outputs and application inpu
 
 The PR provider accepts only `kellen-miller/chief` pull-request tokens and can impersonate only the read-only plan account. The production provider requires the exact subject `repo:kellen-miller/chief:environment:production` on a push. No service-account key is stored in GitHub.
 
-Run `scripts/configure-github-ruleset.sh --dry-run` to inspect the proposed main-branch ruleset, then run it without `--dry-run` when ready.
+Run `scripts/configure-github-ruleset.sh --dry-run` to inspect the proposed main-branch ruleset and production environment policy, then run it without `--dry-run` when ready. The ruleset requires pull requests and the Format, Lint, Test, and Build checks, but requires zero approvals so the solo maintainer can merge a green PR.
 
 ## Rollback and state recovery
 
