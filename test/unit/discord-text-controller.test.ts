@@ -10,6 +10,7 @@ const allowed = {
 
 function message(content: string) {
   return {
+    authorDisplayName: 'President Test',
     authorId: '42345678901234567',
     authorIsBot: false,
     channelId: allowed.channelId,
@@ -23,13 +24,11 @@ function message(content: string) {
 
 describe('DiscordTextController', () => {
   it('observes an allowed unmentioned message without replying', async () => {
-    const observe = vi.fn();
     const reply = vi.fn();
-    const handleText = vi.fn();
+    const handleText = vi.fn(() => Promise.resolve(null));
     const controller = new DiscordTextController(allowed, {
       handleText,
       now: () => 1_000,
-      observe,
     });
 
     await controller.handle(message('Dinner is at seven.'), {
@@ -37,13 +36,13 @@ describe('DiscordTextController', () => {
       typing: vi.fn(),
     });
 
-    expect(observe).toHaveBeenCalledWith(
+    expect(handleText).toHaveBeenCalledWith(
       expect.objectContaining({
         content: 'Dinner is at seven.',
-        retentionDeadline: 1_000 + 30 * 24 * 60 * 60 * 1_000,
+        kind: 'observe',
+        speakerName: 'President Test',
       }),
     );
-    expect(handleText).not.toHaveBeenCalled();
     expect(reply).not.toHaveBeenCalled();
   });
 
@@ -60,7 +59,6 @@ describe('DiscordTextController', () => {
         }),
       ),
       now: () => 1_000,
-      observe: vi.fn(),
     });
 
     await controller.handle(message(`<@${allowed.botUserId}> brief us`), {
@@ -78,19 +76,19 @@ describe('DiscordTextController', () => {
   });
 
   it('normalizes mentions for memory and renders missing source links', async () => {
-    const observe = vi.fn();
+    const handleText = vi.fn(() =>
+      Promise.resolve({
+        citations: ['https://example.com/current'],
+        content: 'Current answer Mr. President',
+        status: 'completed' as const,
+      }),
+    );
     const reply = vi
       .fn<(content: string) => Promise<void>>()
       .mockResolvedValue();
     const controller = new DiscordTextController(allowed, {
-      handleText: () =>
-        Promise.resolve({
-          citations: ['https://example.com/current'],
-          content: 'Current answer Mr. President',
-          status: 'completed',
-        }),
+      handleText,
       now: () => 1_000,
-      observe,
     });
 
     await controller.handle(
@@ -101,23 +99,31 @@ describe('DiscordTextController', () => {
       },
     );
 
-    expect(observe).toHaveBeenCalledWith(
-      expect.objectContaining({ content: 'Chief, remember dinner' }),
+    expect(handleText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: 'Chief, remember dinner',
+        prompt: 'remember dinner',
+      }),
     );
     expect(reply).toHaveBeenCalledWith(
       'Current answer Sources: https://example.com/current Mr. President',
     );
   });
 
-  it('answers a bare mention locally without paid generation', async () => {
+  it('delivers the orchestrator reply for a bare mention', async () => {
     const reply = vi
       .fn<(content: string) => Promise<void>>()
       .mockResolvedValue();
-    const handleText = vi.fn();
+    const handleText = vi.fn(() =>
+      Promise.resolve({
+        citations: [],
+        content: 'At your service, Mr. President',
+        status: 'completed' as const,
+      }),
+    );
     const controller = new DiscordTextController(allowed, {
       handleText,
       now: () => 1_000,
-      observe: vi.fn(),
     });
 
     await controller.handle(message(`<@!${allowed.botUserId}>`), {
@@ -125,7 +131,9 @@ describe('DiscordTextController', () => {
       typing: vi.fn(),
     });
 
-    expect(handleText).not.toHaveBeenCalled();
+    expect(handleText).toHaveBeenCalledWith(
+      expect.objectContaining({ content: 'Chief', kind: 'greeting' }),
+    );
     expect(reply).toHaveBeenCalledWith('At your service, Mr. President');
   });
 });

@@ -70,6 +70,62 @@ describe('Chief database', () => {
     database.close();
   });
 
+  it('adds conversation history without changing deployed 0001 data', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'chief-upgrade-'));
+    directories.push(directory);
+    const database = openChiefDatabase(join(directory, 'chief.db'));
+    migrateChiefDatabase(database);
+    database
+      .prepare(
+        `insert into source_events
+           (id, platform_source_id, speaker_id, medium, content, occurred_at,
+            retention_deadline)
+         values (1, 'existing-source', 'president', 'text', 'existing', 1, 100)`,
+      )
+      .run();
+    database
+      .prepare(
+        `insert into memory_jobs
+           (id, source_event_id, not_before, status)
+         values (1, 1, 1, 'pending')`,
+      )
+      .run();
+    database
+      .prepare(
+        `insert into usage_ledger
+           (id, operation, reservation_usd, occurred_at)
+         values ('usage-1', 'text-response', 0.25, 1)`,
+      )
+      .run();
+    database.exec('drop table conversation_events');
+    database
+      .prepare(
+        "delete from schema_migrations where id = '0002_conversation_events'",
+      )
+      .run();
+
+    migrateChiefDatabase(database);
+
+    expect(
+      database.prepare('select count(*) from source_events').pluck().get(),
+    ).toBe(1);
+    expect(
+      database.prepare('select count(*) from memory_jobs').pluck().get(),
+    ).toBe(1);
+    expect(
+      database.prepare('select count(*) from usage_ledger').pluck().get(),
+    ).toBe(1);
+    expect(
+      database
+        .prepare(
+          "select count(*) from schema_migrations where id = '0002_conversation_events'",
+        )
+        .pluck()
+        .get(),
+    ).toBe(1);
+    database.close();
+  });
+
   it('retains copied memory provenance after raw source deletion', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'chief-retention-'));
     directories.push(directory);

@@ -7,7 +7,7 @@ import {
 import OpenAI from 'openai';
 import { z } from 'zod';
 
-import type { EmbeddingResult, ExtractionResult } from './memory-worker.js';
+import type { EmbeddingResult, ExtractionResult } from './memory-service.js';
 
 const proposalSchema = z.object({
   action: z.enum(['conflict', 'create', 'forget', 'no-op', 'supersede']),

@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "chief": "tsx src/cli.ts",
+    "eval:conversation": "tsx scripts/evaluate-conversation-quality.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings 0",

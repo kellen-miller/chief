@@ -54,11 +54,35 @@ export interface MemoryCandidate {
   readonly id: number;
 }
 
+export type PreparedMemoryMutation =
+  | { readonly action: 'create'; readonly memory: MemoryInput }
+  | {
+      readonly action: 'conflict' | 'supersede';
+      readonly memory: MemoryInput;
+      readonly targetMemoryId: number;
+    }
+  | { readonly action: 'forget'; readonly targetMemoryId: number };
+
+export interface AppliedMemoryMutation {
+  readonly action: PreparedMemoryMutation['action'];
+  readonly memoryId: number | null;
+}
+
 interface MemoryRow {
   canonical_text: string;
   confidence: number;
   id: number;
   kind: string;
+}
+
+function buildLexicalQuery(
+  text: string,
+  operator: 'AND' | 'OR',
+): string | undefined {
+  return text
+    .match(/[\p{L}\p{N}]+/gu)
+    ?.map((token) => `"${token.replaceAll('"', '""')}"`)
+    .join(` ${operator} `);
 }
 
 export class SqliteMemoryStore {
@@ -69,6 +93,14 @@ export class SqliteMemoryStore {
   }
 
   public observe(source: SourceObservation): number {
+    return this.#observe(source, true);
+  }
+
+  public observeExplicit(source: SourceObservation): number {
+    return this.#observe(source, false);
+  }
+
+  #observe(source: SourceObservation, createJob: boolean): number {
     return this.#database.transaction(() => {
       this.#database
         .prepare(
@@ -84,15 +116,17 @@ export class SqliteMemoryStore {
         .prepare('select id from source_events where platform_source_id = ?')
         .pluck()
         .get(source.platformSourceId) as number;
-      this.#database
-        .prepare(
-          `insert into memory_jobs (source_event_id, not_before)
-           select ?, ? where not exists (
-             select 1 from memory_jobs
-             where source_event_id = ? and status in ('pending', 'leased')
-           )`,
-        )
-        .run(sourceEventId, source.occurredAt, sourceEventId);
+      if (createJob) {
+        this.#database
+          .prepare(
+            `insert into memory_jobs (source_event_id, not_before)
+             select ?, ? where not exists (
+               select 1 from memory_jobs
+               where source_event_id = ? and status in ('pending', 'leased')
+             )`,
+          )
+          .run(sourceEventId, source.occurredAt, sourceEventId);
+      }
       return sourceEventId;
     })();
   }
@@ -133,18 +167,7 @@ export class SqliteMemoryStore {
 
   public completeJob(jobId: number): void {
     this.#database.transaction(() => {
-      this.#database
-        .prepare(
-          `update memory_jobs set status = 'completed', lease_expires_at = null
-           where id = ?`,
-        )
-        .run(jobId);
-      this.#database
-        .prepare(
-          `update source_events set extraction_status = 'completed'
-           where id = (select source_event_id from memory_jobs where id = ?)`,
-        )
-        .run(jobId);
+      this.#completeJob(jobId);
     })();
   }
 
@@ -183,6 +206,14 @@ export class SqliteMemoryStore {
   }
 
   public recordConflict(leftMemoryId: number, rightMemoryId: number): void {
+    this.#recordConflict(leftMemoryId, rightMemoryId, Date.now());
+  }
+
+  #recordConflict(
+    leftMemoryId: number,
+    rightMemoryId: number,
+    timestamp: number,
+  ): void {
     const [left, right] =
       leftMemoryId < rightMemoryId
         ? [leftMemoryId, rightMemoryId]
@@ -193,51 +224,17 @@ export class SqliteMemoryStore {
            (left_memory_id, right_memory_id, created_at)
          values (?, ?, ?) on conflict(left_memory_id, right_memory_id) do nothing`,
       )
-      .run(left, right, Date.now());
+      .run(left, right, timestamp);
   }
 
   public applyMemory(memory: MemoryInput): number {
-    return this.#database.transaction(() => {
-      const result = this.#database
-        .prepare(
-          `insert into memories
-             (source_event_id, canonical_text, kind, confidence, provenance_json,
-              state, created_at, updated_at)
-           values (?, ?, ?, ?, ?, 'active', ?, ?)`,
-        )
-        .run(
-          memory.sourceEventId,
-          memory.canonicalText,
-          memory.kind,
-          memory.confidence,
-          JSON.stringify(memory.provenance),
-          memory.timestamp,
-          memory.timestamp,
-        );
-      const id = Number(result.lastInsertRowid);
-      this.#database
-        .prepare('insert into memory_fts (rowid, canonical_text) values (?, ?)')
-        .run(id, memory.canonicalText);
-      this.#database
-        .prepare(
-          'insert into memory_vectors (memory_id, embedding) values (?, ?)',
-        )
-        .run(BigInt(id), JSON.stringify(Array.from(memory.embedding)));
-      return id;
-    })();
+    return this.#database.transaction(() => this.#insertMemory(memory))();
   }
 
   public supersede(memoryId: number, replacement: MemoryInput): number {
     return this.#database.transaction(() => {
-      const replacementId = this.applyMemory(replacement);
-      const result = this.#database
-        .prepare(
-          `update memories set state = 'superseded', superseded_by = ?, updated_at = ?
-           where id = ? and state = 'active'`,
-        )
-        .run(replacementId, replacement.timestamp, memoryId);
-      if (result.changes !== 1) throw new Error('active memory not found');
-      this.#deleteIndexes(memoryId);
+      const replacementId = this.#insertMemory(replacement);
+      this.#supersede(memoryId, replacementId, replacement.timestamp);
       return replacementId;
     })();
   }
@@ -246,43 +243,55 @@ export class SqliteMemoryStore {
     readonly deleted: boolean;
     readonly sourceDeleted: boolean;
   } {
-    return this.#database.transaction(() => {
-      const memory = this.#database
-        .prepare(
-          'select source_event_id as sourceEventId from memories where id = ?',
-        )
-        .get(memoryId) as { sourceEventId: number | null } | undefined;
-      if (memory === undefined) return { deleted: false, sourceDeleted: false };
-      this.#deleteIndexes(memoryId);
-      this.#database.prepare('delete from memories where id = ?').run(memoryId);
+    return this.#database.transaction(() => this.#forget(memoryId))();
+  }
 
-      let sourceDeleted = false;
-      if (memory.sourceEventId !== null) {
-        const sourceResult = this.#database
-          .prepare(
-            `delete from source_events where id = ?
-             and not exists (select 1 from memories where source_event_id = ?)
-             and not exists (
-               select 1 from memory_jobs where source_event_id = ? and status != 'completed'
-             )`,
-          )
-          .run(
-            memory.sourceEventId,
-            memory.sourceEventId,
-            memory.sourceEventId,
+  public applyPreparedMutationBatch(input: {
+    readonly completedAt: number;
+    readonly jobId?: number;
+    readonly mutations: readonly PreparedMemoryMutation[];
+    readonly sourceEventId: number;
+  }): readonly AppliedMemoryMutation[] {
+    return this.#database.transaction(() => {
+      const applied: AppliedMemoryMutation[] = [];
+      for (const mutation of input.mutations) {
+        if (mutation.action === 'forget') {
+          const forgotten = this.#forget(mutation.targetMemoryId);
+          applied.push({
+            action: 'forget',
+            memoryId: forgotten.deleted ? mutation.targetMemoryId : null,
+          });
+          continue;
+        }
+        const memoryId = this.#insertMemory(mutation.memory);
+        if (mutation.action === 'supersede') {
+          this.#supersede(mutation.targetMemoryId, memoryId, input.completedAt);
+        } else if (mutation.action === 'conflict') {
+          this.#recordConflict(
+            mutation.targetMemoryId,
+            memoryId,
+            input.completedAt,
           );
-        sourceDeleted = sourceResult.changes === 1;
+        }
+        applied.push({ action: mutation.action, memoryId });
       }
-      return { deleted: true, sourceDeleted };
+      if (input.jobId === undefined) {
+        this.#database
+          .prepare(
+            `update source_events set extraction_status = 'completed'
+             where id = ?`,
+          )
+          .run(input.sourceEventId);
+      } else {
+        this.#completeJob(input.jobId);
+      }
+      return applied;
     })();
   }
 
   public retrieve(query: MemoryQuery): RetrievedMemory[] {
     const ranks = new Map<number, number>();
-    const lexicalQuery = query.text
-      .match(/[\p{L}\p{N}]+/gu)
-      ?.map((token) => `"${token.replaceAll('"', '""')}"`)
-      .join(' AND ');
+    const lexicalQuery = buildLexicalQuery(query.text, 'AND');
     if (lexicalQuery !== undefined && lexicalQuery.length > 0) {
       const rows = this.#database
         .prepare(
@@ -328,10 +337,7 @@ export class SqliteMemoryStore {
   }
 
   public findLexical(text: string, limit = 10): MemoryCandidate[] {
-    const lexicalQuery = text
-      .match(/[\p{L}\p{N}]+/gu)
-      ?.map((token) => `"${token.replaceAll('"', '""')}"`)
-      .join(' OR ');
+    const lexicalQuery = buildLexicalQuery(text, 'OR');
     if (lexicalQuery === undefined || lexicalQuery.length === 0) return [];
     return this.#database
       .prepare(
@@ -373,6 +379,90 @@ export class SqliteMemoryStore {
     this.#database
       .prepare('delete from memory_vectors where memory_id = ?')
       .run(BigInt(memoryId));
+  }
+
+  #completeJob(jobId: number): void {
+    this.#database
+      .prepare(
+        `update memory_jobs set status = 'completed', lease_expires_at = null
+         where id = ?`,
+      )
+      .run(jobId);
+    this.#database
+      .prepare(
+        `update source_events set extraction_status = 'completed'
+         where id = (select source_event_id from memory_jobs where id = ?)`,
+      )
+      .run(jobId);
+  }
+
+  #forget(memoryId: number): {
+    readonly deleted: boolean;
+    readonly sourceDeleted: boolean;
+  } {
+    const memory = this.#database
+      .prepare(
+        'select source_event_id as sourceEventId from memories where id = ?',
+      )
+      .get(memoryId) as { sourceEventId: number | null } | undefined;
+    if (memory === undefined) return { deleted: false, sourceDeleted: false };
+    this.#deleteIndexes(memoryId);
+    this.#database.prepare('delete from memories where id = ?').run(memoryId);
+
+    let sourceDeleted = false;
+    if (memory.sourceEventId !== null) {
+      const sourceResult = this.#database
+        .prepare(
+          `delete from source_events where id = ?
+           and not exists (select 1 from memories where source_event_id = ?)
+           and not exists (
+             select 1 from memory_jobs where source_event_id = ? and status != 'completed'
+           )`,
+        )
+        .run(memory.sourceEventId, memory.sourceEventId, memory.sourceEventId);
+      sourceDeleted = sourceResult.changes === 1;
+    }
+    return { deleted: true, sourceDeleted };
+  }
+
+  #insertMemory(memory: MemoryInput): number {
+    const result = this.#database
+      .prepare(
+        `insert into memories
+           (source_event_id, canonical_text, kind, confidence, provenance_json,
+            state, created_at, updated_at)
+         values (?, ?, ?, ?, ?, 'active', ?, ?)`,
+      )
+      .run(
+        memory.sourceEventId,
+        memory.canonicalText,
+        memory.kind,
+        memory.confidence,
+        JSON.stringify(memory.provenance),
+        memory.timestamp,
+        memory.timestamp,
+      );
+    const id = Number(result.lastInsertRowid);
+    this.#database
+      .prepare('insert into memory_fts (rowid, canonical_text) values (?, ?)')
+      .run(id, memory.canonicalText);
+    this.#database
+      .prepare(
+        'insert into memory_vectors (memory_id, embedding) values (?, ?)',
+      )
+      .run(BigInt(id), JSON.stringify(Array.from(memory.embedding)));
+    return id;
+  }
+
+  #supersede(memoryId: number, replacementId: number, timestamp: number): void {
+    const result = this.#database
+      .prepare(
+        `update memories set state = 'superseded', superseded_by = ?, updated_at = ?
+         where id = ? and state = 'active'`,
+      )
+      .run(replacementId, timestamp, memoryId);
+    if (result.changes !== 1) throw new Error('active memory not found');
+    this.#deleteIndexes(memoryId);
   }
 
   #consolidateExactDuplicates(now: number): number {

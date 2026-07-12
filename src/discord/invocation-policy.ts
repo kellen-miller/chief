@@ -15,9 +15,13 @@ export interface TextMessageCandidate {
 
 export type TextQualification =
   | { readonly kind: 'ignore' }
-  | { readonly kind: 'observe' }
-  | { readonly kind: 'greeting' }
-  | { readonly kind: 'request'; readonly prompt: string };
+  | { readonly content: string; readonly kind: 'observe' }
+  | { readonly content: 'Chief'; readonly kind: 'greeting' }
+  | {
+      readonly content: string;
+      readonly kind: 'request';
+      readonly prompt: string;
+    };
 
 export function qualifyTextMessage(
   allowed: AllowedTextSurface,
@@ -33,13 +37,28 @@ export function qualifyTextMessage(
     return { kind: 'ignore' };
   }
 
-  const mention = new RegExp(`<@!?${escapeRegex(allowed.botUserId)}>`, 'u');
-  if (!mention.test(message.content)) return { kind: 'observe' };
+  const mentionSource = `<@!?${escapeRegex(allowed.botUserId)}>`;
+  const mention = new RegExp(mentionSource, 'u');
+  if (!mention.test(message.content)) {
+    return { content: message.content, kind: 'observe' };
+  }
 
-  const prompt = message.content.replace(mention, '').trim();
-  return prompt.length === 0
-    ? { kind: 'greeting' }
-    : { kind: 'request', prompt };
+  const withoutAddress = message.content.replace(
+    new RegExp(`^\\s*${mentionSource}(?:\\s*[,;:—-]\\s*|\\s*)`, 'u'),
+    '',
+  );
+  const prompt = withoutAddress
+    .replace(new RegExp(mentionSource, 'gu'), 'Chief')
+    .trim();
+  if (prompt.length === 0) return { content: 'Chief', kind: 'greeting' };
+  const leadingMention = new RegExp(`^\\s*${mentionSource}`, 'u').test(
+    message.content,
+  );
+  return {
+    content: leadingMention ? `Chief, ${prompt}` : prompt,
+    kind: 'request',
+    prompt,
+  };
 }
 
 function escapeRegex(value: string): string {

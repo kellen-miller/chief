@@ -1,8 +1,7 @@
 import type {
   ConversationResult,
-  TextTurn,
+  NormalizedTextTurn,
 } from '../app/conversation-orchestrator.js';
-import type { SourceObservation } from '../memory/memory-store.js';
 import { chunkReply } from '../replies/suffix.js';
 import {
   qualifyTextMessage,
@@ -11,6 +10,7 @@ import {
 } from './invocation-policy.js';
 
 export interface DiscordTextMessage extends TextMessageCandidate {
+  readonly authorDisplayName: string;
   readonly authorId: string;
   readonly id: string;
 }
@@ -21,12 +21,11 @@ export interface TextDelivery {
 }
 
 export interface DiscordTextDependencies {
-  readonly handleText: (turn: TextTurn) => Promise<ConversationResult>;
+  readonly handleText: (
+    turn: NormalizedTextTurn,
+  ) => Promise<ConversationResult | null>;
   readonly now?: () => number;
-  readonly observe: (source: SourceObservation) => void;
 }
-
-const TEXT_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export class DiscordTextController {
   readonly #allowed: AllowedTextSurface;
@@ -48,31 +47,27 @@ export class DiscordTextController {
     if (qualification.kind === 'ignore') return;
 
     const now = (this.#dependencies.now ?? Date.now)();
-    const observedContent =
-      qualification.kind === 'request'
-        ? `Chief, ${qualification.prompt}`
-        : qualification.kind === 'greeting'
-          ? 'Chief'
-          : message.content;
-    this.#dependencies.observe({
-      content: observedContent,
-      medium: 'text',
+    const base = {
+      content: qualification.content,
       occurredAt: now,
       platformSourceId: message.id,
-      retentionDeadline: now + TEXT_RETENTION_MS,
+      requestId: message.id,
       speakerId: message.authorId,
-    });
-    if (qualification.kind === 'observe') return;
-    if (qualification.kind === 'greeting') {
-      await delivery.reply('At your service, Mr. President');
+      speakerName: message.authorDisplayName,
+    };
+    const turn: NormalizedTextTurn =
+      qualification.kind === 'request'
+        ? { ...base, kind: 'request', prompt: qualification.prompt }
+        : { ...base, kind: qualification.kind };
+    const pending = this.#dependencies.handleText(turn);
+    if (qualification.kind === 'observe') {
+      await pending;
       return;
     }
 
-    await delivery.typing();
-    const result = await this.#dependencies.handleText({
-      prompt: qualification.prompt,
-      requestId: message.id,
-    });
+    if (qualification.kind === 'request') await delivery.typing();
+    const result = await pending;
+    if (result === null) return;
     const missingCitations = result.citations.filter(
       (citation) => !result.content.includes(citation),
     );

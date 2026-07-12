@@ -1,6 +1,13 @@
+export interface ChiefConversationMessage {
+  readonly content: string;
+  readonly role: 'human' | 'chief';
+  readonly speakerName: string | null;
+}
+
 export interface ChiefTextRequest {
   readonly memories?: readonly string[];
   readonly prompt: string;
+  readonly recentConversation?: readonly ChiefConversationMessage[];
   readonly requestId: string;
 }
 
@@ -22,7 +29,10 @@ export interface Transcript {
 }
 
 export interface VoiceSessionRequest {
+  readonly recentConversation: readonly ChiefConversationMessage[];
   readonly requestId: string;
+  readonly speakerId: string;
+  readonly speakerName: string;
 }
 
 export type ChiefVoiceEvent =
@@ -38,12 +48,9 @@ export type ChiefVoiceEvent =
       readonly type: 'transcript-delta';
     }
   | {
-      readonly itemId: string;
-      readonly text: string;
-      readonly type: 'input-transcript';
-    }
-  | {
       readonly citations?: readonly string[];
+      readonly inputTranscript: string;
+      readonly persistenceFailed?: boolean;
       readonly transcript: string;
       readonly type: 'completed';
       readonly usageUsd: number;

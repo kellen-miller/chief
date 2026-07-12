@@ -9,5 +9,6 @@
     "sourceMap": true,
     "types": ["node"]
   },
+  "include": ["src/**/*.ts"],
   "exclude": ["test", "vitest.config.ts"]
 }

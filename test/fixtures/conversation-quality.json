@@ -1,0 +1,26 @@
+[
+  {
+    "content": "The presidential debate focused on education and foreign policy.",
+    "id": "turn-0"
+  },
+  {
+    "content": "<@chief> Give Teddy five college teams: Oregon, New Mexico, Air Force, Navy, and Syracuse.",
+    "id": "turn-1"
+  },
+  {
+    "content": "No military academies for the final pick.",
+    "id": "turn-2"
+  },
+  {
+    "content": "<@chief> What were those outcomes?",
+    "id": "turn-3"
+  },
+  {
+    "content": "This list <@chief> remember no military academy",
+    "id": "turn-4"
+  },
+  {
+    "content": "<@chief> Pick one from the list for Polk.",
+    "id": "turn-5"
+  }
+]

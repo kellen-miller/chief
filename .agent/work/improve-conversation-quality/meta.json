@@ -1,0 +1,27 @@
+{
+  "id": "improve-conversation-quality",
+  "title": "Improve Chief conversation quality",
+  "stage": "implementation",
+  "state": "completed",
+  "created_at": "2026-07-12T17:24:47Z",
+  "updated_at": "2026-07-12T19:20:26Z",
+  "worktree": {
+    "path": "/Users/kellen/development/github/kellen-miller/chief/.worktrees/conversation-quality",
+    "branch": "codex/improve-conversation-quality",
+    "base_ref": "origin/main",
+    "base_commit": "999b190a0d65e89cc2351d53b49c5c21e3f2add3",
+    "upstream": "origin/main"
+  },
+  "artifacts": {
+    "decision": "decision.md",
+    "execplan": "execplan.md",
+    "plan_review": "adversarial/plan-review.md",
+    "plan_rereview": "adversarial/plan-rereview.md",
+    "implementation_review": "adversarial/implementation-review.md"
+  },
+  "context_docs": {
+    "context_md": "skipped",
+    "adrs": "skipped"
+  },
+  "source": "completed grill-plan-build conversation"
+}
