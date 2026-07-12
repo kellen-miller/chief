@@ -63,6 +63,7 @@ describe('repository policy', () => {
     const health = await read('src/health/health-server.ts');
     const runtime = await read('src/runtime.ts');
     const deployScript = await read('scripts/deploy.sh');
+    const runContainerScript = await read('scripts/run-container.sh');
     expect(startup).toContain('google-cloud-ops-agent-bookworm-all main');
     expect(startup).not.toContain('cloud-sdk-bookworm main');
     const staleSourceCleanup = startup.indexOf(
@@ -90,6 +91,10 @@ describe('repository policy', () => {
     expect(startup).not.toContain('docker login');
     expect(deployScript).toContain('DOCKER_CONFIG');
     expect(deployScript).toContain('docker-config.XXXXXX');
+    expect(runContainerScript).toContain(
+      'http://metadata.google.internal/computeMetadata/v1/project/project-id',
+    );
+    expect(runContainerScript).toContain('Metadata-Flavor: Google');
   });
 
   it('uses short-lived scoped WIF without secret or plan artifacts', async () => {
