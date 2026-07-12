@@ -8,13 +8,49 @@ import {
   ToolCallBudget,
 } from '../../src/agent/openai-chief-agent.js';
 import type { ChiefVoiceSession } from '../../src/agent/chief-agent.js';
+import {
+  calculateTextTokenCost,
+  createResearchRequest,
+} from '../../src/agent/openai-research.js';
 
 describe('OpenAiChiefAgent', () => {
+  it('prices cached reads and cache writes separately', () => {
+    expect(
+      calculateTextTokenCost(
+        {
+          inputTokenDetails: [{ cache_write_tokens: 200, cached_tokens: 300 }],
+          inputTokens: 1_000,
+          outputTokens: 500,
+        },
+        {
+          cacheWriteInputPerMillionUsd: 1.25,
+          cachedInputPerMillionUsd: 0.1,
+          inputPerMillionUsd: 1,
+          outputPerMillionUsd: 6,
+        },
+      ),
+    ).toBeCloseTo(0.00378);
+  });
+
+  it('uses low reasoning for hosted research', () => {
+    expect(
+      createResearchRequest('gpt-5.6-luna', 'current facts'),
+    ).toMatchObject({
+      input: 'current facts',
+      max_output_tokens: 800,
+      model: 'gpt-5.6-luna',
+      reasoning: { effort: 'low' },
+      store: false,
+      tools: [{ type: 'web_search' }],
+    });
+  });
+
   it('derives price-aware conservative request reservations', () => {
     const reservations = calculateConservativeReservations({
       searchCall: 0.01,
-      textInput: 0.75,
-      textOutput: 4.5,
+      textCacheWriteInput: 1.25,
+      textInput: 1,
+      textOutput: 6,
       transcriptionFallbackMinute: 0.003,
       transcriptionInput: 1.25,
       transcriptionOutput: 5,
@@ -23,9 +59,9 @@ describe('OpenAiChiefAgent', () => {
       voiceTextInput: 0.6,
       voiceTextOutput: 2.4,
     });
-    expect(reservations.textUsd).toBeCloseTo(0.4104);
+    expect(reservations.textUsd).toBeCloseTo(0.6622);
     expect(reservations.transcriptionUsd).toBeCloseTo(0.06075);
-    expect(reservations.voiceUsd).toBeCloseTo(0.8565);
+    expect(reservations.voiceUsd).toBeCloseTo(0.8765);
   });
 
   it('enforces three searches within six total tool calls', () => {
@@ -155,6 +191,8 @@ describe('OpenAiChiefAgent', () => {
       execute,
       model: 'gpt-5.4-mini',
       pricing: {
+        cachedInputPerMillionUsd: 1,
+        cacheWriteInputPerMillionUsd: 1,
         inputPerMillionUsd: 1,
         outputPerMillionUsd: 2,
         searchCallUsd: 0.01,
@@ -191,6 +229,8 @@ describe('OpenAiChiefAgent', () => {
       execute,
       model: 'gpt-test',
       pricing: {
+        cachedInputPerMillionUsd: 1,
+        cacheWriteInputPerMillionUsd: 1,
         inputPerMillionUsd: 1,
         outputPerMillionUsd: 1,
         searchCallUsd: 0,
@@ -225,6 +265,8 @@ describe('OpenAiChiefAgent', () => {
       execute,
       model: 'gpt-5.4-mini',
       pricing: {
+        cachedInputPerMillionUsd: 1,
+        cacheWriteInputPerMillionUsd: 1,
         inputPerMillionUsd: 1,
         outputPerMillionUsd: 1,
         searchCallUsd: 0,
@@ -270,6 +312,8 @@ describe('OpenAiChiefAgent', () => {
         }),
       model: 'gpt-5.4-mini',
       pricing: {
+        cachedInputPerMillionUsd: 1,
+        cacheWriteInputPerMillionUsd: 1,
         inputPerMillionUsd: 1,
         outputPerMillionUsd: 2,
         searchCallUsd: 0.01,
@@ -304,6 +348,8 @@ describe('OpenAiChiefAgent', () => {
         }),
       model: 'gpt-5.4-mini',
       pricing: {
+        cachedInputPerMillionUsd: 1,
+        cacheWriteInputPerMillionUsd: 1,
         inputPerMillionUsd: 1,
         outputPerMillionUsd: 2,
         searchCallUsd: 0.01,

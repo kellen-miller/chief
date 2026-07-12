@@ -17,6 +17,11 @@ import type {
   VoiceSessionRequest,
 } from './chief-agent.js';
 import {
+  calculateTextTokenCost,
+  createResearchRequest,
+  type TextTokenPricing,
+} from './openai-research.js';
+import {
   MemoryPersistenceError,
   type MemoryService,
 } from '../memory/memory-service.js';
@@ -127,9 +132,7 @@ export interface RealtimeSessionFactoryOptions {
   readonly research?: {
     readonly execute?: RealtimeResearch;
     readonly model: string;
-    readonly pricing: {
-      readonly inputPerMillionUsd: number;
-      readonly outputPerMillionUsd: number;
+    readonly pricing: TextTokenPricing & {
       readonly searchCallUsd: number;
     };
   };
@@ -139,6 +142,7 @@ export interface RealtimeSessionFactoryOptions {
 }
 
 export interface RealtimeResearchResult {
+  readonly inputTokenDetails?: readonly Readonly<Record<string, number>>[];
   readonly inputTokens: number;
   readonly output: string;
   readonly outputTokens: number;
@@ -650,16 +654,21 @@ export function createRealtimeResearchTool(
     research.execute ??
     (async (input: string, signal: AbortSignal) => {
       const response = await client.responses.create(
-        {
-          input,
-          max_output_tokens: 800,
-          model: research.model,
-          store: false,
-          tools: [{ type: 'web_search' }],
-        },
+        createResearchRequest(research.model, input),
         { signal },
       );
       return {
+        inputTokenDetails:
+          response.usage === undefined
+            ? []
+            : [
+                {
+                  cache_write_tokens:
+                    response.usage.input_tokens_details.cache_write_tokens,
+                  cached_tokens:
+                    response.usage.input_tokens_details.cached_tokens,
+                },
+              ],
         inputTokens: response.usage?.input_tokens ?? 0,
         output: response.output_text,
         outputTokens: response.usage?.output_tokens ?? 0,
@@ -680,10 +689,7 @@ export function createRealtimeResearchTool(
       const urls = collectUrls(response.valueForCitations);
       for (const url of urls) state.citations.add(url);
       state.usageUsd +=
-        (response.inputTokens / 1_000_000) *
-          research.pricing.inputPerMillionUsd +
-        (response.outputTokens / 1_000_000) *
-          research.pricing.outputPerMillionUsd +
+        calculateTextTokenCost(response, research.pricing) +
         research.pricing.searchCallUsd;
       return JSON.stringify({ findings: response.output, sources: urls });
     },

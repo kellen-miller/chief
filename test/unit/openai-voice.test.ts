@@ -490,6 +490,8 @@ describe('Realtime provider boundaries', () => {
           execute,
           model: 'gpt-text-test',
           pricing: {
+            cachedInputPerMillionUsd: 1,
+            cacheWriteInputPerMillionUsd: 1,
             inputPerMillionUsd: 1,
             outputPerMillionUsd: 2,
             searchCallUsd: 0.01,

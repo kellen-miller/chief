@@ -18,6 +18,11 @@ import type {
   VoiceSessionRequest,
 } from './chief-agent.js';
 import {
+  calculateTextTokenCost,
+  createResearchRequest,
+  type TextTokenPricing,
+} from './openai-research.js';
+import {
   createOpenAiRealtimeSession,
   createOpenAiTranscriber,
   type RealtimePricing,
@@ -27,6 +32,7 @@ import type { MemoryService } from '../memory/memory-service.js';
 import { safeFetchText } from '../web/safe-fetch.js';
 
 export interface AgentExecutionResult {
+  readonly inputTokenDetails?: readonly Readonly<Record<string, number>>[];
   readonly inputTokens: number;
   readonly output: string | undefined;
   readonly outputTokens: number;
@@ -40,6 +46,7 @@ interface ExecutionRunResult {
   readonly state: {
     readonly usage: {
       readonly inputTokens: number;
+      readonly inputTokensDetails?: readonly Readonly<Record<string, number>>[];
       readonly outputTokens: number;
     };
   };
@@ -52,6 +59,7 @@ export interface TextExecutionDependencies {
     signal: AbortSignal,
   ) => Promise<{
     readonly inputTokens: number;
+    readonly inputTokenDetails?: readonly Readonly<Record<string, number>>[];
     readonly output: string;
     readonly outputTokens: number;
     readonly valueForCitations: unknown;
@@ -63,14 +71,13 @@ export interface TextExecutionDependencies {
   ) => Promise<ExecutionRunResult>;
 }
 
-export interface OpenAiPricing {
-  readonly inputPerMillionUsd: number;
-  readonly outputPerMillionUsd: number;
+export interface OpenAiPricing extends TextTokenPricing {
   readonly searchCallUsd: number;
 }
 
 export interface ConservativeReservationPricing {
   readonly searchCall: number;
+  readonly textCacheWriteInput: number;
   readonly textInput: number;
   readonly textOutput: number;
   readonly transcriptionFallbackMinute: number;
@@ -93,7 +100,7 @@ export function calculateConservativeReservations(
     // These bounds intentionally exceed the hard request limits: 500k primary
     // text input tokens, 1,200 output tokens, and three hosted searches.
     textUsd:
-      0.5 * pricing.textInput +
+      0.5 * Math.max(pricing.textInput, pricing.textCacheWriteInput) +
       0.0012 * pricing.textOutput +
       3 * pricing.searchCall,
     transcriptionUsd:
@@ -105,7 +112,7 @@ export function calculateConservativeReservations(
       0.02 * pricing.voiceAudioOutput +
       0.25 * pricing.voiceTextInput +
       0.01 * pricing.voiceTextOutput +
-      0.01 * pricing.textInput +
+      0.01 * Math.max(pricing.textInput, pricing.textCacheWriteInput) +
       0.01 * pricing.textOutput +
       3 * pricing.searchCall,
   };
@@ -228,8 +235,7 @@ export class OpenAiChiefAgent implements ChiefAgent {
       citations: extractCitations(result.output),
       content: result.output.trim(),
       usageUsd:
-        (result.inputTokens / 1_000_000) * this.#pricing.inputPerMillionUsd +
-        (result.outputTokens / 1_000_000) * this.#pricing.outputPerMillionUsd +
+        calculateTextTokenCost(result, this.#pricing) +
         result.searchCalls * this.#pricing.searchCallUsd,
     };
   }
@@ -276,16 +282,21 @@ export function createExecution(
     dependencies.research ??
     (async (input: string, signal: AbortSignal) => {
       const response = await client.responses.create(
-        {
-          input,
-          max_output_tokens: 800,
-          model,
-          store: false,
-          tools: [{ type: 'web_search' }],
-        },
+        createResearchRequest(model, input),
         { signal },
       );
       return {
+        inputTokenDetails:
+          response.usage === undefined
+            ? []
+            : [
+                {
+                  cache_write_tokens:
+                    response.usage.input_tokens_details.cache_write_tokens,
+                  cached_tokens:
+                    response.usage.input_tokens_details.cached_tokens,
+                },
+              ],
         inputTokens: response.usage?.input_tokens ?? 0,
         output: response.output_text,
         outputTokens: response.usage?.output_tokens ?? 0,
@@ -299,6 +310,7 @@ export function createExecution(
     const calls = new ToolCallBudget(6, 3);
     const signal = AbortSignal.timeout(90_000);
     let researchInputTokens = 0;
+    const researchInputTokenDetails: Readonly<Record<string, number>>[] = [];
     let researchOutputTokens = 0;
     const agent = new Agent({
       instructions: INSTRUCTIONS,
@@ -324,6 +336,9 @@ export function createExecution(
               signal,
             );
             researchInputTokens += response.inputTokens;
+            researchInputTokenDetails.push(
+              ...(response.inputTokenDetails ?? []),
+            );
             researchOutputTokens += response.outputTokens;
             return JSON.stringify({
               findings: response.output,
@@ -358,7 +373,12 @@ export function createExecution(
       maxTurns: 7,
       signal,
     });
+    const inputTokenDetails = [
+      ...(result.state.usage.inputTokensDetails ?? []),
+      ...researchInputTokenDetails,
+    ];
     return {
+      ...(inputTokenDetails.length === 0 ? {} : { inputTokenDetails }),
       inputTokens: result.state.usage.inputTokens + researchInputTokens,
       output:
         typeof result.finalOutput === 'string' ? result.finalOutput : undefined,
