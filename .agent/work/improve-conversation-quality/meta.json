@@ -4,12 +4,12 @@
   "stage": "implementation",
   "state": "active",
   "created_at": "2026-07-12T17:24:47Z",
-  "updated_at": "2026-07-12T20:00:11Z",
+  "updated_at": "2026-07-12T20:49:00Z",
   "worktree": {
     "path": "/Users/kellen/development/github/kellen-miller/chief/.worktrees/conversation-quality",
     "branch": "codex/fix-memory-sensitivity",
     "base_ref": "origin/main",
-    "base_commit": "924bb50d78be94c230776234ca7846139d2ad92d",
+    "base_commit": "b8d774bc0a9207be534cc9279226f4b55d08d0b9",
     "upstream": "origin/main"
   },
   "artifacts": {
@@ -17,7 +17,8 @@
     "execplan": "execplan.md",
     "plan_review": "adversarial/plan-review.md",
     "plan_rereview": "adversarial/plan-rereview.md",
-    "implementation_review": "adversarial/implementation-review.md"
+    "implementation_review": "adversarial/implementation-review.md",
+    "memory_fix_review": "adversarial/memory-fix-review.md"
   },
   "context_docs": {
     "context_md": "skipped",

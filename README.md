@@ -29,8 +29,9 @@ pnpm chief -- smoke
 The tests use fake provider and deployment boundaries and never make paid OpenAI calls. To run the real bot, export the `.env` values and use `pnpm chief -- run`. Register guild commands once with `pnpm chief -- register-commands`.
 
 The optional `pnpm eval:conversation` command uses the configured OpenAI key and
-is paid. It reports only aggregate case names, pass/fail, model, reasoning,
-latency, and token counts; it is never part of pull-request CI.
+is paid. It checks both text conversation quality and memory acceptance/rejection
+on their configured models. It reports only aggregate case names, pass/fail,
+model, reasoning, latency, and token counts; it is never part of pull-request CI.
 
 ## Cost controls
 

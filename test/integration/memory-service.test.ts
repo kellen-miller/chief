@@ -15,27 +15,28 @@ describe('MemoryService', () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
+    const extract = vi.fn(() =>
+      Promise.resolve({
+        proposals: [
+          {
+            action: 'create' as const,
+            canonicalText: 'Do not choose a military academy.',
+            confidence: 0.75,
+            kind: 'preference',
+            sensitivity: 'none' as const,
+            targetMemoryId: null,
+          },
+        ],
+        usageUsd: 0.002,
+      }),
+    );
     const service = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       embed: vi.fn(() =>
         Promise.resolve({ embedding: vector, usageUsd: 0.001 }),
       ),
       estimateUsd: 0.1,
-      extract: vi.fn(() =>
-        Promise.resolve({
-          proposals: [
-            {
-              action: 'create' as const,
-              canonicalText: 'Do not choose a military academy.',
-              confidence: 0.75,
-              kind: 'preference',
-              sensitivity: 'none' as const,
-              targetMemoryId: null,
-            },
-          ],
-          usageUsd: 0.002,
-        }),
-      ),
+      extract,
       store,
     });
     const source = {
@@ -56,6 +57,12 @@ describe('MemoryService', () => {
     });
 
     expect(receipt).toMatchObject({ status: 'created' });
+    expect(extract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: 'Explicit communal memory request: no military academy',
+        explicitIntent: 'remember',
+      }),
+    );
     expect(
       store.retrieve({
         embedding: vector,
@@ -70,6 +77,134 @@ describe('MemoryService', () => {
     ]);
     expect(
       database.prepare('select count(*) from memory_jobs').pluck().get(),
+    ).toBe(0);
+    database.close();
+  });
+
+  it.each([
+    {
+      content: 'Oregon and Syracuse — Chief, remember those teams',
+      expected:
+        'Explicit communal memory request: those teams\nSame-message context before request: Oregon and Syracuse —',
+      name: 'same-message referent',
+    },
+    {
+      content: "We're switching to decaf. Chief remember that.",
+      expected:
+        "Explicit communal memory request: that.\nSame-message context before request: We're switching to decaf.",
+      name: 'bare same-message back-reference',
+    },
+    {
+      content: 'Oregon won the game. Chief remember that game.',
+      expected:
+        'Explicit communal memory request: that game.\nSame-message context before request: Oregon won the game.',
+      name: 'qualified same-message back-reference',
+    },
+    {
+      content: 'Oregon and Syracuse — Chief remember both',
+      expected:
+        'Explicit communal memory request: both\nSame-message context before request: Oregon and Syracuse —',
+      name: 'both-items back-reference',
+    },
+    {
+      content: 'Portland and Seattle — Chief remember the two cities',
+      expected:
+        'Explicit communal memory request: the two cities\nSame-message context before request: Portland and Seattle —',
+      name: 'counted back-reference',
+    },
+    {
+      content:
+        'Chief remember:\n- no military academies\n- prefer state schools',
+      expected:
+        'Explicit communal memory request: - no military academies\n- prefer state schools',
+      name: 'multiline list',
+    },
+    {
+      content: 'Chief, remember: no military academy',
+      expected: 'Explicit communal memory request: no military academy',
+      name: 'punctuated request',
+    },
+  ])('frames a $name without losing content', async ({ content, expected }) => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const extract = vi.fn(() =>
+      Promise.resolve({ proposals: [], usageUsd: 0.002 }),
+    );
+    const service = new MemoryService({
+      budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
+      embed: vi.fn(),
+      estimateUsd: 0.1,
+      extract,
+      store: new SqliteMemoryStore(database),
+    });
+    const source = {
+      content,
+      medium: 'text' as const,
+      occurredAt: 100,
+      platformSourceId: `explicit-framing-${String(content.length)}`,
+      retentionDeadline: 1_000,
+      speakerId: 'president-1',
+    };
+
+    await service.applyExplicit({
+      intent: 'remember',
+      now: 110,
+      source,
+      sourceEventId: service.observeExplicit(source),
+    });
+
+    expect(extract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expected,
+        explicitIntent: 'remember',
+      }),
+    );
+    database.close();
+  });
+
+  it.each([
+    'Chief remember that',
+    'Chief remember that.',
+    'Chief remember: --',
+    'Chief remember both',
+    'Chief remember that game',
+    'Chief remember those teams',
+    'Chief remember the two cities',
+  ])('short-circuits the empty remember command %j', async (content) => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const extract = vi.fn(() =>
+      Promise.resolve({ proposals: [], usageUsd: 0.002 }),
+    );
+    const embed = vi.fn();
+    const service = new MemoryService({
+      budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
+      embed,
+      estimateUsd: 0.1,
+      extract,
+      store: new SqliteMemoryStore(database),
+    });
+    const source = {
+      content,
+      medium: 'text' as const,
+      occurredAt: 100,
+      platformSourceId: 'explicit-empty-framing',
+      retentionDeadline: 1_000,
+      speakerId: 'president-1',
+    };
+
+    await expect(
+      service.applyExplicit({
+        intent: 'remember',
+        now: 110,
+        source,
+        sourceEventId: service.observeExplicit(source),
+      }),
+    ).resolves.toEqual({ status: 'ambiguous' });
+    expect(extract).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
+    expect(
+      database.prepare('select count(*) from memories').pluck().get(),
     ).toBe(0);
     database.close();
   });
