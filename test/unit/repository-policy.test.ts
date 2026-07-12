@@ -53,6 +53,21 @@ describe('repository policy', () => {
     );
   });
 
+  it('lets the plan identity inspect IAM policies without writing them', async () => {
+    const bootstrap = await read('infra/bootstrap/main.tf');
+    const planGrantStart = bootstrap.indexOf(
+      'resource "google_project_iam_member" "plan"',
+    );
+    const applyGrantStart = bootstrap.indexOf(
+      'resource "google_project_iam_member" "apply"',
+    );
+    expect(planGrantStart).toBeGreaterThanOrEqual(0);
+    expect(applyGrantStart).toBeGreaterThan(planGrantStart);
+    const planGrant = bootstrap.slice(planGrantStart, applyGrantStart);
+    expect(planGrant).toContain('"roles/iam.securityReviewer"');
+    expect(planGrant).not.toContain('Admin');
+  });
+
   it('guards protected resources and immutable deployment input', async () => {
     const policy = await read('scripts/check-terraform-plan.sh');
     const deploy = await read('scripts/deploy.sh');

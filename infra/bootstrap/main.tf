@@ -142,6 +142,7 @@ resource "google_storage_bucket_iam_member" "apply_state" {
 
 resource "google_project_iam_member" "plan" {
   for_each = toset([
+    "roles/iam.securityReviewer",
     "roles/serviceusage.serviceUsageConsumer",
     "roles/viewer",
   ])
