@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { detectExplicitMemoryIntent } from '../../src/memory/memory-service.js';
 import { qualifyTextMessage } from '../../src/discord/invocation-policy.js';
 
 const allowed = {
@@ -88,6 +89,40 @@ describe('qualifyTextMessage', () => {
       content: 'Chief, tell Chief what Chief thinks',
       kind: 'request',
       prompt: 'tell Chief what Chief thinks',
+    });
+  });
+
+  it('requires a real mention for a verb-before-address memory command', () => {
+    const candidate = (content: string) => ({
+      authorIsBot: false,
+      channelId: 'main-text',
+      content,
+      guildId: 'presidents',
+      isThread: false,
+      webhookId: null,
+    });
+    const addressed = qualifyTextMessage(
+      allowed,
+      candidate('remember <@chief> ,no military academies'),
+    );
+
+    expect(addressed).toEqual({
+      content: 'remember Chief ,no military academies',
+      kind: 'request',
+      prompt: 'remember Chief ,no military academies',
+    });
+    if (addressed.kind !== 'request') {
+      throw new Error('addressed memory command was not qualified');
+    }
+    expect(detectExplicitMemoryIntent(addressed.content)).toBe('remember');
+    expect(
+      qualifyTextMessage(
+        allowed,
+        candidate('remember Chief, no military academies'),
+      ),
+    ).toEqual({
+      content: 'remember Chief, no military academies',
+      kind: 'observe',
     });
   });
 
