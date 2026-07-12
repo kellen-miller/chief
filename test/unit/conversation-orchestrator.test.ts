@@ -310,20 +310,132 @@ describe('ConversationOrchestrator', () => {
     database.close();
   });
 
-  it('acknowledges explicit memory only after it is committed', async () => {
+  it.each([
+    {
+      content: 'This list Chief remember no military academy',
+      expectedExtraction:
+        'Explicit communal memory request: no military academy',
+      name: 'address before verb',
+    },
+    {
+      content: 'remember Chief ,no military academies',
+      expectedExtraction:
+        'Explicit communal memory request: no military academies',
+      name: 'imperative verb before address',
+    },
+  ])(
+    'acknowledges explicit memory only after commit for $name',
+    async ({ content, expectedExtraction }) => {
+      const database = openChiefDatabase(':memory:');
+      migrateChiefDatabase(database);
+      const store = new SqliteMemoryStore(database);
+      const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+      const answerText = vi.fn<ChiefAgent['answerText']>();
+      const extract = vi.fn(() =>
+        Promise.resolve({
+          proposals: [
+            {
+              action: 'create' as const,
+              canonicalText: 'Do not choose a military academy.',
+              confidence: 0.99,
+              kind: 'preference',
+              sensitivity: 'none' as const,
+              targetMemoryId: null,
+            },
+          ],
+          usageUsd: 0.002,
+        }),
+      );
+      const agent: ChiefAgent = {
+        answerText,
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe: vi.fn(),
+      };
+      const orchestrator = new ConversationOrchestrator({
+        agent,
+        budget,
+        conversation: new ConversationStore(database),
+        memory: new MemoryService({
+          budget,
+          embed: () =>
+            Promise.resolve({
+              embedding: new Float32Array(1_536).fill(0.4),
+              usageUsd: 0.001,
+            }),
+          estimateUsd: 0.1,
+          extract,
+          store,
+        }),
+        now: () => 110,
+      });
+
+      const result = await orchestrator.handleText({
+        content,
+        kind: 'request',
+        occurredAt: 100,
+        platformSourceId: 'explicit-message',
+        prompt: content,
+        requestId: 'explicit-message',
+        speakerId: 'president-1',
+        speakerName: 'President Test',
+      });
+
+      expect(result).toMatchObject({
+        content: 'I have committed that to the record Mr. President',
+        status: 'completed',
+      });
+      expect(
+        database.prepare('select canonical_text from memories').pluck().get(),
+      ).toBe('Do not choose a military academy.');
+      expect(
+        database.prepare('select count(*) from memory_jobs').pluck().get(),
+      ).toBe(0);
+      expect(extract).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expectedExtraction }),
+      );
+      expect(answerText).not.toHaveBeenCalled();
+      database.close();
+    },
+  );
+
+  it('commits imperative correction and forget receipts', async () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
+    const originalId = store.applyMemory({
+      canonicalText: 'Dinner is at six.',
+      confidence: 0.99,
+      embedding: new Float32Array(1_536).fill(0.4),
+      kind: 'plan',
+      provenance: {},
+      sourceEventId: null,
+      timestamp: 1,
+    });
     const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
     const answerText = vi.fn<ChiefAgent['answerText']>();
-    const agent: ChiefAgent = {
-      answerText,
-      interruptVoice: vi.fn(),
-      openVoice: vi.fn(),
-      transcribe: vi.fn(),
-    };
+    const extract = vi.fn(() =>
+      Promise.resolve({
+        proposals: [
+          {
+            action: 'supersede' as const,
+            canonicalText: 'Dinner is at seven.',
+            confidence: 0.99,
+            kind: 'plan',
+            sensitivity: 'none' as const,
+            targetMemoryId: originalId,
+          },
+        ],
+        usageUsd: 0.002,
+      }),
+    );
     const orchestrator = new ConversationOrchestrator({
-      agent,
+      agent: {
+        answerText,
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe: vi.fn(),
+      },
       budget,
       conversation: new ConversationStore(database),
       memory: new MemoryService({
@@ -334,43 +446,62 @@ describe('ConversationOrchestrator', () => {
             usageUsd: 0.001,
           }),
         estimateUsd: 0.1,
-        extract: () =>
-          Promise.resolve({
-            proposals: [
-              {
-                action: 'create',
-                canonicalText: 'Do not choose a military academy.',
-                confidence: 0.99,
-                kind: 'preference',
-                sensitivity: 'none',
-                targetMemoryId: null,
-              },
-            ],
-            usageUsd: 0.002,
-          }),
+        extract,
         store,
       }),
       now: () => 110,
     });
 
-    const result = await orchestrator.handleText({
-      content: 'This list Chief remember no military academy',
-      kind: 'request',
-      occurredAt: 100,
-      platformSourceId: 'explicit-message',
-      prompt: 'This list Chief remember no military academy',
-      requestId: 'explicit-message',
-      speakerId: 'president-1',
-      speakerName: 'President Test',
+    await expect(
+      orchestrator.handleText({
+        content: 'correct Chief, dinner is at seven',
+        kind: 'request',
+        occurredAt: 100,
+        platformSourceId: 'imperative-correct',
+        prompt: 'correct Chief, dinner is at seven',
+        requestId: 'imperative-correct',
+        speakerId: 'president-1',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toMatchObject({
+      content: 'I have corrected the record Mr. President',
+      status: 'completed',
     });
+    expect(extract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: 'correct Chief, dinner is at seven',
+        explicitIntent: 'correct',
+      }),
+    );
+    expect(
+      database
+        .prepare("select canonical_text from memories where state = 'active'")
+        .pluck()
+        .all(),
+    ).toEqual(['Dinner is at seven.']);
 
-    expect(result).toMatchObject({
-      content: 'I have committed that to the record Mr. President',
+    await expect(
+      orchestrator.handleText({
+        content: 'forget Chief: dinner is at seven',
+        kind: 'request',
+        occurredAt: 120,
+        platformSourceId: 'imperative-forget',
+        prompt: 'forget Chief: dinner is at seven',
+        requestId: 'imperative-forget',
+        speakerId: 'president-1',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toMatchObject({
+      content: 'I have removed that from the record Mr. President',
       status: 'completed',
     });
     expect(
-      database.prepare('select canonical_text from memories').pluck().get(),
-    ).toBe('Do not choose a military academy.');
+      database
+        .prepare("select count(*) from memories where state = 'active'")
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(store.findLexical('dinner', 1)).toEqual([]);
     expect(
       database.prepare('select count(*) from memory_jobs').pluck().get(),
     ).toBe(0);

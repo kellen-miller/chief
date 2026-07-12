@@ -377,10 +377,24 @@ function extractForgetTarget(content: string): string | null {
   return match[2]?.replace(/^that\s+/iu, '') ?? null;
 }
 
+const MEMORY_INTENT_SOURCE = '(remember|correct|forget)';
+const OPTIONAL_COURTESY_SOURCE = String.raw`(?:(?:please|kindly)\s+)?`;
+const OPTIONAL_MODAL_SOURCE = String.raw`(?:(?:can|could|would|will)\s+you\s+)?`;
+const ADDRESS_FIRST_MEMORY_INTENT = new RegExp(
+  String.raw`\bchief\s*[,—:-]?\s*${OPTIONAL_COURTESY_SOURCE}${OPTIONAL_MODAL_SOURCE}${OPTIONAL_COURTESY_SOURCE}${MEMORY_INTENT_SOURCE}\b\s*([\s\S]*)`,
+  'iu',
+);
+const IMPERATIVE_MEMORY_INTENT = new RegExp(
+  String.raw`^\s*${OPTIONAL_COURTESY_SOURCE}${MEMORY_INTENT_SOURCE}\b\s+chief(?:\s*[,;:—-]\s*|\s+|$)([\s\S]*)`,
+  'iu',
+);
+
 function explicitMemoryMatch(content: string): RegExpExecArray | null {
-  return /\bchief\s*[,—:-]?\s*(?:(?:please|kindly)\s+)?(?:(?:can|could|would|will)\s+you\s+)?(?:(?:please|kindly)\s+)?(remember|correct|forget)\b\s*([\s\S]*)/iu.exec(
-    content,
-  );
+  const addressFirst = ADDRESS_FIRST_MEMORY_INTENT.exec(content);
+  if (addressFirst !== null) return addressFirst;
+
+  const imperative = IMPERATIVE_MEMORY_INTENT.exec(content);
+  return imperative?.[2]?.trimEnd().endsWith('?') === true ? null : imperative;
 }
 
 function explicitRememberExtractionContent(content: string): string | null {

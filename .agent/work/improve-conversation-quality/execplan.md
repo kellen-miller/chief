@@ -4,7 +4,7 @@ This ExecPlan is a living document. Maintain it in accordance with `.agent/PLANS
 
 ## Purpose / Big Picture
 
-Before the first five milestones, Chief answered each Discord text mention as an isolated request. Ambient messages were queued for long-term memory extraction, but no recent dialogue or Chief reply was supplied to the text model. Production had thirty-six completed memory jobs and zero durable memories, so follow-ups such as “those outcomes” and “pick one for Polk” had neither working conversation nor durable recall. Those milestones are now merged and deployed: recent conversation, truthful explicit-memory receipts, corrected mention handling, and low-reasoning text generation are current behavior. The remaining follow-up defect is that `gpt-5.4-nano` falsely classified the harmless explicit request “remember no military academy” as sensitive.
+Before the first five milestones, Chief answered each Discord text mention as an isolated request. Ambient messages were queued for long-term memory extraction, but no recent dialogue or Chief reply was supplied to the text model. Production had thirty-six completed memory jobs and zero durable memories, so follow-ups such as “those outcomes” and “pick one for Polk” had neither working conversation nor durable recall. Those milestones and the Milestone 6 sensitivity-calibration repair are now merged and deployed. The remaining follow-up defect is deterministic intent recognition: the natural addressed command “remember @Chief, no military academies” is normalized to `remember Chief, no military academies`, but the recognizer accepts only `Chief remember ...`, so ordinary text generation can promise memory without a SQLite commit.
 
 After this work, members of the private allowlisted server can carry one conversation across ambient text, addressed text, and voice. Recent dialogue survives process restarts for seven days, while durable communal memory remains a separate long-lived store. Explicit remember, correct, and forget requests report success only after SQLite commits. Chief understands references to himself, retains a confident dry personality, and still responds only when the existing text or voice addressing policy says he should. The behavior is visible through a deterministic replay of the reported Teddy Roosevelt/JFK/Polk conversation and an optional live-model evaluation.
 
@@ -34,8 +34,16 @@ The design reduces complexity by deepening three existing concepts instead of ad
 - [x] (2026-07-12 20:34Z) Focused re-review found that stripping a leading `that` still lost common back-references and that syntactically empty requests still reached the model. Seven focused framing cases were observed red; the parser now preserves bare/qualified `that`, `both`, and counted referents, while `Chief remember that`, `Chief remember that.`, and repeated separators return `ambiguous` without extraction, embedding, or mutation.
 - [x] (2026-07-12 20:46Z) Final Standards and Spec re-reviews returned zero findings. Final external re-review returned zero critical/high/medium and one non-blocking low finding for contextless plural references; four additional cases were observed red and then passed after `both`, `that game`, `those teams`, and `the two cities` were short-circuited without a model call.
 - [x] (2026-07-12 20:47Z) Passed the fresh pre-publication gate: formatting, ESLint, typecheck, 195 tests, 81.79% branch coverage, build, Actionlint, ShellCheck, Terraform formatting/validation, `git diff --check`, and a hardcoded OpenAI-key scan. All `.agent` work-item changes remain tracked for publication.
-- [ ] Review, publish, deploy, and repeat the explicit-memory production acceptance for the follow-up fix on `codex/fix-memory-sensitivity`.
-- [ ] Commit, push with an explicit remote head ref, open a PR, watch required checks, merge when green, watch the `main` deployment, and perform the production Discord/VM acceptance that can be safely automated or observed.
+- [x] (2026-07-12 20:57Z) PR #13 merged as `a4ddbdb`; the `main` deployment completed, the container became healthy on immutable digest `sha256:4af5800c...`, readiness reported every check true, and migrations `0001_initial` plus `0002_conversation_events` remained applied.
+- [x] (2026-07-12 21:30Z) Post-deploy smoke reproduced a second explicit-intent defect with “remember @Chief, no military academies.” Invocation normalized it to `remember Chief, no military academies`; the recognizer returned no intent because it required Chief before the verb, the text model emitted a non-committed promise, and read-only production counts remained zero durable memories.
+- [x] (2026-07-12 21:35Z) Milestone 7 red-green implementation added the exact remember form plus imperative correction and forget forms. Four focused tests failed against the deployed matcher, then 38 unit tests, 20 memory-service integration tests, typechecking, and focused ESLint passed after one shared matcher gained the verb-before-address grammar.
+- [x] (2026-07-12 21:35Z) Fresh-eyes recent-work review found no additional correctness or complexity issue: mention qualification remains the addressing authority, both address orders converge on one parser/mutation path, and the general text agent is bypassed. Usefulness score: 8/10 - verified the fix at the Discord-normalized/orchestrator boundary rather than only testing the regular expression.
+- [x] (2026-07-12 21:43Z) Formal review found possessive and payload-bearing question ambiguity, missing correction/forget mutation coverage, a missing raw Discord boundary proof, duplicated grammar fragments, stale plan wording, and one formatting failure. Seven ambiguity cases were added red-first; the parser now requires a valid delimiter after `Chief` and rejects terminal questions in the imperative form, shared grammar fragments prevent drift, and 40 focused unit plus 20 memory-service integration tests, typechecking, focused ESLint, and the formatting gate pass.
+- [x] (2026-07-12 21:45Z) Final Standards and Spec re-reviews returned zero findings. The fresh repository gate passed formatting, ESLint, typechecking, 201 tests, 82.20% branch coverage, build, Actionlint, ShellCheck, Terraform formatting/validation, and `git diff --check`.
+- [x] (2026-07-12 21:45Z) The optional paid evaluation passed all three text cases and all three sensitive-rejection trials on both runs. One harmless-preference trial failed on the first run; the immediate fresh rerun passed three of three, so the required passing aggregate was obtained while the observed model nondeterminism remains recorded.
+- [x] (2026-07-12 21:57Z) The external adversarial reviewer remained alive for more than eleven minutes without emitting a result and was stopped at the announced ceiling. `adversarial/memory-intent-review.md` records it as unavailable, not approved; the two independent formal reviews and fresh deterministic gate remain the available review evidence.
+- [ ] Publish, deploy, and repeat production acceptance for Milestone 7 on `codex/fix-imperative-memory-intent`.
+- [ ] Complete the documented two-human voice acceptance and record final production evidence.
 
 ## Surprises & Discoveries
 
@@ -59,6 +67,14 @@ The design reduces complexity by deepening three existing concepts instead of ad
   Evidence: Adversarial review traced `scripts/evaluate-conversation-quality.ts` to `createExecution` and the text model. The script now directly evaluates the memory adapter on both safe and sensitive synthetic cases.
 - Observation: Removing a leading `that` before referent detection converted “We are switching to decaf. Chief remember that.” into a punctuation-only request and dropped the fact.
   Evidence: Focused adversarial re-review reproduced the loss. New integration cases retain bare and qualified back-references and short-circuit the same forms when no preceding fact exists.
+- Observation: Discord mention normalization correctly preserves a non-leading mention as the literal word `Chief`, but explicit-memory recognition encoded only one address order.
+  Evidence: The live message placed the mention after `remember`; `qualifyTextMessage` produced `remember Chief, no military academies`, while `explicitMemoryMatch` required `Chief` before `(remember|correct|forget)`. The regular text path replied and production still contained zero memories.
+- Observation: A word boundary alone after the normalized address treats the apostrophe in `Remember Chief's last answer?` as a valid command boundary.
+  Evidence: The new ambiguity test failed red with intent `remember`; requiring punctuation, whitespace, or end-of-input after `Chief` rejects possessive and question forms while retaining the reported command.
+- Observation: A valid whitespace delimiter is still insufficient to distinguish an imperative from an elliptical question such as “Remember Chief from college?”
+  Evidence: Three payload-bearing terminal-question cases failed red; the imperative grammar now rejects a terminal question mark while address-first requests such as “Chief, can you remember ...?” retain their existing semantics.
+- Observation: The optional `gpt-5.4-nano` harmless-preference evaluation remains probabilistic despite unchanged framing and prompt code.
+  Evidence: The first final run passed two of three harmless trials; an immediate fresh rerun passed three of three. Both runs passed every text and synthetic-sensitive case, and the deterministic 201-test gate remained green.
 
 ## Decision Log
 
@@ -95,10 +111,13 @@ The design reduces complexity by deepening three existing concepts instead of ad
 - Decision: Preserve referential `that` rather than treating it as a removable filler word, and short-circuit unresolved or punctuation-only payloads before extraction.
   Rationale: “Remember that” is meaningful only with preceding same-message context; without that context it cannot truthfully create a durable memory and should return `ambiguous` without spending model budget.
   Date/Author: 2026-07-12 / Codex resolving focused formal and adversarial re-review.
+- Decision: Recognize explicit memory verbs on either side of the normalized `Chief` address while keeping Discord's real bot-mention qualification as the authority for whether a message is addressed.
+  Rationale: Mention placement is presentation syntax, not memory intent. The orchestrator calls intent detection only for an allowlisted request containing the actual bot mention, so supporting `Chief remember ...` and `remember Chief, ...` does not broaden ambient response gating.
+  Date/Author: 2026-07-12 / Codex from post-deploy root-cause evidence.
 
 ## Outcomes & Retrospective
 
-The five original implementation milestones are merged and deployed. Production text acceptance proves shared follow-up context and constraint preservation, but it exposed an explicit-memory extraction calibration bug. The follow-up now has red-green framing coverage, isolated prompt policy, repeatable real-model acceptance/rejection evidence, clean final Standards/Spec review, no external review blockers, and a passing local repository gate. Publication, redeployment, repeated explicit-memory acceptance, and the documented voice gate remain before final closeout.
+The five original milestones and Milestone 6 are merged and deployed. Shared recent context, constraint preservation, model calibration, and safe/sensitive evaluation are proven, but the first post-deploy durable-memory smoke exposed an address-order gap before any memory row was created. Milestone 7 implementation and formal review are complete, and the attempted external review is recorded as unavailable; publication, repeated durable-memory and Polk-selection smoke, and the documented voice gate remain before final closeout.
 
 ## Context and Orientation
 
@@ -106,7 +125,7 @@ The repository is a Node 24, TypeScript, pnpm application. `src/discord/gateway.
 
 `src/memory/database.ts` now runs immutable migrations `0001_initial` and `0002_conversation_events`. `src/conversation/conversation-store.ts` owns the seven-day bounded recent timeline. `src/memory/memory-store.ts` persists raw sources, restart-safe jobs, durable memories, FTS5 rows, and sqlite-vec embeddings. `src/memory/memory-service.ts` is the single public durable-memory boundary: it owns automatic work, explicit remember/correct/forget sequencing, confidence floors, sensitivity rejection, embeddings, atomic mutations, and truthful receipts. The former `memory-worker.ts` and `memory-context.ts` modules no longer exist.
 
-The active Milestone 6 repair is confined to `MemoryService` and `src/memory/openai-memory.ts`. `MemoryService` deterministically converts a syntactically valid remember command into a concise extraction payload while preserving multiline content and same-message referents; syntactically empty requests return `ambiguous` before any model call. The OpenAI adapter selects a dedicated calibrated agent only for `remember`, leaving the original automatic/correction prompt unchanged. `scripts/evaluate-conversation-quality.ts` provides the optional paid real-model check for both safe preference acceptance and synthetic credential rejection.
+Milestone 6 is deployed: `MemoryService` deterministically converts a syntactically valid remember command into a concise extraction payload while preserving multiline content and same-message referents, and the OpenAI adapter isolates calibrated remember behavior from automatic extraction and corrections. Active Milestone 7 changes only the shared explicit-intent matcher and its tests so the existing parser and truthful receipt path also receive imperative forms in which the normalized `Chief` address follows the memory verb.
 
 In this plan, a conversation event is one normalized human or Chief message stored for short-term dialogue. A durable memory is a long-lived canonical fact stored in the existing `memories` table. An as-of context contains only conversation events with IDs earlier than the current human request, preventing later concurrently received messages from leaking into an earlier model call. Approximate tokens are a deterministic conservative character-based estimate used only to bound recent history.
 
@@ -193,6 +212,14 @@ Extend `test/integration/memory-service.test.ts` with the production sentence, a
 
 Run the focused tests and typecheck, then the optional paid evaluation from the owner-controlled `.env`. Acceptance is three of three safe creations at `sensitivity: none` and confidence at least `0.90`, three of three sensitive classifications for the synthetic credential, and all text cases passing. Then run formal and adversarial focused re-review before the full repository gate and production rollout.
 
+### Milestone 7: Make explicit intent independent of mention order
+
+Treat the post-deploy reply “I’ll use that rule in this chat” as a false acknowledgement because production still had zero durable memories. Add the exact normalized message `remember Chief, no military academies` to `test/unit/memory-intent.test.ts` and to the existing `ConversationOrchestrator` explicit-memory test. The vertical test must prove that the extractor receives only `Explicit communal memory request: no military academies`, SQLite commits the proposal before the deterministic receipt, no automatic memory job is created, and the general text agent is never called. Observe both tests fail against the deployed matcher before editing production code.
+
+In `src/memory/memory-service.ts`, deepen `explicitMemoryMatch` rather than adding a Discord-specific special case. Preserve the current address-first grammar and add the imperative grammar in which `remember`, `correct`, or `forget` immediately precedes the normalized `Chief` address and optional punctuation. Both grammars must return the same intent and payload capture so remember framing, lexical forget targeting, correction extraction, confidence floors, atomic commits, and receipts remain one path. Do not weaken allowlisting or mention-only response policy: `ConversationOrchestrator` still invokes this matcher only for a request that `qualifyTextMessage` proved contains the actual bot-user mention.
+
+Run focused intent, invocation-policy, orchestrator, and memory-service tests plus typechecking. Review the diff formally and adversarially for command/question ambiguity, correction/forget regressions, payload loss, and false acknowledgement. Run the full repository and optional paid gates, publish with the explicit branch ref `codex/fix-imperative-memory-intent`, merge only after Format/Lint/Test/Build pass, watch `main` deploy, and repeat the exact Discord command. Acceptance requires the deterministic committed receipt and a durable-memory count increase from zero without reading memory content; the subsequent Polk selection must come from the supplied list and exclude Navy and Air Force.
+
 ## Concrete Steps
 
 All commands run from `/Users/kellen/development/github/kellen-miller/chief/.worktrees/conversation-quality` unless a command says otherwise.
@@ -223,7 +250,7 @@ The command must not be added to required CI. Record only case names, pass/fail 
 
 When implementation and review are complete, commit with Conventional Commits, push explicitly, and create a PR:
 
-    git push origin HEAD:refs/heads/codex/fix-memory-sensitivity
+    git push origin HEAD:refs/heads/codex/fix-imperative-memory-intent
 
 Watch Format, Lint, Test, Build, and any triggered Terraform Plan job. Merge only when required checks pass and review findings are resolved. Then watch the `main` deploy job through completion and run the non-content VM health/database checks plus the manual Discord scenarios in `docs/manual-acceptance.md` before declaring production acceptance.
 
@@ -326,3 +353,15 @@ Plan revision note (2026-07-12T20:34:00Z): Rewrote Purpose and Context for the m
 Plan revision note (2026-07-12T20:46:30Z): Recorded clean final Standards/Spec re-reviews, the external review's sole non-blocking contextless-group-reference finding, and the red-green repair that now short-circuits those unresolved forms before extraction.
 
 Plan revision note (2026-07-12T20:47:54Z): Recorded the fresh 195-test pre-publication gate and updated Outcomes to distinguish locally verified completion from the remaining PR, deployment, text smoke, and voice acceptance work.
+
+Plan revision note (2026-07-12T21:30:45Z): Recorded PR #13 and deployment evidence, replaced the completed Milestone 6 rollout gap with Milestone 7, and grounded the new work in the live `remember @Chief` address-order failure, zero-memory database evidence, and the existing mention-only qualification boundary.
+
+Plan revision note (2026-07-12T21:35:00Z): Recorded Milestone 7's four-test red state, focused green evidence, and fresh-eyes review result while keeping the work item active until review, rollout, text acceptance, and voice acceptance are complete.
+
+Plan revision note (2026-07-12T21:41:00Z): Resolved formal review findings with red-green command/question ambiguity tests, imperative correction and forget mutation coverage, raw mention-boundary coverage, shared grammar fragments, and consistent remaining-work statements.
+
+Plan revision note (2026-07-12T21:43:00Z): Extended the ambiguity repair to payload-bearing elliptical questions, recorded the second red-green cycle, and cleared the formatting gate reported by formal re-review.
+
+Plan revision note (2026-07-12T21:45:00Z): Recorded zero-finding final formal re-reviews, the fresh 201-test and infrastructure gate, and both the initially mixed and subsequently passing optional paid-model evaluation results.
+
+Plan revision note (2026-07-12T21:57:00Z): Recorded the bounded external adversarial review as unavailable after it emitted no result, preserving the clean two-review and deterministic-gate evidence without claiming third-party approval.
