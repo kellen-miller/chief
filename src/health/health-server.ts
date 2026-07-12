@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http';
 
 export interface HealthServerOptions {
   readonly check: () => Promise<Readonly<Record<string, boolean>>>;
+  readonly host?: string;
   readonly port: number;
 }
 
@@ -32,7 +33,11 @@ export class HealthServer {
     });
     await new Promise<void>((resolve, reject) => {
       this.#server?.once('error', reject);
-      this.#server?.listen(this.#options.port, '127.0.0.1', resolve);
+      this.#server?.listen(
+        this.#options.port,
+        this.#options.host ?? '127.0.0.1',
+        resolve,
+      );
     });
   }
 

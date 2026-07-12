@@ -55,6 +55,8 @@ describe('repository policy', () => {
     const startup = await read('infra/app/templates/startup.sh.tftpl');
     const deploy = await read('.github/workflows/deploy.yml');
     const app = await read('infra/app/main.tf');
+    const health = await read('src/health/health-server.ts');
+    const runtime = await read('src/runtime.ts');
     expect(startup).toContain('google-cloud-ops-agent-bookworm-all main');
     expect(startup).not.toContain('cloud-sdk-bookworm main');
     const staleSourceCleanup = startup.indexOf(
@@ -73,6 +75,8 @@ describe('repository policy', () => {
     expect(deploy).toContain('google-startup-scripts.service');
     expect(deploy).toContain("--image '${{ steps.image.outputs.reference }}'");
     expect(deploy).not.toContain("--image='");
+    expect(health).toContain("this.#options.host ?? '127.0.0.1'");
+    expect(runtime).toContain("host: '0.0.0.0'");
   });
 
   it('uses short-lived scoped WIF without secret or plan artifacts', async () => {
