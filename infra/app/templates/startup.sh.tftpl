@@ -44,32 +44,12 @@ DISCORD_APPLICATION_ID=${discord_application_id}
 DISCORD_GUILD_ID=${discord_guild_id}
 DISCORD_MAIN_TEXT_CHANNEL_ID=${discord_text_channel_id}
 DISCORD_MAIN_VOICE_CHANNEL_ID=${discord_voice_channel_id}
+GCP_PROJECT_ID=${project_id}
 EOF
 chmod 0640 /etc/chief/chief.env
 
 cat >/opt/chief/run-container.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-source /etc/chief/chief.env
-source /var/lib/chief/deploy.env
-install -d -m 0700 /run/chief
-umask 077
-DISCORD_TOKEN="$(gcloud secrets versions access latest --project='${project_id}' --secret=chief-discord-token)"
-OPENAI_API_KEY="$(gcloud secrets versions access latest --project='${project_id}' --secret=chief-openai-api-key)"
-{
-  cat /etc/chief/chief.env
-  printf 'DISCORD_TOKEN=%s\n' "$DISCORD_TOKEN"
-  printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
-} >/run/chief/runtime.env
-gcloud auth print-access-token | docker login --username oauth2accesstoken --password-stdin '${region}-docker.pkg.dev'
-docker rm --force chief >/dev/null 2>&1 || true
-exec docker run --name chief \
-  --env-file /run/chief/runtime.env \
-  --publish 127.0.0.1:8080:8080 \
-  --read-only \
-  --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-  --volume /var/lib/chief:/var/lib/chief \
-  "$IMAGE"
+${run_container_script}
 EOF
 chmod 0750 /opt/chief/run-container.sh
 

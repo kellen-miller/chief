@@ -17,6 +17,7 @@ REGISTRY="${CANDIDATE_IMAGE%%/*}"
 DATA_DIR="${CHIEF_DATA_DIR:-/var/lib/chief}"
 DATA_UID="${CHIEF_DATA_UID:-1000}"
 DATA_GID="${CHIEF_DATA_GID:-1000}"
+RUNTIME_DIR="${CHIEF_RUNTIME_DIR:-/run/chief}"
 STATE_FILE="$DATA_DIR/deploy.env"
 DATABASE="$DATA_DIR/chief.db"
 BACKUP_DIR="$DATA_DIR/pre-deploy"
@@ -28,6 +29,14 @@ if [[ -f "$STATE_FILE" ]]; then
   PREVIOUS_IMAGE="$(sed -n 's/^IMAGE=//p' "$STATE_FILE")"
 fi
 
+docker logout "$REGISTRY" >/dev/null 2>&1 || true
+install -d -m 0700 "$RUNTIME_DIR"
+DOCKER_CONFIG="$(mktemp -d "$RUNTIME_DIR/docker-config.XXXXXX")"
+export DOCKER_CONFIG
+cleanup() {
+  rm -rf "$DOCKER_CONFIG"
+}
+trap cleanup EXIT
 gcloud auth print-access-token \
   | docker login --username oauth2accesstoken --password-stdin "$REGISTRY"
 docker pull "$CANDIDATE_IMAGE"

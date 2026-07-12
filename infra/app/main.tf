@@ -246,7 +246,7 @@ resource "google_compute_instance" "chief" {
       discord_text_channel_id  = var.discord_text_channel_id
       discord_voice_channel_id = var.discord_voice_channel_id
       project_id               = var.project_id
-      region                   = var.region
+      run_container_script     = file("${path.module}/../../scripts/run-container.sh")
     })
   }
 

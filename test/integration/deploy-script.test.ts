@@ -1,5 +1,12 @@
 import { spawn } from 'node:child_process';
-import { chmod, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import {
+  access,
+  chmod,
+  mkdtemp,
+  mkdir,
+  readFile,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -22,10 +29,25 @@ describe('deploy transaction', () => {
       'migrated',
     );
     const commands = await readFile(fixture.commandLog, 'utf8');
+    expect(commands.indexOf('docker logout')).toBeGreaterThanOrEqual(0);
+    expect(commands.indexOf('docker logout')).toBeLessThan(
+      commands.indexOf('docker login'),
+    );
     expect(commands.indexOf('docker login')).toBeGreaterThanOrEqual(0);
     expect(commands.indexOf('docker login')).toBeLessThan(
       commands.indexOf('docker pull'),
     );
+    const login = commands
+      .split('\n')
+      .find((command) => command.startsWith('docker login'));
+    const dockerConfig = / config=(.+)$/u.exec(login ?? '')?.[1] ?? '';
+    expect(dockerConfig.startsWith(`${fixture.runtime}/docker-config.`)).toBe(
+      true,
+    );
+    expect(dockerConfig).not.toBe('');
+    await expect(access(dockerConfig)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 
   it('restores the old digest and database when candidate health fails', async () => {
@@ -47,13 +69,16 @@ async function createFixture(failCandidate: boolean): Promise<{
   readonly commandLog: string;
   readonly data: string;
   readonly failCandidate: boolean;
+  readonly runtime: string;
 }> {
   const root = await mkdtemp(join(tmpdir(), 'chief-deploy-test-'));
   const bin = join(root, 'bin');
   const commandLog = join(root, 'commands.log');
   const data = join(root, 'data');
+  const runtime = join(root, 'run');
   await mkdir(bin);
   await mkdir(data);
+  await mkdir(runtime);
   await writeFile(join(data, 'chief.db'), 'original');
   await writeFile(join(data, 'deploy.env'), `IMAGE=${previous}\n`);
   await executable(
@@ -62,7 +87,7 @@ async function createFixture(failCandidate: boolean): Promise<{
 set -euo pipefail
 command_name="\${1:-}"
 shift || true
-printf 'docker %s\n' "$command_name" >>"$COMMAND_LOG"
+printf 'docker %s config=%s\n' "$command_name" "\${DOCKER_CONFIG:-}" >>"$COMMAND_LOG"
 case "$command_name" in
   login) cat >/dev/null; exit 0 ;;
   pull|stop) exit 0 ;;
@@ -100,7 +125,7 @@ fi
 exit 0
 `,
   );
-  return { bin, commandLog, data, failCandidate };
+  return { bin, commandLog, data, failCandidate, runtime };
 }
 
 async function executable(path: string, content: string): Promise<void> {
@@ -113,6 +138,7 @@ async function runDeploy(fixture: {
   readonly commandLog: string;
   readonly data: string;
   readonly failCandidate: boolean;
+  readonly runtime: string;
 }): Promise<{ readonly code: number | null; readonly stderr: string }> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn('bash', [deployScript, '--image', candidate], {
@@ -127,7 +153,9 @@ async function runDeploy(fixture: {
           typeof process.getuid === 'function'
             ? process.getuid().toString()
             : '1000',
+        CHIEF_RUNTIME_DIR: fixture.runtime,
         COMMAND_LOG: fixture.commandLog,
+        DOCKER_CONFIG: '',
         FAIL_CANDIDATE: fixture.failCandidate ? '1' : '0',
         PATH: `${fixture.bin}:${process.env.PATH ?? ''}`,
       },
