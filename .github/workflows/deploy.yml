@@ -1,0 +1,99 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: chief-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy production
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      TF_IN_AUTOMATION: 'true'
+      TF_VAR_alert_email: ${{ vars.CHIEF_ALERT_EMAIL }}
+      TF_VAR_backup_bucket_name: ${{ vars.CHIEF_BACKUP_BUCKET }}
+      TF_VAR_discord_application_id: ${{ vars.DISCORD_APPLICATION_ID }}
+      TF_VAR_discord_guild_id: ${{ vars.DISCORD_GUILD_ID }}
+      TF_VAR_discord_text_channel_id: ${{ vars.DISCORD_MAIN_TEXT_CHANNEL_ID }}
+      TF_VAR_discord_voice_channel_id: ${{ vars.DISCORD_MAIN_VOICE_CHANNEL_ID }}
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_region: ${{ vars.GCP_REGION }}
+      TF_VAR_zone: ${{ vars.GCP_ZONE }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_PRODUCTION_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_TF_APPLY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
+        with:
+          terraform_version: 1.15.8
+
+      - name: Plan and apply the merged commit
+        working-directory: infra/app
+        run: |
+          terraform init -reconfigure \
+            -backend-config="bucket=${{ vars.GCP_TERRAFORM_STATE_BUCKET }}" \
+            -backend-config="prefix=production/app"
+          terraform plan -input=false -lock-timeout=5m -out=tfplan
+          terraform show -json tfplan > tfplan.json
+          ../../scripts/check-terraform-plan.sh tfplan.json
+          terraform apply -input=false -lock-timeout=5m tfplan
+
+      - name: Authenticate deployment identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_PRODUCTION_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Build and publish immutable image
+        id: image
+        env:
+          IMAGE_REPOSITORY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/chief/chief
+        run: |
+          gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+          docker build --platform linux/amd64 --tag "$IMAGE_REPOSITORY:${GITHUB_SHA}" .
+          docker push "$IMAGE_REPOSITORY:${GITHUB_SHA}"
+          digest="$(gcloud artifacts docker images describe "$IMAGE_REPOSITORY:${GITHUB_SHA}" --format='value(image_summary.digest)')"
+          echo "reference=$IMAGE_REPOSITORY@$digest" >>"$GITHUB_OUTPUT"
+
+      - name: Install deployment transaction
+        run: |
+          gcloud compute scp scripts/deploy.sh \
+            "chief:/tmp/chief-deploy.sh" \
+            --project="${{ vars.GCP_PROJECT_ID }}" \
+            --zone="${{ vars.GCP_ZONE }}" \
+            --tunnel-through-iap --quiet
+          gcloud compute ssh chief \
+            --project="${{ vars.GCP_PROJECT_ID }}" \
+            --zone="${{ vars.GCP_ZONE }}" \
+            --tunnel-through-iap --quiet \
+            --command="sudo install -m 0750 /tmp/chief-deploy.sh /opt/chief/deploy.sh && sudo /opt/chief/deploy.sh --image='${{ steps.image.outputs.reference }}'"
+
+      - name: Record deployment evidence
+        env:
+          IMAGE_REFERENCE: ${{ steps.image.outputs.reference }}
+        run: |
+          {
+            echo '### Chief production deployment'
+            echo "- Image: \`$IMAGE_REFERENCE\`"
+            echo '- Terraform plan and apply used the same saved plan from this merged commit.'
+          } >>"$GITHUB_STEP_SUMMARY"

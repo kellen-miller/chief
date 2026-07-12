@@ -1,0 +1,13 @@
+.agent
+.git
+.github
+.tmp
+.worktrees
+dist
+docs
+infra
+node_modules
+scripts
+test
+*.db
+*.tfstate*

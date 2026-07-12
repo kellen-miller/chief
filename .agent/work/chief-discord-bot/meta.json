@@ -1,0 +1,25 @@
+{
+  "id": "chief-discord-bot",
+  "title": "Build Chief Discord bot",
+  "stage": "implementation",
+  "state": "completed",
+  "created_at": "2026-07-11T13:56:09Z",
+  "updated_at": "2026-07-11T18:39:59Z",
+  "worktree": {
+    "path": "/Users/kellen/development/github/kellen-miller/chief/.worktrees/chief-discord-bot",
+    "branch": "codex/chief-discord-bot",
+    "base_ref": "main",
+    "upstream": null
+  },
+  "artifacts": {
+    "decision": "decision.md",
+    "execplan": "execplan.md",
+    "implementation_review": "adversarial/implementation-rereview-5.md",
+    "plan_review": "adversarial/plan-review.md"
+  },
+  "context_docs": {
+    "context_md": "skipped",
+    "adrs": "skipped"
+  },
+  "source": "completed grill conversation"
+}
