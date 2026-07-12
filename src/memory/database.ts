@@ -81,6 +81,48 @@ create table maintenance_runs (
 const MIGRATION_ID = '0001_initial';
 const MIGRATION_CHECKSUM = 'chief-0001-v3';
 
+const CONVERSATION_MIGRATION = `
+create table conversation_events (
+  id integer primary key,
+  platform_event_id text not null unique,
+  request_id text,
+  role text not null check (role in ('human', 'chief')),
+  speaker_id text,
+  speaker_name text,
+  medium text not null check (medium in ('text', 'voice')),
+  content text not null,
+  occurred_at integer not null,
+  retention_deadline integer not null
+);
+
+create index conversation_events_retention_idx
+  on conversation_events(retention_deadline);
+create index conversation_events_recent_idx
+  on conversation_events(id desc);
+`;
+
+interface Migration {
+  readonly checksum: string;
+  readonly id: string;
+  readonly sql: string;
+}
+
+const MIGRATIONS: readonly Migration[] = [
+  {
+    checksum: MIGRATION_CHECKSUM,
+    id: MIGRATION_ID,
+    sql: INITIAL_MIGRATION.replace(
+      /create table schema_migrations[\s\S]*?;\n/u,
+      '',
+    ),
+  },
+  {
+    checksum: 'chief-0002-v1',
+    id: '0002_conversation_events',
+    sql: CONVERSATION_MIGRATION,
+  },
+];
+
 export function openChiefDatabase(path: string): Database.Database {
   const database = new Database(path);
   sqliteVec.load(database);
@@ -101,27 +143,24 @@ export function migrateChiefDatabase(database: Database.Database): void {
   database.exec(
     'create table if not exists schema_migrations (id text primary key, checksum text not null, applied_at integer not null)',
   );
-  const applied = database
-    .prepare('select checksum from schema_migrations where id = ?')
-    .get(MIGRATION_ID) as { checksum: string } | undefined;
-  if (applied !== undefined) {
-    if (applied.checksum !== MIGRATION_CHECKSUM) {
-      throw new Error(`migration checksum mismatch for ${MIGRATION_ID}`);
+  for (const migration of MIGRATIONS) {
+    const applied = database
+      .prepare('select checksum from schema_migrations where id = ?')
+      .get(migration.id) as { checksum: string } | undefined;
+    if (applied !== undefined) {
+      if (applied.checksum !== migration.checksum) {
+        throw new Error(`migration checksum mismatch for ${migration.id}`);
+      }
+      continue;
     }
-    return;
-  }
 
-  database.transaction(() => {
-    database.exec(
-      INITIAL_MIGRATION.replace(
-        /create table schema_migrations[\s\S]*?;\n/u,
-        '',
-      ),
-    );
-    database
-      .prepare(
-        'insert into schema_migrations (id, checksum, applied_at) values (?, ?, ?)',
-      )
-      .run(MIGRATION_ID, MIGRATION_CHECKSUM, Date.now());
-  })();
+    database.transaction(() => {
+      database.exec(migration.sql);
+      database
+        .prepare(
+          'insert into schema_migrations (id, checksum, applied_at) values (?, ?, ?)',
+        )
+        .run(migration.id, migration.checksum, Date.now());
+    })();
+  }
 }

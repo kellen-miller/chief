@@ -13,7 +13,6 @@ import type { Logger } from 'pino';
 
 import type { ConversationOrchestrator } from '../app/conversation-orchestrator.js';
 import { roll } from '../commands/roll.js';
-import type { SqliteMemoryStore } from '../memory/memory-store.js';
 import { DiscordTextController } from './text-controller.js';
 
 export interface GatewayVoiceController {
@@ -26,7 +25,6 @@ export interface DiscordGatewayOptions {
   readonly client?: Client;
   readonly guildId: string;
   readonly logger: Logger;
-  readonly memory: SqliteMemoryStore;
   readonly orchestrator: ConversationOrchestrator;
   readonly token: string;
   readonly voice: GatewayVoiceController;
@@ -84,9 +82,6 @@ export class DiscordGateway {
       },
       {
         handleText: (turn) => this.#options.orchestrator.handleText(turn),
-        observe: (source) => {
-          this.#options.memory.observe(source);
-        },
       },
     );
     this.#ready = true;
@@ -104,6 +99,10 @@ export class DiscordGateway {
     let replied = false;
     await text.handle(
       {
+        authorDisplayName:
+          message.member?.displayName ??
+          message.author.globalName ??
+          message.author.username,
         authorId: message.author.id,
         authorIsBot: message.author.bot,
         channelId: message.channelId,

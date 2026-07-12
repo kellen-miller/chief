@@ -19,9 +19,9 @@ import { ChannelType, type Guild } from 'discord.js';
 
 import type { ConversationOrchestrator } from '../app/conversation-orchestrator.js';
 import type { GatewayVoiceController } from '../discord/gateway.js';
-import type { SourceObservation } from '../memory/memory-store.js';
 import { discordPcmToRealtime, realtimePcmToDiscord } from './pcm.js';
 import {
+  type HumanVoiceObservation,
   VoiceSessionManager,
   type VoiceUtterance,
 } from './voice-session-manager.js';
@@ -34,7 +34,6 @@ const MAX_UTTERANCE_BYTES = 48_000 * 2 * 2 * 90;
 
 export interface DiscordVoiceControllerOptions {
   readonly fallbackSuffixPcm?: Buffer;
-  readonly observe?: (source: SourceObservation) => void;
   readonly orchestrator: ConversationOrchestrator;
   readonly textChannelId: string;
   readonly voiceChannelId: string;
@@ -64,11 +63,21 @@ export class DiscordVoiceController implements GatewayVoiceController {
         this.#interruptPlayback();
       },
       observe: (turn) => {
-        this.#observeTranscript(turn.speakerId, turn.transcript);
+        return this.#observeTranscript(turn.speakerId, turn.transcript);
+      },
+      persistenceFailure: () => {
+        void this.#postStatus(
+          'I lost the thread and could not answer, Mr. President',
+        );
       },
       submit: async (turn) => {
         this.#resetInactivityTimer();
-        await this.#submitTurn(turn.pcm, turn.speakerId, turn.transcript);
+        await this.#submitTurn(
+          turn.pcm,
+          turn.speakerId,
+          turn.transcript,
+          turn.humanObservation,
+        );
         this.#resetInactivityTimer();
       },
       transcribe: async (pcm) =>
@@ -167,6 +176,7 @@ export class DiscordVoiceController implements GatewayVoiceController {
     pcm: ArrayBuffer,
     speakerId: string,
     groupTranscript?: string,
+    humanObservation?: HumanVoiceObservation,
   ): Promise<void> {
     const playback = new PassThrough();
     this.#playback = playback;
@@ -178,7 +188,15 @@ export class DiscordVoiceController implements GatewayVoiceController {
         ? undefined
         : new VoiceSuffixEnforcer(this.#options.fallbackSuffixPcm);
     const result = await this.#options.orchestrator.handleVoice(
-      { pcm, requestId: `voice-${speakerId}-${Date.now().toString()}` },
+      {
+        ...(groupTranscript === undefined ? {} : { groupTranscript }),
+        ...(humanObservation === undefined ? {} : { humanObservation }),
+        pcm,
+        requestId: `voice-${speakerId}-${Date.now().toString()}`,
+        speakerId,
+        speakerName:
+          this.#guild?.members.cache.get(speakerId)?.displayName ?? 'President',
+      },
       {
         audio: (audio) => {
           const discordPcm = realtimePcmToDiscord(Buffer.from(audio));
@@ -197,9 +215,6 @@ export class DiscordVoiceController implements GatewayVoiceController {
           `Sources: ${result.citations.slice(0, 5).join(' ')}`,
         );
       }
-      if (groupTranscript === undefined && result.inputTranscript.length > 0) {
-        this.#observeTranscript(speakerId, result.inputTranscript);
-      }
     } else {
       suffix?.interrupt();
       playback.destroy();
@@ -211,21 +226,43 @@ export class DiscordVoiceController implements GatewayVoiceController {
         await this.#postStatus(
           'I could not complete that reply, Mr. President',
         );
+      } else if (result.status === 'lost-thread') {
+        await this.#postStatus(
+          'I lost the thread and could not answer, Mr. President',
+        );
       }
     }
   }
 
-  #observeTranscript(speakerId: string, transcript: string): void {
-    if (transcript.trim().length === 0) return;
+  #observeTranscript(
+    speakerId: string,
+    transcript: string,
+  ):
+    | {
+        readonly observation: HumanVoiceObservation;
+        readonly status: 'persisted';
+      }
+    | { readonly status: 'failed' }
+    | undefined {
+    if (transcript.trim().length === 0) return undefined;
     const now = Date.now();
-    this.#options.observe?.({
-      content: transcript,
-      medium: 'voice',
-      occurredAt: now,
-      platformSourceId: `voice-${speakerId}-${randomUUID()}`,
-      retentionDeadline: now + 7 * 24 * 60 * 60 * 1_000,
-      speakerId,
-    });
+    const platformSourceId = `voice-${speakerId}-${randomUUID()}`;
+    try {
+      const eventId = this.#options.orchestrator.observeVoiceTranscript({
+        content: transcript,
+        occurredAt: now,
+        platformSourceId,
+        speakerId,
+        speakerName:
+          this.#guild?.members.cache.get(speakerId)?.displayName ?? 'President',
+      });
+      return {
+        observation: { eventId, platformSourceId },
+        status: 'persisted',
+      };
+    } catch {
+      return { status: 'failed' };
+    }
   }
 
   #humanCount(guild: Guild): number {

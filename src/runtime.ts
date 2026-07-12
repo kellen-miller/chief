@@ -11,16 +11,16 @@ import {
 import { generateOpenAiVoiceSuffix } from './agent/openai-voice.js';
 import { ConversationOrchestrator } from './app/conversation-orchestrator.js';
 import type { ChiefConfig } from './config/config.js';
+import { ConversationStore } from './conversation/conversation-store.js';
 import { DiscordGateway } from './discord/gateway.js';
 import { HealthServer } from './health/health-server.js';
 import { migrateChiefDatabase, openChiefDatabase } from './memory/database.js';
-import { MemoryContext } from './memory/memory-context.js';
+import { MemoryService } from './memory/memory-service.js';
 import { SqliteMemoryStore } from './memory/memory-store.js';
 import {
   createOpenAiEmbedder,
   createOpenAiMemoryExtractor,
 } from './memory/openai-memory.js';
-import { MemoryWorker } from './memory/memory-worker.js';
 import { SqliteUsageLedger } from './usage/sqlite-usage-ledger.js';
 import { UsageBudget } from './usage/usage-budget.js';
 import { DiscordVoiceController } from './voice/discord-voice-controller.js';
@@ -50,6 +50,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
   const database = openChiefDatabase(join(config.dataDirectory, 'chief.db'));
   migrateChiefDatabase(database);
   const memory = new SqliteMemoryStore(database);
+  const conversation = new ConversationStore(database);
   const budget = new UsageBudget({
     ...config.usage,
     ledger: new SqliteUsageLedger(database),
@@ -64,8 +65,23 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     model: config.models.embedding,
     pricing: { inputPerMillionUsd: config.pricing.embeddingInput },
   });
+  const memoryService = new MemoryService({
+    budget,
+    embed,
+    estimateUsd: 0.05,
+    extract: createOpenAiMemoryExtractor({
+      apiKey: config.openAiApiKey,
+      model: config.models.memory,
+      pricing: {
+        inputPerMillionUsd: config.pricing.memoryInput,
+        outputPerMillionUsd: config.pricing.memoryOutput,
+      },
+    }),
+    store: memory,
+  });
   const agent = new OpenAiChiefAgent({
     apiKey: config.openAiApiKey,
+    memory: memoryService,
     model: config.models.text,
     pricing: {
       inputPerMillionUsd: config.pricing.textInput,
@@ -87,12 +103,16 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
       textOutputPerMillionUsd: config.pricing.voiceTextOutput,
     },
   });
-  const orchestrator = new ConversationOrchestrator(
+  const orchestrator = new ConversationOrchestrator({
     agent,
     budget,
-    new MemoryContext({ embed, store: memory }),
-    calculateConservativeReservations(config.pricing),
-  );
+    conversation,
+    memory: memoryService,
+    reservations: calculateConservativeReservations(config.pricing),
+    telemetry: (event) => {
+      logger.info(event, 'chief_conversation');
+    },
+  });
   let fallbackSuffixPcm = await readOptionalFile(config.voiceSuffixPath);
   if (fallbackSuffixPcm === undefined) {
     const reservation = budget.reserve('voice-suffix-generation', 0.05);
@@ -129,9 +149,6 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
   }
   const voice = new DiscordVoiceController({
     ...(fallbackSuffixPcm === undefined ? {} : { fallbackSuffixPcm }),
-    observe: (source) => {
-      memory.observe(source);
-    },
     orchestrator,
     textChannelId: config.discord.textChannelId,
     voiceChannelId: config.discord.voiceChannelId,
@@ -140,13 +157,15 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     channelId: config.discord.textChannelId,
     guildId: config.discord.guildId,
     logger,
-    memory,
     orchestrator,
     token: config.discord.token,
     voice,
     voiceChannelId: config.discord.voiceChannelId,
   });
-  let maintenanceAt = Date.now();
+  const startupMaintenanceAt = Date.now();
+  memory.maintain(startupMaintenanceAt);
+  conversation.maintain(startupMaintenanceAt);
+  let maintenanceAt = startupMaintenanceAt;
   const health = new HealthServer({
     check: async () => ({
       database: checkDatabase(database),
@@ -157,26 +176,12 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     host: '0.0.0.0',
     port: config.healthPort,
   });
-  const worker = new MemoryWorker({
-    budget,
-    embed,
-    estimateUsd: 0.05,
-    extract: createOpenAiMemoryExtractor({
-      apiKey: config.openAiApiKey,
-      model: config.models.memory,
-      pricing: {
-        inputPerMillionUsd: config.pricing.memoryInput,
-        outputPerMillionUsd: config.pricing.memoryOutput,
-      },
-    }),
-    store: memory,
-  });
   let workerRunning = false;
   const workerTimer = setInterval(() => {
     if (workerRunning) return;
     workerRunning = true;
-    void worker
-      .runOne(Date.now())
+    void memoryService
+      .runAutomaticOne(Date.now())
       .catch((error: unknown) => {
         logger.error({ err: error }, 'memory_worker_failed');
       })
@@ -187,8 +192,10 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
   const maintenanceTimer = setInterval(
     () => {
       try {
-        memory.maintain(Date.now());
-        maintenanceAt = Date.now();
+        const now = Date.now();
+        memory.maintain(now);
+        conversation.maintain(now);
+        maintenanceAt = now;
       } catch (error) {
         logger.error({ err: error }, 'memory_maintenance_failed');
       }
@@ -246,7 +253,17 @@ function checkDatabase(
         .prepare("delete from maintenance_runs where kind = 'health'")
         .run();
       return (
-        database.prepare('select vec_version()').pluck().get() === 'v0.1.9'
+        database.prepare('select vec_version()').pluck().get() === 'v0.1.9' &&
+        database
+          .prepare(
+            "select checksum from schema_migrations where id = '0002_conversation_events'",
+          )
+          .pluck()
+          .get() === 'chief-0002-v1' &&
+        database
+          .prepare('select count(*) from conversation_events where 0')
+          .pluck()
+          .get() === 0
       );
     })();
   } catch {

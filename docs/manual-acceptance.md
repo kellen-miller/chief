@@ -6,10 +6,14 @@ Repository tests do not use paid APIs, real Discord encryption, live WIF, or GCP
 
 - An allowed-channel message without a mention receives no reply.
 - `@Chief` alone returns a local greeting; `@Chief <request>` returns one answer whose final segment ends exactly “Mr. President.”
+- A mention in the middle of a sentence remains the word “Chief”; use “This list @Chief remember no military academy” and confirm Chief saves it before acknowledging.
+- Have one President provide a list and constraint, then another ask “what were those outcomes?” and “pick one from the list.” Chief must use the shared prior turns and preserve the constraint.
 - Current-fact research includes direct links. Prompt injection in fetched pages does not change Chief’s rules.
 - DMs, threads, webhooks, bots, other channels, and other guilds are ignored.
 - `/roll max:1` returns 1; normal bounds are inclusive; `/roll`, `/help`, `/join`, and `/leave` still work when AI usage is paused.
 - A remembered plan can be recalled, corrected, and forgotten without exposing a memory browser.
+- A sensitive remember request is truthfully rejected. An ambiguous correction asks for clarification, and a failed memory update says it was not saved.
+- Restart `chief.service`, then ask a follow-up about a pre-restart turn from the last seven days. Chief must retain the thread.
 
 ## Live DAVE voice gate
 
@@ -23,6 +27,7 @@ This is blocking. With Discord DAVE enabled, have two humans join the configured
 - Receive, transmit, and interruption all work for both speakers—playback-only success is a failure.
 - Completed speech ends exactly “Mr. President” without duplication. Delete the persisted suffix clip once and confirm it is regenerated and validated within budget.
 - Voice research posts source links in the text channel. If this is not observed, voice research is not accepted.
+- Discuss a fact in text and ask about it in voice, then discuss a fact in voice and ask about it in text. Both directions must carry the human and Chief turns.
 - Chief closes a Realtime session after about 60 seconds idle and leaves Discord after about 15 minutes without a qualifying turn.
 
 If pinned `@discordjs/voice` 0.19.2 fails DAVE receive, upgrade to a verified fixed release or disable voice; do not ship playback-only voice.

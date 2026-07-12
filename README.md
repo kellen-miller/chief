@@ -8,7 +8,8 @@ Chief replies in the configured text channel only when directly mentioned or inv
 
 - Node.js 24, TypeScript, discord.js, and `@discordjs/voice`
 - OpenAI Agents SDK for text/web work and server-side Realtime WebSocket voice
-- SQLite in WAL mode with FTS5 and sqlite-vec for durable communal memory
+- SQLite in WAL mode with a seven-day cross-text/voice conversation timeline,
+  plus FTS5 and sqlite-vec for durable communal memory
 - One serialized paid-generation queue and a persistent UTC-month usage ledger
 - One GCP `e2-micro` VM with a durable standard disk, Artifact Registry, Secret Manager, GCS backups, and GitHub WIF deployment
 
@@ -26,6 +27,10 @@ pnpm chief -- smoke
 ```
 
 The tests use fake provider and deployment boundaries and never make paid OpenAI calls. To run the real bot, export the `.env` values and use `pnpm chief -- run`. Register guild commands once with `pnpm chief -- register-commands`.
+
+The optional `pnpm eval:conversation` command uses the configured OpenAI key and
+is paid. It reports only aggregate case names, pass/fail, model, reasoning,
+latency, and token counts; it is never part of pull-request CI.
 
 ## Cost controls
 

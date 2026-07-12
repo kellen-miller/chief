@@ -5,12 +5,12 @@ import {
   openChiefDatabase,
 } from '../../src/memory/database.js';
 import { SqliteMemoryStore } from '../../src/memory/memory-store.js';
-import { MemoryWorker } from '../../src/memory/memory-worker.js';
+import { MemoryService } from '../../src/memory/memory-service.js';
 import { UsageBudget } from '../../src/usage/usage-budget.js';
 
 const vector = new Float32Array(1_536).fill(0.4);
 
-describe('MemoryWorker', () => {
+describe('MemoryService automatic extraction', () => {
   it('extracts and embeds an accepted durable memory', async () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
@@ -23,7 +23,7 @@ describe('MemoryWorker', () => {
       retentionDeadline: 1_000,
       speakerId: 'president-1',
     });
-    const worker = new MemoryWorker({
+    const worker = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       embed: vi.fn(() =>
         Promise.resolve({ embedding: vector, usageUsd: 0.001 }),
@@ -47,7 +47,9 @@ describe('MemoryWorker', () => {
       store,
     });
 
-    await expect(worker.runOne(110)).resolves.toEqual({ status: 'completed' });
+    await expect(worker.runAutomaticOne(110)).resolves.toEqual({
+      status: 'completed',
+    });
     expect(
       store.retrieve({
         embedding: vector,
@@ -84,7 +86,7 @@ describe('MemoryWorker', () => {
     const embed = vi.fn(() =>
       Promise.resolve({ embedding: vector, usageUsd: 0.001 }),
     );
-    const worker = new MemoryWorker({
+    const worker = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       embed,
       estimateUsd: 0.1,
@@ -113,7 +115,7 @@ describe('MemoryWorker', () => {
       store,
     });
 
-    await worker.runOne(110);
+    await worker.runAutomaticOne(110);
     expect(embed).not.toHaveBeenCalled();
     expect(
       database.prepare('select count(*) from memories').pluck().get(),
@@ -136,7 +138,7 @@ describe('MemoryWorker', () => {
     const budget = new UsageBudget({ ceilingUsd: 1, warningUsd: 0.5 });
     budget.recordActual(1);
     const extract = vi.fn();
-    const worker = new MemoryWorker({
+    const worker = new MemoryService({
       budget,
       embed: vi.fn(),
       estimateUsd: 0.1,
@@ -144,7 +146,7 @@ describe('MemoryWorker', () => {
       store,
     });
 
-    await expect(worker.runOne(110)).resolves.toEqual({
+    await expect(worker.runAutomaticOne(110)).resolves.toEqual({
       notBefore: Date.UTC(1970, 1, 1),
       status: 'budget-deferred',
     });
@@ -159,7 +161,7 @@ describe('MemoryWorker', () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
-    const worker = new MemoryWorker({
+    const worker = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       embed: vi.fn(),
       estimateUsd: 0.1,
@@ -167,7 +169,9 @@ describe('MemoryWorker', () => {
       maxAttempts: 1,
       store,
     });
-    await expect(worker.runOne(1)).resolves.toEqual({ status: 'idle' });
+    await expect(worker.runAutomaticOne(1)).resolves.toEqual({
+      status: 'idle',
+    });
     store.observe({
       content: 'Remember this',
       medium: 'text',
@@ -176,7 +180,9 @@ describe('MemoryWorker', () => {
       retentionDeadline: 100,
       speakerId: 'president-1',
     });
-    await expect(worker.runOne(2)).resolves.toEqual({ status: 'failed' });
+    await expect(worker.runAutomaticOne(2)).resolves.toEqual({
+      status: 'failed',
+    });
     expect(
       database.prepare('select status from memory_jobs').pluck().get(),
     ).toBe('failed');
@@ -205,7 +211,7 @@ describe('MemoryWorker', () => {
       speakerId: 'president-1',
     });
     const extract = vi.fn();
-    const worker = new MemoryWorker({
+    const worker = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       embed: vi.fn(),
       estimateUsd: 0.1,
@@ -213,7 +219,9 @@ describe('MemoryWorker', () => {
       store,
     });
 
-    await expect(worker.runOne(2)).resolves.toEqual({ status: 'completed' });
+    await expect(worker.runAutomaticOne(2)).resolves.toEqual({
+      status: 'completed',
+    });
     expect(extract).not.toHaveBeenCalled();
     expect(
       database.prepare('select count(*) from memories').pluck().get(),
@@ -245,7 +253,7 @@ describe('MemoryWorker', () => {
     const embed = vi.fn(() =>
       Promise.resolve({ embedding: vector, usageUsd: 0.001 }),
     );
-    const worker = new MemoryWorker({
+    const worker = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       embed,
       estimateUsd: 0.1,
@@ -298,7 +306,9 @@ describe('MemoryWorker', () => {
       store,
     });
 
-    await expect(worker.runOne(3)).resolves.toEqual({ status: 'completed' });
+    await expect(worker.runAutomaticOne(3)).resolves.toEqual({
+      status: 'completed',
+    });
     expect(embed).toHaveBeenCalledTimes(2);
     expect(
       database.prepare('select count(*) from memory_conflicts').pluck().get(),
@@ -324,7 +334,7 @@ describe('MemoryWorker', () => {
       retentionDeadline: 100,
       speakerId: 'president-1',
     });
-    const worker = new MemoryWorker({
+    const worker = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       embed: vi.fn(),
       estimateUsd: 0.1,
@@ -332,7 +342,9 @@ describe('MemoryWorker', () => {
       store,
     });
 
-    await expect(worker.runOne(2)).resolves.toEqual({ status: 'completed' });
+    await expect(worker.runAutomaticOne(2)).resolves.toEqual({
+      status: 'completed',
+    });
     database.close();
   });
 });

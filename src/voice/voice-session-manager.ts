@@ -6,7 +6,13 @@ export interface VoiceUtterance {
   readonly speakerId: string;
 }
 
+export interface HumanVoiceObservation {
+  readonly eventId: number;
+  readonly platformSourceId: string;
+}
+
 export interface SubmittedVoiceTurn {
+  readonly humanObservation?: HumanVoiceObservation;
   readonly pcm: ArrayBuffer;
   readonly speakerId: string;
   readonly transcript?: string;
@@ -15,10 +21,17 @@ export interface SubmittedVoiceTurn {
 export interface VoiceSessionDependencies {
   readonly disconnect: () => void;
   readonly interrupt: () => void;
+  readonly persistenceFailure?: () => void;
   readonly observe?: (turn: {
     readonly speakerId: string;
     readonly transcript: string;
-  }) => void;
+  }) =>
+    | {
+        readonly observation: HumanVoiceObservation;
+        readonly status: 'persisted';
+      }
+    | { readonly status: 'failed' }
+    | undefined;
   readonly submit: (turn: SubmittedVoiceTurn) => Promise<void>;
   readonly transcribe: (pcm: ArrayBuffer) => Promise<string>;
 }
@@ -56,16 +69,25 @@ export class VoiceSessionManager {
     }
 
     const transcript = await this.#dependencies.transcribe(pcm);
-    this.#dependencies.observe?.({
+    const observed = this.#dependencies.observe?.({
       speakerId: utterance.speakerId,
       transcript,
     });
     const qualification = qualifyVoiceTranscript(utterance.mode, transcript);
+    if (observed?.status === 'failed') {
+      if (qualification.addressed) {
+        this.#dependencies.persistenceFailure?.();
+      }
+      return qualification;
+    }
     if (qualification.addressed) {
       await this.#dependencies.submit({
         pcm,
         speakerId: utterance.speakerId,
         transcript,
+        ...(observed?.status !== 'persisted'
+          ? {}
+          : { humanObservation: observed.observation }),
       });
     }
     return qualification;

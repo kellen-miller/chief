@@ -4,12 +4,14 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import {
   migrateChiefDatabase,
   openChiefDatabase,
 } from '../../src/memory/database.js';
 import { SqliteMemoryStore } from '../../src/memory/memory-store.js';
-import { MemoryContext } from '../../src/memory/memory-context.js';
+import { MemoryService } from '../../src/memory/memory-service.js';
+import { UsageBudget } from '../../src/usage/usage-budget.js';
 
 const directories: string[] = [];
 const embedding = (value: number): Float32Array =>
@@ -130,6 +132,17 @@ describe('SqliteMemoryStore', () => {
       retentionDeadline: 100,
       speakerId: 'president-1',
     });
+    new ConversationStore(database).record({
+      content: 'The cabinet meets at noon.',
+      medium: 'text',
+      occurredAt: 1,
+      platformEventId: 'discord:text:message-4',
+      requestId: 'message-4',
+      retentionDeadline: 100,
+      role: 'human',
+      speakerId: 'president-1',
+      speakerName: 'President One',
+    });
     const backupPath = join(directory, 'backup.db');
 
     await store.backup(backupPath);
@@ -138,6 +151,9 @@ describe('SqliteMemoryStore', () => {
     expect(
       restored.prepare('select count(*) from source_events').pluck().get(),
     ).toBe(1);
+    expect(
+      restored.prepare('select content from conversation_events').pluck().get(),
+    ).toBe('The cabinet meets at noon.');
     restored.close();
     database.close();
   });
@@ -238,14 +254,17 @@ describe('SqliteMemoryStore', () => {
       sourceEventId: null,
       timestamp: 1,
     });
-    const context = new MemoryContext({
+    const context = new MemoryService({
+      budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       embed: () =>
         Promise.resolve({ embedding: embedding(0.5), usageUsd: 0.001 }),
+      estimateUsd: 0.1,
+      extract: () => Promise.resolve({ proposals: [], usageUsd: 0 }),
       limit: 1,
       store,
     });
 
-    await expect(context.retrieve('trip October')).resolves.toEqual({
+    await expect(context.recall('trip October')).resolves.toEqual({
       memories: ['The trip is in October'],
       usageUsd: 0.001,
     });
