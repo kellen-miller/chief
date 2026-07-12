@@ -46,6 +46,10 @@ The design reduces complexity by deepening three existing concepts instead of ad
 - [x] (2026-07-12 22:38Z) Read-only production evidence separated apparent memory from durable memory: Chief had 55 recent conversation events and answered follow-ups coherently, while 76 completed automatic jobs had produced zero durable memories and no post-deploy deterministic commit receipt was present.
 - [x] (2026-07-12 22:39Z) Milestone 8 began on `codex/use-gpt-5-6-luna`. The config-default test failed red with GPT-5.4 Mini and `$0.75/$4.50`, then passed with GPT-5.6 Luna and `$1.00/$6.00`; the text agent's existing explicit `low` reasoning setting and all non-text model defaults remain unchanged.
 - [x] (2026-07-12 22:40Z) The owner-authorized paid Luna replay passed `polk-no-military`, `chief-self-reference`, and `those-outcomes-follow-up`; the unchanged memory extractor passed all three harmless and all three synthetic-sensitive trials. A content-redacted Responses API probe also returned reasoning, native `web_search_call`, a cited message, and successful usage accounting.
+- [x] (2026-07-12 22:51Z) Formal Standards/Spec review found a stale active-milestone paragraph, duplicated evaluator/runtime model defaults, omitted `low` reasoning on hosted research, and missing GPT-5.6 cache-write accounting. Red-green follow-up centralized the model default and shared research request, pinned both text and voice research to `low`, priced standard/cached/cache-write input separately, and made reservations use the worst-case `$1.25` input rate. Twenty-eight focused tests and typechecking pass.
+- [x] (2026-07-12 22:54Z) Fresh completion gates passed formatting, ESLint, typechecking, 203 tests with 81.64% branch coverage, build, Actionlint, ShellCheck, Terraform formatting/validation, `git diff --check`, and the hardcoded-key scan. Final Spec re-review returned zero findings.
+- [x] (2026-07-12 22:54Z) The fresh paid replay again passed all three Luna text cases and all six unchanged memory-model trials. The shared low-reasoning web-search probe returned reasoning, search, and cited-message items; usage reported 8,474 input tokens including 4,455 cached reads, zero cache writes, 89 output tokens, and a calculated token cost of `$0.004998` without exposing content.
+- [x] (2026-07-12 22:57Z) Final Standards re-review removed a test-only helper re-export and synchronized deployment acceptance with all four runtime rates. Focused tests, formatting, ESLint, and the diff check passed; both final formal reviews now report zero findings.
 - [ ] Review, publish, deploy, and verify Milestone 8 on `codex/use-gpt-5-6-luna`.
 - [ ] Repeat durable-memory and Polk-selection acceptance for deployed Milestone 7.
 - [ ] Complete the documented two-human voice acceptance and record final production evidence.
@@ -84,6 +88,10 @@ The design reduces complexity by deepening three existing concepts instead of ad
   Evidence: Read-only counts showed 55 seven-day conversation events, 76 completed automatic memory jobs, and zero durable memories; no deterministic explicit commit receipt appeared after the Milestone 7 deployment.
 - Observation: GPT-5.6 Luna supports Chief's existing Responses API and native web-search path without an adapter change.
   Evidence: The paid replay passed all three text cases at `low`, and a content-redacted probe returned `reasoning`, `web_search_call`, and a message containing a URL citation.
+- Observation: Setting the primary Agent to `low` does not configure the separate hosted research requests; omitted GPT-5.6 reasoning defaults to `medium`.
+  Evidence: Formal Spec review traced both text and voice research to direct Responses calls without `reasoning`. Both callers now share the tested request builder whose payload contains `reasoning: { effort: 'low' }`.
+- Observation: GPT-5.6 Luna distinguishes standard input, cached reads, and cache writes in usage and pricing.
+  Evidence: Current pricing is `$1.00`, `$0.10`, and `$1.25` per million respectively. The Agents SDK and direct Responses API expose `cached_tokens` and `cache_write_tokens`; the ledger now carries and prices both details instead of treating every input token as standard.
 
 ## Decision Log
 
@@ -96,8 +104,8 @@ The design reduces complexity by deepening three existing concepts instead of ad
 - Decision: Keep `gpt-5.4-mini` and set reasoning effort to `low` before considering a model upgrade.
   Rationale: This was the initial rollout baseline because a direct differential probe showed the existing model succeeded under the improved setting while preserving the cost goal.
   Date/Author: 2026-07-12 / user and Codex.
-- Decision: Supersede the initial text baseline with `gpt-5.6-luna` at reasoning effort `low`, priced at `$1.00` input and `$6.00` output per million standard tokens.
-  Rationale: The user explicitly chose Luna after reviewing current quality and cost options. OpenAI positions Luna for efficient high-volume workloads, the existing `low` setting is supported, and the Chief-specific replay plus native web-search probe passed. Voice and memory models remain independent and unchanged.
+- Decision: Supersede the initial text baseline with `gpt-5.6-luna` at reasoning effort `low`, priced at `$1.00` standard input, `$0.10` cached input, `$1.25` cache-write input, and `$6.00` output per million tokens.
+  Rationale: The user explicitly chose Luna after reviewing current quality and cost options. OpenAI positions Luna for efficient high-volume workloads, the Chief-specific replay plus native web-search probe passed, and one shared request builder keeps both text and voice research at `low`. Cache-detail accounting preserves the usage ceiling under the model's explicit cache-write premium. Voice and memory models remain independent and unchanged.
   Date/Author: 2026-07-12 / user and Codex.
 - Decision: Use additive migration `0002` and a new `conversation_events` table without historical backfill.
   Rationale: Production data and rollback are explicit compatibility constraints; existing source rows omit Chief replies and are not trustworthy history.
@@ -129,7 +137,7 @@ The design reduces complexity by deepening three existing concepts instead of ad
 
 ## Outcomes & Retrospective
 
-Milestones 1 through 7 are merged and deployed. Shared recent context, constraint preservation, model calibration, safe/sensitive evaluation, and both address orders for explicit memory are locally proven. Live recent-context behavior is working, but durable-memory acceptance still requires a real explicit command and production count increase. Milestone 8's Luna configuration and paid compatibility evidence are complete locally; review, publication, deployment, repeated durable-memory/Polk smoke, and the documented voice gate remain before final closeout.
+Milestones 1 through 7 are merged and deployed. Shared recent context, constraint preservation, model calibration, safe/sensitive evaluation, and both address orders for explicit memory are locally proven. Live recent-context behavior is working, but durable-memory acceptance still requires a real explicit command and production count increase. Milestone 8's Luna configuration, paid compatibility evidence, shared low-reasoning research path, cache-aware accounting, and formal review are complete locally; publication, deployment, repeated durable-memory/Polk smoke, and the documented voice gate remain before final closeout.
 
 ## Context and Orientation
 
@@ -137,7 +145,7 @@ The repository is a Node 24, TypeScript, pnpm application. `src/discord/gateway.
 
 `src/memory/database.ts` now runs immutable migrations `0001_initial` and `0002_conversation_events`. `src/conversation/conversation-store.ts` owns the seven-day bounded recent timeline. `src/memory/memory-store.ts` persists raw sources, restart-safe jobs, durable memories, FTS5 rows, and sqlite-vec embeddings. `src/memory/memory-service.ts` is the single public durable-memory boundary: it owns automatic work, explicit remember/correct/forget sequencing, confidence floors, sensitivity rejection, embeddings, atomic mutations, and truthful receipts. The former `memory-worker.ts` and `memory-context.ts` modules no longer exist.
 
-Milestone 6 is deployed: `MemoryService` deterministically converts a syntactically valid remember command into a concise extraction payload while preserving multiline content and same-message referents, and the OpenAI adapter isolates calibrated remember behavior from automatic extraction and corrections. Active Milestone 7 changes only the shared explicit-intent matcher and its tests so the existing parser and truthful receipt path also receive imperative forms in which the normalized `Chief` address follows the memory verb.
+Milestones 6 and 7 are deployed: `MemoryService` deterministically frames valid remember commands, preserves multiline content and same-message referents, and recognizes explicit memory verbs on either side of the normalized `Chief` address while retaining truthful commit receipts. Active Milestone 8 changes only the configurable text default, matching price assumptions, optional evaluator default, and hosted-research reasoning setting for GPT-5.6 Luna.
 
 In this plan, a conversation event is one normalized human or Chief message stored for short-term dialogue. A durable memory is a long-lived canonical fact stored in the existing `memories` table. An as-of context contains only conversation events with IDs earlier than the current human request, preventing later concurrently received messages from leaking into an earlier model call. Approximate tokens are a deterministic conservative character-based estimate used only to bound recent history.
 
@@ -234,11 +242,11 @@ Run focused intent, invocation-policy, orchestrator, and memory-service tests pl
 
 ### Milestone 8: Upgrade text generation to GPT-5.6 Luna
 
-Change only the configurable text-model default from `gpt-5.4-mini` to `gpt-5.6-luna`. Preserve the existing explicit reasoning effort `low`, Responses API, Agents SDK orchestration, native web search, guarded fetch tool, recent/durable context separation, usage ceiling, and every voice, transcription, embedding, and memory-model default. Update the standard text prices from `$0.75/$4.50` to `$1.00/$6.00` per million input/output tokens so reservation and reconciliation remain conservative and accurate.
+Change only the configurable text-model default from `gpt-5.4-mini` to `gpt-5.6-luna`. Preserve the existing explicit reasoning effort `low`, Responses API, Agents SDK orchestration, native web search, guarded fetch tool, recent/durable context separation, usage ceiling, and every voice, transcription, embedding, and memory-model default. Apply `low` to the separate hosted research requests used by both text and voice. Update prices from GPT-5.4 Mini to Luna's `$1.00` standard input, `$0.10` cached read, `$1.25` cache-write, and `$6.00` output rates per million tokens. Reservations use the cache-write rate as the worst-case input rate; reconciliation uses response token details.
 
 Drive the change from `test/unit/config.test.ts`: first require the Luna model and prices and observe the old defaults fail, then update `src/config/config.ts` and the optional evaluation default. Run the focused config and text-agent tests plus typechecking. Use the owner-controlled API key to run the three aggregate text replays on Luna at `low` and a content-redacted native web-search compatibility probe. Record only model, aggregate pass/fail, latency, token usage, output item types, and citation presence.
 
-Review the narrow diff, run the complete deterministic gate, publish with `git push origin HEAD:refs/heads/codex/use-gpt-5-6-luna`, and merge only after Format, Lint, Test, and Build pass. Watch the `main` deploy, then verify non-content health and runtime configuration from inside the container. Acceptance requires the container to report `gpt-5.6-luna`, text prices `1` and `6`, readiness true, and one live Discord response with the exact suffix.
+Review the narrow diff, run the complete deterministic gate, publish with `git push origin HEAD:refs/heads/codex/use-gpt-5-6-luna`, and merge only after Format, Lint, Test, and Build pass. Watch the `main` deploy, then verify non-content health and runtime configuration from inside the container. Acceptance requires the container to report `gpt-5.6-luna`, standard/cached/cache-write/output text prices `1`, `0.1`, `1.25`, and `6`, readiness true, and one live Discord response with the exact suffix.
 
 ## Concrete Steps
 
@@ -284,7 +292,7 @@ Recent-context acceptance requires restart-safe text and voice events, display-n
 
 Durable-memory acceptance requires a non-sensitive explicit proposal at `0.75` to commit and acknowledge, one at `0.74` to be truthfully rejected, a sensitive proposal to reject without a row, a correction to supersede, ambiguity to retain conflict and request clarification, forgetting to remove indexes, and automatic extraction below `0.85` to remain rejected. Remember framing must retain multiline payloads and same-message referents without adding irrelevant prefix text to complete requests. The optional real-model evaluation must pass three harmless-preference and three synthetic-sensitive trials on `gpt-5.4-nano`. A multi-proposal transaction failure must leave no partial memory or index rows. A database, budget, extraction, or embedding failure must never produce “I’ll remember.” There is still no list/dump command.
 
-Provider acceptance requires `gpt-5.6-luna` as the text default at reasoning `low`, with standard prices `$1.00/$6.00` per million input/output tokens, recent conversation and durable memory as separate labeled inputs, personality instructions matching `decision.md`, and no content-bearing logs. Voice must receive text-only typed history through the Realtime transport exactly once per new session, must not embed raw dialogue in fixed instructions, and must not claim a memory mutation succeeded unless its tool receipt committed.
+Provider acceptance requires `gpt-5.6-luna` as the text default at reasoning `low`, including hosted research from text and voice. Pricing must distinguish `$1.00` standard input, `$0.10` cached input, `$1.25` cache-write input, and `$6.00` output per million tokens. Recent conversation and durable memory remain separate labeled inputs, personality instructions match `decision.md`, and logs contain no content. Voice must receive text-only typed history through the Realtime transport exactly once per new session, must not embed raw dialogue in fixed instructions, and must not claim a memory mutation succeeded unless its tool receipt committed.
 
 Operational acceptance requires the additive migration to preserve a fixture representing the deployed `0001_initial` schema, database backup and restore to retain the new table, and failed deployment rollback tests to pass. The optional live evaluation and post-deploy Discord smoke are realistic evidence; deterministic CI is the mandatory regression gate. GitHub Actions remains free of paid API calls and repository secrets on pull requests.
 
@@ -387,3 +395,9 @@ Plan revision note (2026-07-12T21:45:00Z): Recorded zero-finding final formal re
 Plan revision note (2026-07-12T21:57:00Z): Recorded the bounded external adversarial review as unavailable after it emitted no result, preserving the clean two-review and deterministic-gate evidence without claiming third-party approval.
 
 Plan revision note (2026-07-12T22:39:24Z): Recorded the merged Milestone 7 rollout, distinguished live recent conversation from still-empty durable memory, and added the user-selected GPT-5.6 Luna text-only upgrade with red-green defaults, current pricing, paid replay, native web-search evidence, and a dedicated rollout branch.
+
+Plan revision note (2026-07-12T22:51:23Z): Resolved the first Milestone 8 Standards/Spec review by synchronizing living-plan state, centralizing the model default, pinning both hosted research paths to low reasoning, and adding cache-aware prices, reservation bounds, usage propagation, and red-green accounting evidence.
+
+Plan revision note (2026-07-12T22:54:28Z): Recorded the fresh 203-test completion gate, zero-finding Spec re-review, repeat paid Luna evaluation, and content-redacted cache-detail pricing probe before final Standards re-review and publication.
+
+Plan revision note (2026-07-12T22:57:49Z): Recorded zero-finding final Standards review after removing a test-only re-export and requiring all four cache-aware runtime prices in deployment acceptance.

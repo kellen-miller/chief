@@ -27,7 +27,12 @@ describe('loadConfig', () => {
         transcription: 'gpt-4o-mini-transcribe-2025-12-15',
         voice: 'gpt-realtime-2.1-mini',
       },
-      pricing: { textInput: 1, textOutput: 6 },
+      pricing: {
+        textCachedInput: 0.1,
+        textCacheWriteInput: 1.25,
+        textInput: 1,
+        textOutput: 6,
+      },
       usage: { ceilingUsd: 10, warningUsd: 5 },
     });
   });

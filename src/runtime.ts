@@ -84,6 +84,8 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     memory: memoryService,
     model: config.models.text,
     pricing: {
+      cachedInputPerMillionUsd: config.pricing.textCachedInput,
+      cacheWriteInputPerMillionUsd: config.pricing.textCacheWriteInput,
       inputPerMillionUsd: config.pricing.textInput,
       outputPerMillionUsd: config.pricing.textOutput,
       searchCallUsd: config.pricing.searchCall,

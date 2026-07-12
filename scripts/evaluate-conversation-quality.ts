@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 
 import { createExecution } from '../src/agent/openai-chief-agent.js';
+import { DEFAULT_TEXT_MODEL } from '../src/config/config.js';
 import { createOpenAiMemoryExtractor } from '../src/memory/openai-memory.js';
 
 const apiKey = process.env.OPENAI_API_KEY;
@@ -8,7 +9,7 @@ if (apiKey === undefined || apiKey.length === 0) {
   throw new Error('OPENAI_API_KEY is required for the paid conversation eval');
 }
 
-const textModel = process.env.CHIEF_MODEL_TEXT ?? 'gpt-5.6-luna';
+const textModel = process.env.CHIEF_MODEL_TEXT ?? DEFAULT_TEXT_MODEL;
 const memoryModel = process.env.CHIEF_MODEL_MEMORY ?? 'gpt-5.4-nano';
 const execute = createExecution(apiKey, textModel);
 const cases = [
