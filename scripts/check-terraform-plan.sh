@@ -5,6 +5,7 @@ PLAN_JSON="${1:?usage: check-terraform-plan.sh PLAN_JSON}"
 PROJECT_ID="${TF_VAR_project_id:?TF_VAR_project_id is required}"
 RUNTIME_EMAIL="chief-runtime@${PROJECT_ID}.iam.gserviceaccount.com"
 RUNTIME_MEMBER="serviceAccount:${RUNTIME_EMAIL}"
+DEPLOY_MEMBER="serviceAccount:chief-deploy@${PROJECT_ID}.iam.gserviceaccount.com"
 ALLOW_PROTECTED_DESTROY="${ALLOW_PROTECTED_DESTROY:-0}"
 if [[ "$ALLOW_PROTECTED_DESTROY" != 0 && "$ALLOW_PROTECTED_DESTROY" != 1 ]]; then
   echo "ALLOW_PROTECTED_DESTROY must be 0 or 1" >&2
@@ -18,25 +19,33 @@ fi
 violations="$(jq -r \
   --arg runtime_email "$RUNTIME_EMAIL" \
   --arg runtime_member "$RUNTIME_MEMBER" \
+  --arg deploy_member "$DEPLOY_MEMBER" \
   --argjson allow_protected_destroy "$ALLOW_PROTECTED_DESTROY" '
   def runtime_member:
     (.change.after.member // .change.before.member // "") == $runtime_member;
+  def deploy_member:
+    (.change.after.member // .change.before.member // "") == $deploy_member;
   def allowed_runtime_iam:
     (.change.after // .change.before) as $after |
-    runtime_member
-    and (((.change.actions | index("delete")) | not) or $allow_protected_destroy == 1)
+    (((.change.actions | index("delete")) | not) or $allow_protected_destroy == 1)
     and (
-      (.type == "google_project_iam_member"
-        and (.address | test("^google_project_iam_member\\.runtime\\["))
-        and (["roles/artifactregistry.reader", "roles/logging.logWriter", "roles/monitoring.metricWriter"]
-          | index($after.role)))
-      or (.type == "google_secret_manager_secret_iam_member"
-        and (.address | test("^google_secret_manager_secret_iam_member\\.runtime\\["))
-        and $after.role == "roles/secretmanager.secretAccessor")
-      or (.type == "google_storage_bucket_iam_member"
-        and (.address | test("^google_storage_bucket_iam_member\\.runtime_backups\\["))
-        and (["roles/storage.objectCreator", "roles/storage.objectViewer"]
-          | index($after.role)))
+      (runtime_member and (
+        (.type == "google_project_iam_member"
+          and (.address | test("^google_project_iam_member\\.runtime\\["))
+          and (["roles/artifactregistry.reader", "roles/logging.logWriter", "roles/monitoring.metricWriter"]
+            | index($after.role)))
+        or (.type == "google_secret_manager_secret_iam_member"
+          and (.address | test("^google_secret_manager_secret_iam_member\\.runtime\\["))
+          and $after.role == "roles/secretmanager.secretAccessor")
+        or (.type == "google_storage_bucket_iam_member"
+          and (.address | test("^google_storage_bucket_iam_member\\.runtime_backups\\["))
+          and (["roles/storage.objectCreator", "roles/storage.objectViewer"]
+            | index($after.role)))
+      ))
+      or (deploy_member
+        and .type == "google_service_account_iam_member"
+        and .address == "google_service_account_iam_member.deploy_act_as"
+        and $after.role == "roles/iam.serviceAccountUser")
     );
   def protected_destroy:
     (.type == "google_storage_bucket"

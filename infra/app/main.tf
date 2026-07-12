@@ -49,6 +49,12 @@ resource "google_service_account" "runtime" {
   project      = var.project_id
 }
 
+resource "google_service_account_iam_member" "deploy_act_as" {
+  service_account_id = google_service_account.runtime.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:chief-deploy@${var.project_id}.iam.gserviceaccount.com"
+}
+
 resource "google_project_iam_member" "runtime" {
   for_each = toset([
     "roles/artifactregistry.reader",

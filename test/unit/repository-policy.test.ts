@@ -97,6 +97,13 @@ describe('repository policy', () => {
     expect(app).toContain('roles/storage.objectCreator');
     expect(app).toContain('roles/storage.objectViewer');
     expect(app).not.toContain('roles/storage.objectAdmin');
+    expect(app).toContain(
+      'resource "google_service_account_iam_member" "deploy_act_as"',
+    );
+    expect(app).toContain('"roles/iam.serviceAccountUser"');
+    expect(app).toContain(
+      'serviceAccount:chief-deploy@${var.project_id}.iam.gserviceaccount.com',
+    );
   });
 
   it('aligns the DELTA uptime metric before absence checks', async () => {
@@ -168,6 +175,18 @@ describe('repository policy', () => {
             },
             type: 'google_compute_instance',
           },
+          {
+            address: 'google_service_account_iam_member.deploy_act_as',
+            change: {
+              actions: ['create'],
+              after: {
+                member:
+                  'serviceAccount:chief-deploy@chief-project.iam.gserviceaccount.com',
+                role: 'roles/iam.serviceAccountUser',
+              },
+            },
+            type: 'google_service_account_iam_member',
+          },
         ],
       }),
     ).resolves.toBe(0);
@@ -203,6 +222,18 @@ describe('repository policy', () => {
         address: 'google_service_account_key.attacker',
         change: { actions: ['create'], after: {} },
         type: 'google_service_account_key',
+      },
+      {
+        address: 'google_service_account_iam_member.deploy_act_as',
+        change: {
+          actions: ['create'],
+          after: {
+            member:
+              'serviceAccount:attacker@chief-project.iam.gserviceaccount.com',
+            role: 'roles/iam.serviceAccountUser',
+          },
+        },
+        type: 'google_service_account_iam_member',
       },
       {
         address: 'google_project_iam_audit_config.attacker',
