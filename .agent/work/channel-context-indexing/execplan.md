@@ -198,7 +198,7 @@ Extend `ChiefTextRequest` with the typed prepared context. Update `formatTextInp
 
 ## Plan of Work
 
-### Milestone 1: establish canonical source, context schema, and calendar behavior
+### Task 1: establish canonical source, context schema, and calendar behavior
 
 Add migration `0003_channel_context` in `src/memory/database.ts`. Never edit the two deployed migrations. Extend `conversation_events` with `recent_until`, configured guild/channel identity, reply-to message identity, edit and deletion timestamps, attachment metadata JSON, a nullable logical response ID, and the stable Discord message identity needed to build jump links. Each delivered Discord chunk is one source row keyed by its own unique snowflake; chunks share the logical response ID and are grouped back into one Chief response only when assembling recent or historical evidence. This preserves the existing single-key uniqueness rule while making every chunk independently idempotent during live ingest, reconciliation, and backfill. SQLite cannot safely add all desired non-null columns to populated rows in one step: add nullable staging columns, backfill every existing row, validate the backfill, then rebuild and rename the table with final constraints and recreated indexes inside the migration transaction. Populate `recent_until` from the existing retention deadline for migrated rows. New eligible text and Chief events use a seven-day `recent_until` and 30-day raw `retention_deadline`; voice continues using seven days for both. Deleted rows keep non-content identity and lineage fields but replace raw content and attachment metadata with empty values immediately. Store a content-state reason that distinguishes retained, retention-expired, Discord-deleted, and locally-forgotten sources.
 
@@ -212,7 +212,7 @@ Update `ConversationStore.recent` to filter each row by `recent_until` while mai
 
 At milestone end, targeted migration/calendar tests pass and a migrated fixture reports the same durable memory plus the new empty context indexes.
 
-### Milestone 2: normalize live Discord source lifecycle
+### Task 2: normalize live Discord source lifecycle
 
 Extend the Discord normalized message type to carry occurred/edited time, reply target, attachment name/description metadata, bot identity classification, requester identity, and a `canModerateContext` permission snapshot. Accept humans and this application's own Chief messages; continue rejecting other bots, webhooks, threads, other channels, and other guilds. Derive moderator authority only when destructive intent is submitted, using `message.guild.ownerId` or the request author's current `message.member.permissions` `Administrator` flag. If current member permissions are unavailable, fail closed for cross-member/topic deletion; do not add the privileged `GuildMembers` intent merely for this feature. Self-deletion compares the authenticated Discord author ID with stored source authorship.
 
@@ -226,7 +226,7 @@ An eligible human edit updates both the canonical conversation source and the pr
 
 An unmentioned create still returns `null` and never types or replies. Edits and deletes never trigger generation. Unit and integration tests prove source availability within one second using a fake clock, exact allowlist behavior, reply lineage, safe attachment metadata, and immediate deletion.
 
-### Milestone 3: generate rollups under one protected background scheduler
+### Task 3: generate rollups under one protected background scheduler
 
 Create the shared paid-work queue and pass it from `src/runtime.ts` to `ConversationOrchestrator` and the background worker. Consolidate the memory timer and context timer behind one `runBackgroundOne` loop that chooses due live work by freshness deadline, fairly rotates equal-deadline memory/context work, and selects historical backfill only when no due live job exists. Submit one bounded provider job at a time. Pending interaction always wins the next slot. The selected job then attempts its reservation; rejected background admission defers without consuming attempts. Preserve the current provider timeouts and ensure shutdown stops accepting jobs, waits for or safely abandons the active lease, and then closes SQLite.
 
@@ -238,7 +238,7 @@ Implement category and priority accounting in `UsageBudget` and `SqliteUsageLedg
 
 At milestone end, fake-clock tests prove all freshness deadlines, retry/lease recovery, background admission headroom, month rollover versus monotonic per-run spend, interactive priority, oversized bucket segmentation, and restart catch-up. No test makes a paid call. Provider-dependent freshness deadlines apply while Chief is running, the provider is available, and the applicable overall/category/run capacity exists; when any condition is absent, health must report the exact redacted lag reason and catch-up resumes in deadline order.
 
-### Milestone 4: assemble one bounded context per retrieval query
+### Task 4: assemble one bounded context per retrieval query
 
 Implement `ContextAssembler.assemble`. Embed each retrieval query once, then use that vector and lexical query against active durable memories and every active rollup tier; also query the paid-call-free source-event FTS for retained messages outside or inside the recent window. Query recent conversation chronologically before the current event. Return source matches as `evidenceForm: 'source'` with their actual occurrence instant and rollup matches as `evidenceForm: 'rollup'` with tier/period metadata. Normalize lexical/vector scores within each evidence class and tier so raw score scales do not compete directly. Apply a recency adjustment within tiers, not across them. Reserve tier budgets inside one historical-context allowance, deduplicate source matches already present in recent chronology, group Chief reply chunks by logical response ID, and suppress source/rollup duplicates that share lineage or convey the same normalized statement. Include only relevant results. Querying every tier and the source index does not mean forcing an irrelevant result from each.
 
@@ -252,7 +252,7 @@ Extend `context-prepared` telemetry with per-tier counts, total approximate toke
 
 At milestone end, conversation replay proves questions spanning each horizon, mixed-tier deduplication, temporal attribution, conflicts, source requests, summary-only uncertainty, text/voice parity, and unchanged current answer behavior when no indexed context exists.
 
-### Milestone 5: coordinate correction, authorization, forgetting, and rebuild
+### Task 5: coordinate correction, authorization, forgetting, and rebuild
 
 Extend explicit intent handling so a forget request searches both durable memory and historical context. Candidate discovery returns only redacted counts and stable IDs to the authorization layer. A member may select sources they authored. Guild owner/admin requests may select other authors or whole topics. An unauthorized broad request returns an honest refusal without revealing whether hidden candidates exist.
 
@@ -262,7 +262,7 @@ The deletion planner performs candidate search and any model-assisted interpreta
 
 Corrections remain historical events rather than rewriting the past. Context ranking prefers later correction evidence, and durable-memory extraction may supersede an accepted memory under current confidence/sensitivity rules. Tests cover self purge, administrator purge, missing-permission fail-closed behavior, unauthorized purge, confirmation expiry/replay, partial-topic rebuild, expired raw evidence, concurrent job completion, restart, and verified absence from active raw SQL, FTS, vectors, prompts, backups created after purge, and any restored database after journal replay.
 
-### Milestone 6: backfill the full accessible channel history
+### Task 6: backfill the full accessible channel history
 
 Add CLI command `context-backfill` in `src/cli.ts`. It loads the normal configuration and production database. `--dry-run` uses Discord REST to paginate the configured channel newest-to-oldest, filters the approved source surface, persists only a content-free manifest of page-boundary message IDs plus aggregate byte/token counts, and prints eligible message count, oldest/newest timestamps, already-ingested count, estimated summary/embedding spend, and no secrets. `--activate --max-usd <positive amount> --confirm-guild <id>` records the owner-approved ceiling and makes the manifest eligible for the running background worker; it performs no paid model call itself. `--status` and `--resume <run-id>` inspect or reactivate the durable run. Refuse activation when no completed dry-run manifest exists.
 
@@ -274,7 +274,7 @@ The runtime may stop at any point. Its durable run and segment checksums resume 
 
 Tests use fake pages containing humans, Chief, other bots, webhooks, threads, edits, deletes, replies, attachments, duplicates, out-of-order pages, rate limits, restart, budget pause, and concurrent live events. Assert that dry-run persists no message text, CLI activation performs no paid call, old raw text never reaches SQLite or a backup, in-memory segments remain bounded, and Chief replies never enter durable-memory extraction. A local fixture backfill must produce the same active documents and retrieval results as feeding the same normalized events live.
 
-### Milestone 7: expose operations, package configuration, and preserve rollback
+### Task 7: expose operations, package configuration, and preserve rollback
 
 Add `CHIEF_CONTEXT_TIME_ZONE=America/New_York` and `CHIEF_USAGE_INDEXING_CEILING_USD=3` to config parsing, `.env.example`, Terraform variables, the VM startup environment template, and documentation. Validate the IANA timezone through Temporal and require `0 < indexing ceiling <= overall ceiling`. Do not expose tier token limits or retention periods as configuration; they are product policy and tests should pin them.
 
@@ -292,7 +292,7 @@ Treat `/var/lib/chief/pre-deploy/*.db`, `chief.db.failed.*`, and bucket backups 
 
 At milestone end, config, health, documentation, Terraform validation, container smoke, backup/restore, and fake failed-deploy rollback tests pass.
 
-### Milestone 8: close quality and live acceptance
+### Task 8: close quality and live acceptance
 
 Expand `test/fixtures/conversation-quality.json` and `test/integration/conversation-quality-replay.test.ts` to at least 40 deterministic cases covering jokes, speculation, conflicting speakers, corrections, topic evolution, repeated facts across tiers, expired sources, summary-only evidence, and requested source links. Each case pins required/forbidden claims, allowed provenance IDs, expected history-versus-memory classification, and retrieval tier. CI requires zero forbidden claims, zero suppressed-source leakage, and 100% returned provenance-ID validity. Extend `scripts/evaluate-conversation-quality.ts` with optional paid grades for rollup faithfulness, supported-claim precision, cross-tier retrieval relevance, and classification. Before production activation, an owner-run evaluation over the pinned corpus must reach at least 90% supported-claim precision and 90% history/memory classification accuracy, with zero suppressed-source leakage and 100% provenance-ID validity. Record model and timestamp; the paid evaluator remains outside CI.
 
