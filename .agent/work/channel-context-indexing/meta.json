@@ -1,0 +1,26 @@
+{
+  "id": "channel-context-indexing",
+  "title": "Index channel context across time horizons",
+  "stage": "implementation",
+  "state": "active",
+  "created_at": "2026-07-14T03:08:25Z",
+  "updated_at": "2026-07-14T04:58:31Z",
+  "worktree": {
+    "path": "/Users/kellen/development/github/kellen-miller/chief/.worktrees/channel-context-indexing",
+    "branch": "codex/channel-context-indexing",
+    "base_ref": "main",
+    "base_commit": "cdcc2e5e92c60bfab08406a1ec7dcc952f1e6969",
+    "upstream": null
+  },
+  "artifacts": {
+    "decision": "decision.md",
+    "execplan": "execplan.md",
+    "plan_review": "adversarial/plan-review.md"
+  },
+  "context_docs": {
+    "context_md": "../../../CONTEXT.md",
+    "adrs": ["../../../docs/adr/0001-use-hierarchical-context-rollups.md"]
+  },
+  "source": "completed grill conversation",
+  "improvement_passes": 5
+}
