@@ -14,7 +14,11 @@ import type { ChiefConfig } from './config/config.js';
 import { ConversationStore } from './conversation/conversation-store.js';
 import { DiscordGateway } from './discord/gateway.js';
 import { HealthServer } from './health/health-server.js';
-import { migrateChiefDatabase, openChiefDatabase } from './memory/database.js';
+import {
+  migrateChiefDatabase,
+  openChiefDatabase,
+  verifyContextDatabaseSchema,
+} from './memory/database.js';
 import { MemoryService } from './memory/memory-service.js';
 import { SqliteMemoryStore } from './memory/memory-store.js';
 import {
@@ -117,7 +121,10 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
   });
   let fallbackSuffixPcm = await readOptionalFile(config.voiceSuffixPath);
   if (fallbackSuffixPcm === undefined) {
-    const reservation = budget.reserve('voice-suffix-generation', 0.05);
+    const reservation = budget.reserve('voice-suffix-generation', 0.05, {
+      priority: 'background',
+      workCategory: 'interaction',
+    });
     if (reservation.allowed) {
       try {
         const generated = await generateOpenAiVoiceSuffix({
@@ -256,12 +263,7 @@ function checkDatabase(
         .run();
       return (
         database.prepare('select vec_version()').pluck().get() === 'v0.1.9' &&
-        database
-          .prepare(
-            "select checksum from schema_migrations where id = '0002_conversation_events'",
-          )
-          .pluck()
-          .get() === 'chief-0002-v1' &&
+        verifyContextDatabaseSchema(database) &&
         database
           .prepare('select count(*) from conversation_events where 0')
           .pluck()

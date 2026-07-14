@@ -19,6 +19,7 @@ export class SqliteUsageLedger implements UsageLedger {
     return this.#database
       .prepare(
         `select id, operation, reservation_usd as reservationUsd,
+                work_category as workCategory, priority,
                 actual_usd as actualUsd, occurred_at as occurredAt
          from usage_ledger where occurred_at >= ? and occurred_at < ?`,
       )
@@ -39,8 +40,10 @@ export class SqliteUsageLedger implements UsageLedger {
     this.#database
       .prepare(
         `insert into usage_ledger
-           (id, operation, reservation_usd, actual_usd, occurred_at, reconciled_at)
-         values (@id, @operation, @reservationUsd, @actualUsd, @occurredAt,
+           (id, operation, work_category, priority, reservation_usd,
+            actual_usd, occurred_at, reconciled_at)
+         values (@id, @operation, @workCategory, @priority, @reservationUsd,
+                 @actualUsd, @occurredAt,
                  case when @actualUsd is null then null else @occurredAt end)`,
       )
       .run(entry);

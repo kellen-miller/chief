@@ -6,7 +6,11 @@ import { basename, join } from 'node:path';
 import { loadConfig } from './config/config.js';
 import { registerGuildCommands } from './discord/register-commands.js';
 import { HealthServer } from './health/health-server.js';
-import { migrateChiefDatabase, openChiefDatabase } from './memory/database.js';
+import {
+  migrateChiefDatabase,
+  openChiefDatabase,
+  verifyContextDatabaseSchema,
+} from './memory/database.js';
 import { backupChiefDatabase } from './memory/backup.js';
 import { SqliteMemoryStore } from './memory/memory-store.js';
 import { startChief } from './runtime.js';
@@ -61,8 +65,9 @@ async function main(arguments_: readonly string[]): Promise<void> {
         .prepare('select vec_version()')
         .pluck()
         .get();
+      const contextSchema = verifyContextDatabaseSchema(database);
       database.close();
-      if (integrity !== 'ok' || vectorVersion !== 'v0.1.9') {
+      if (integrity !== 'ok' || vectorVersion !== 'v0.1.9' || !contextSchema) {
         throw new Error(`backup verification failed for ${basename(backup)}`);
       }
       break;

@@ -68,7 +68,11 @@ describe('ConversationStore', () => {
         .prepare('select id from schema_migrations order by id')
         .pluck()
         .all(),
-    ).toEqual(['0001_initial', '0002_conversation_events']);
+    ).toEqual([
+      '0001_initial',
+      '0002_conversation_events',
+      '0003_channel_context',
+    ]);
     reopened.close();
   });
 
@@ -158,6 +162,59 @@ describe('ConversationStore', () => {
     database.close();
   });
 
+  it('stores reply chunks independently and assembles one Chief response', () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const store = new ConversationStore(database);
+    store.record({
+      content: 'Give me the briefing.',
+      medium: 'text',
+      occurredAt: 1,
+      platformEventId: '2001',
+      requestId: 'briefing',
+      retentionDeadline: 100,
+      role: 'human',
+      speakerId: 'president',
+      speakerName: 'President',
+    });
+    for (const [index, content] of [
+      'First section. ',
+      'Second section.',
+    ].entries()) {
+      store.record({
+        content,
+        discordMessageId: String(2002 + index),
+        logicalResponseId: 'briefing-response',
+        medium: 'text',
+        occurredAt: 2 + index,
+        platformEventId: String(2002 + index),
+        replyToMessageId: '2001',
+        requestId: 'briefing',
+        retentionDeadline: 100,
+        role: 'chief',
+        speakerId: null,
+        speakerName: 'Chief',
+      });
+    }
+
+    expect(
+      database
+        .prepare('select count(*) from conversation_events')
+        .pluck()
+        .get(),
+    ).toBe(3);
+    expect(
+      store.recent({ now: 10 }).events.map(({ content, role }) => ({
+        content,
+        role,
+      })),
+    ).toEqual([
+      { content: 'Give me the briefing.', role: 'human' },
+      { content: 'First section. Second section.', role: 'chief' },
+    ]);
+    database.close();
+  });
+
   it('truncates a newest oversize event within the token budget', () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
@@ -208,30 +265,122 @@ describe('ConversationStore', () => {
     database.close();
   });
 
-  it('records platform events idempotently and expires them explicitly', () => {
+  it('expires each reply row from recent context independently', () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
     const store = new ConversationStore(database);
-    const event = {
-      content: 'first version',
-      medium: 'text' as const,
+    store.record({
+      content: 'Question near the boundary',
+      medium: 'text',
       occurredAt: 1,
-      platformEventId: 'discord:text:idempotent',
-      requestId: null,
-      retentionDeadline: 10,
-      role: 'human' as const,
+      platformEventId: 'discord:text:boundary',
+      recentUntil: 10,
+      requestId: 'boundary',
+      retentionDeadline: 30,
+      role: 'human',
       speakerId: 'president',
       speakerName: 'President',
-    };
-    const firstId = store.record(event);
-    const secondId = store.record({ ...event, content: 'corrected version' });
+    });
+    store.record({
+      content: 'Answer just after it',
+      medium: 'text',
+      occurredAt: 2,
+      platformEventId: 'chief:boundary',
+      recentUntil: 12,
+      requestId: 'boundary',
+      retentionDeadline: 32,
+      role: 'chief',
+      speakerId: null,
+      speakerName: 'Chief',
+    });
 
-    expect(secondId).toBe(firstId);
-    expect(store.recent({ now: 9 }).events[0]?.content).toBe(
-      'corrected version',
-    );
-    expect(store.maintain(10)).toEqual({ deletedEvents: 1 });
-    expect(store.recent({ now: 10 }).events).toEqual([]);
+    expect(
+      store.recent({ now: 9 }).events.map(({ content }) => content),
+    ).toEqual(['Question near the boundary', 'Answer just after it']);
+    expect(
+      store.recent({ now: 10 }).events.map(({ content }) => content),
+    ).toEqual(['Answer just after it']);
+    expect(store.maintain(10)).toEqual({ deletedEvents: 0 });
+    expect(
+      database
+        .prepare('select content from conversation_events where id = 1')
+        .pluck()
+        .get(),
+    ).toBe('Question near the boundary');
+    expect(store.recent({ now: 12 }).events).toEqual([]);
+    database.close();
+  });
+
+  it('scrubs expired text content and deletes expired voice rows', () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const store = new ConversationStore(database);
+    const textId = store.record({
+      attachmentMetadataJson: '[{"name":"agenda.txt"}]',
+      channelId: 'channel-1',
+      content: 'Raw text',
+      discordMessageId: '1001',
+      guildId: 'guild-1',
+      medium: 'text',
+      occurredAt: 1,
+      platformEventId: '1001',
+      recentUntil: 10,
+      requestId: null,
+      retentionDeadline: 20,
+      role: 'human',
+      speakerId: 'president',
+      speakerName: 'President',
+    });
+    store.record({
+      content: 'Raw voice',
+      medium: 'voice',
+      occurredAt: 1,
+      platformEventId: 'voice-1',
+      recentUntil: 10,
+      requestId: null,
+      retentionDeadline: 20,
+      role: 'human',
+      speakerId: 'president',
+      speakerName: 'President',
+    });
+    database
+      .prepare(
+        'insert into conversation_event_fts (rowid, content) values (?, ?)',
+      )
+      .run(textId, 'Raw text');
+
+    expect(store.maintain(20)).toEqual({ deletedEvents: 2 });
+    expect(
+      database
+        .prepare(
+          `select content, attachment_metadata_json as attachmentMetadataJson,
+                  content_state as contentState,
+                  content_state_reason as contentStateReason,
+                  discord_message_id as discordMessageId
+           from conversation_events where id = ?`,
+        )
+        .get(textId),
+    ).toEqual({
+      attachmentMetadataJson: '[]',
+      content: '',
+      contentState: 'scrubbed',
+      contentStateReason: 'retention-expired',
+      discordMessageId: '1001',
+    });
+    expect(
+      database
+        .prepare(
+          "select count(*) from conversation_events where medium = 'voice'",
+        )
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare('select count(*) from conversation_event_fts')
+        .pluck()
+        .get(),
+    ).toBe(0);
     database.close();
   });
 

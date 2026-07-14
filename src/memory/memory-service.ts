@@ -120,6 +120,7 @@ export class MemoryService {
     const reservation = this.#options.budget.reserve(
       'memory-extraction',
       this.#options.estimateUsd,
+      { priority: 'interactive', workCategory: 'memory' },
     );
     if (!reservation.allowed) return { status: 'budget-paused' };
 
@@ -230,6 +231,7 @@ export class MemoryService {
     const reservation = this.#options.budget.reserve(
       'memory-extraction',
       this.#options.estimateUsd,
+      { priority: 'background', workCategory: 'memory' },
     );
     if (!reservation.allowed) {
       const notBefore = nextUtcMonth(now);

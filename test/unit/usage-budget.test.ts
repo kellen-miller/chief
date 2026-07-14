@@ -8,6 +8,35 @@ import { SqliteUsageLedger } from '../../src/usage/sqlite-usage-ledger.js';
 import { UsageBudget } from '../../src/usage/usage-budget.js';
 
 describe('UsageBudget', () => {
+  it('persists reservation category and priority across restart', () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const ledger = new SqliteUsageLedger(database);
+
+    ledger.record({
+      actualUsd: null,
+      id: 'context-reservation',
+      occurredAt: 100,
+      operation: 'context-summary',
+      priority: 'background',
+      reservationUsd: 0.25,
+      workCategory: 'indexing',
+    });
+
+    expect(new SqliteUsageLedger(database).list(0, 200)).toEqual([
+      {
+        actualUsd: null,
+        id: 'context-reservation',
+        occurredAt: 100,
+        operation: 'context-summary',
+        priority: 'background',
+        reservationUsd: 0.25,
+        workCategory: 'indexing',
+      },
+    ]);
+    database.close();
+  });
+
   it('refuses a reservation that could cross the monthly ceiling', () => {
     const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
     budget.recordActual(9.8);

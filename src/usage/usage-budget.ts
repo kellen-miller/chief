@@ -16,7 +16,17 @@ export interface UsageLedgerEntry {
   readonly id: string;
   readonly occurredAt: number;
   readonly operation: string;
+  readonly priority: UsagePriority;
   readonly reservationUsd: number;
+  readonly workCategory: UsageWorkCategory;
+}
+
+export type UsagePriority = 'interactive' | 'background';
+export type UsageWorkCategory = 'interaction' | 'memory' | 'indexing';
+
+export interface UsageWork {
+  readonly priority: UsagePriority;
+  readonly workCategory: UsageWorkCategory;
 }
 
 export interface UsageLedger {
@@ -42,7 +52,12 @@ export class UsageBudget {
   readonly #options: UsageBudgetOptions;
   readonly #reservations = new Map<
     string,
-    { readonly amountUsd: number; readonly occurredAt: number }
+    {
+      readonly amountUsd: number;
+      readonly occurredAt: number;
+      readonly priority: UsagePriority;
+      readonly workCategory: UsageWorkCategory;
+    }
   >();
   #actualUsd = 0;
   #ceilingEmitted = false;
@@ -59,7 +74,14 @@ export class UsageBudget {
     this.#loadMonth(this.#now());
   }
 
-  public reserve(kind: string, estimateUsd: number): ReservationResult {
+  public reserve(
+    kind: string,
+    estimateUsd: number,
+    work: UsageWork = {
+      priority: 'interactive',
+      workCategory: 'interaction',
+    },
+  ): ReservationResult {
     const now = this.#now();
     this.#refreshMonth(now);
     if (estimateUsd < 0 || !Number.isFinite(estimateUsd)) {
@@ -73,12 +95,17 @@ export class UsageBudget {
     }
 
     const id = randomUUID();
-    this.#reservations.set(id, { amountUsd: estimateUsd, occurredAt: now });
+    this.#reservations.set(id, {
+      amountUsd: estimateUsd,
+      occurredAt: now,
+      ...work,
+    });
     this.#ledger?.record({
       actualUsd: null,
       id,
       occurredAt: now,
       operation: kind,
+      ...work,
       reservationUsd: estimateUsd,
     });
     return { allowed: true, id };
@@ -119,7 +146,9 @@ export class UsageBudget {
       id: randomUUID(),
       occurredAt: now,
       operation: 'unreserved',
+      priority: 'interactive',
       reservationUsd: 0,
+      workCategory: 'interaction',
     });
     this.#actualUsd += amountUsd;
     const { ceilingReached, warningRaised } = this.#evaluateThresholds();
@@ -165,6 +194,8 @@ export class UsageBudget {
         this.#reservations.set(entry.id, {
           amountUsd: entry.reservationUsd,
           occurredAt: entry.occurredAt,
+          priority: entry.priority,
+          workCategory: entry.workCategory,
         });
       } else {
         this.#actualUsd += entry.actualUsd;

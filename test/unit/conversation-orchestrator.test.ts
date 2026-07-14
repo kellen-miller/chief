@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   ChiefAgent,
@@ -22,6 +22,10 @@ import { UsageBudget } from '../../src/usage/usage-budget.js';
 import type { HumanVoiceObservation } from '../../src/voice/voice-session-manager.js';
 
 let occurredAt = 0;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function textTurn(input: {
   readonly prompt: string;
@@ -93,6 +97,78 @@ function createOrchestrator(
 }
 
 describe('ConversationOrchestrator', () => {
+  it('keeps text raw content after recent context expires', async () => {
+    const now = Date.UTC(2026, 6, 14, 12);
+    occurredAt = now;
+    const record = vi.spyOn(ConversationStore.prototype, 'record');
+    const orchestrator = createOrchestrator(
+      {
+        answerText: () =>
+          Promise.resolve({ citations: [], content: 'Answer', usageUsd: 0.01 }),
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe: vi.fn(),
+      },
+      new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
+    );
+
+    await orchestrator.handleText({
+      content: 'Question',
+      kind: 'request',
+      occurredAt: now,
+      platformSourceId: 'retention-question',
+      prompt: 'Question',
+      requestId: 'retention-question',
+      speakerId: 'president-test',
+      speakerName: 'President Test',
+    });
+
+    const sevenDays = 7 * 24 * 60 * 60 * 1_000;
+    const thirtyDays = 30 * 24 * 60 * 60 * 1_000;
+    expect(record.mock.calls[0]?.[0]).toMatchObject({
+      recentUntil: now + sevenDays,
+      retentionDeadline: now + thirtyDays,
+      role: 'human',
+    });
+    expect(record.mock.calls[1]?.[0]).toMatchObject({
+      recentUntil: now + sevenDays,
+      retentionDeadline: now + thirtyDays,
+      role: 'chief',
+    });
+    record.mockRestore();
+  });
+
+  it('uses seven days for voice recency and raw retention', () => {
+    const now = Date.UTC(2026, 6, 14, 12);
+    const record = vi.spyOn(ConversationStore.prototype, 'record');
+    const orchestrator = createOrchestrator(
+      {
+        answerText: vi.fn(),
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe: vi.fn(),
+      },
+      new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
+    );
+
+    orchestrator.observeVoiceTranscript({
+      content: 'Voice context',
+      occurredAt: now,
+      platformSourceId: 'voice-retention',
+      speakerId: 'president-test',
+      speakerName: 'President Test',
+    });
+
+    const sevenDays = 7 * 24 * 60 * 60 * 1_000;
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recentUntil: now + sevenDays,
+        retentionDeadline: now + sevenDays,
+      }),
+    );
+    record.mockRestore();
+  });
+
   it('serializes paid generations in FIFO order', async () => {
     const releases: (() => void)[] = [];
     let active = 0;
