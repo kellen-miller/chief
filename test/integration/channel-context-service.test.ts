@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+import { describe, expect, it, vi } from 'vitest';
+
+import { ContextAssembler } from '../../src/context/context-assembler.js';
 import { ChannelContextService } from '../../src/context/channel-context-service.js';
+import type { ContextForgetJournalEntry } from '../../src/context/context-deletion-store.js';
 import { contextPeriod } from '../../src/context/context-period.js';
 import {
   ContextStore,
@@ -12,6 +18,9 @@ import {
   migrateChiefDatabase,
   openChiefDatabase,
 } from '../../src/memory/database.js';
+import { MemoryService } from '../../src/memory/memory-service.js';
+import { SqliteMemoryStore } from '../../src/memory/memory-store.js';
+import { UsageBudget } from '../../src/usage/usage-budget.js';
 
 const guildId = '32345678901234567';
 const channelId = '22345678901234567';
@@ -567,6 +576,1171 @@ describe('ChannelContextService', () => {
       database.prepare('select reason from context_tombstones').pluck().get(),
     ).toBe('locally-forgotten');
     database.close();
+  });
+
+  it('uploads authoritative deletion journals through the same outbox', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const uploadForgetJournal = vi.fn().mockResolvedValue(undefined);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal,
+    });
+    service.apply(source(occurredAt));
+    service.apply({
+      deletedAt: occurredAt + 1_000,
+      messageId: source(occurredAt).messageId,
+      reason: 'discord-deleted',
+      type: 'delete',
+    });
+
+    await expect(
+      service.flushForgetJournal(occurredAt + 1_000),
+    ).resolves.toEqual({ status: 'uploaded' });
+    expect(uploadForgetJournal).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(uploadForgetJournal.mock.calls)).not.toContain(
+      'Marigold',
+    );
+    expect(
+      database
+        .prepare('select upload_status from context_forget_journal')
+        .pluck()
+        .get(),
+    ).toBe('uploaded');
+    database.close();
+  });
+
+  it('forgets one authored source across every active store', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const memory = new SqliteMemoryStore(database);
+    const uploadForgetJournal = vi.fn().mockResolvedValue(undefined);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory,
+      now: () => occurredAt + 5_000,
+      timeZone,
+      uploadForgetJournal,
+    });
+    const contextStore = new ContextStore(database);
+    const created = service.apply(
+      source(occurredAt, {
+        attachmentMetadataJson: '[{"name":"marigold.txt"}]',
+        content: 'Project Marigold launches Friday.',
+      }),
+    );
+    if (created.status !== 'applied' || created.memorySourceEventId === null) {
+      throw new Error('expected source and memory provenance');
+    }
+    const documentId = contextStore.activateDocumentRevision({
+      ...sourceJobInput(database, 'provisional'),
+      completeness: 'provisional',
+      confidence: 0.9,
+      createdAt: occurredAt + 2_000,
+      documentKey: 'hourly-marigold',
+      embedding: embedding(0.5),
+      eventIds: [created.eventId],
+      generationInputTokens: 10,
+      generationOutputTokens: 5,
+      generationUsageUsd: 0.01,
+      parentDocumentIds: [],
+      retentionDeadline: occurredAt + thirtyDays,
+      revision: 1,
+      summary: 'Project Marigold launches Friday.',
+      tier: 'hourly',
+      topicKey: null,
+    });
+    const memoryId = memory.applyMemory({
+      canonicalText: 'Project Marigold launches Friday.',
+      confidence: 0.95,
+      embedding: embedding(0.7),
+      kind: 'fact',
+      provenance: { platformSourceId: source(occurredAt).messageId },
+      sourceEventId: created.memorySourceEventId,
+      timestamp: occurredAt + 3_000,
+    });
+
+    await expect(
+      service.forget({
+        canModerateContext: false,
+        content: 'Chief, forget that Project Marigold launches Friday',
+        now: occurredAt + 5_000,
+        requestMessageId: '62345678901234567',
+        requesterId: source(occurredAt).speakerId,
+      }),
+    ).resolves.toMatchObject({
+      documentCount: 1,
+      memoryCount: 1,
+      sourceCount: 1,
+      status: 'forgotten',
+    });
+
+    expect(uploadForgetJournal).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(uploadForgetJournal.mock.calls)).not.toContain(
+      'Marigold',
+    );
+    expect(
+      database
+        .prepare(
+          `select content, attachment_metadata_json as attachments,
+                  content_state as contentState,
+                  content_state_reason as reason
+           from conversation_events where id = ?`,
+        )
+        .get(created.eventId),
+    ).toEqual({
+      attachments: '[]',
+      content: '',
+      contentState: 'scrubbed',
+      reason: 'locally-forgotten',
+    });
+    expect(lexicalIds(database, 'conversation_event_fts', 'Marigold')).toEqual(
+      [],
+    );
+    expect(
+      database
+        .prepare(
+          `select state, content_state as contentState, summary
+           from context_documents where id = ?`,
+        )
+        .get(documentId),
+    ).toEqual({ contentState: 'scrubbed', state: 'suppressed', summary: '' });
+    expect(lexicalIds(database, 'context_document_fts', 'Marigold')).toEqual(
+      [],
+    );
+    expect(
+      database
+        .prepare('select count(*) from context_document_vectors')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare(
+          `select canonical_text as canonicalText, provenance_json as provenance,
+                  state from memories where id = ?`,
+        )
+        .get(memoryId),
+    ).toEqual({ canonicalText: '', provenance: '{}', state: 'superseded' });
+    expect(
+      database
+        .prepare('select rowid from memory_fts where memory_fts match ?')
+        .pluck()
+        .all('Marigold'),
+    ).toEqual([]);
+    expect(
+      database.prepare('select count(*) from memory_vectors').pluck().get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare('select content from source_events where id = ?')
+        .pluck()
+        .get(created.memorySourceEventId),
+    ).toBe('');
+    expect(
+      database
+        .prepare(
+          'select scope_type from context_tombstones order by scope_type',
+        )
+        .pluck()
+        .all(),
+    ).toEqual(['document', 'source']);
+    const journal = database
+      .prepare(
+        `select payload_json as payload, upload_status as uploadStatus
+         from context_forget_journal`,
+      )
+      .get() as { payload: string; uploadStatus: string };
+    expect(journal.uploadStatus).toBe('uploaded');
+    expect(journal.payload).not.toContain('Marigold');
+    expect(
+      database
+        .prepare(
+          `select count(*) from context_jobs
+           where status = 'pending' and last_error_category = 'rebuild'`,
+        )
+        .pluck()
+        .get(),
+    ).toBeGreaterThan(0);
+    const prepared = await new ContextAssembler({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      embed: vi.fn().mockResolvedValue({
+        embedding: embedding(0.1),
+        usageUsd: 0,
+      }),
+      guildId,
+      memory: new MemoryService({
+        budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
+        embed: vi.fn(),
+        estimateUsd: 0.1,
+        extract: vi.fn(),
+        store: memory,
+      }),
+      timeZone,
+    }).assemble({ now: occurredAt + 6_000, prompt: 'Marigold' });
+    expect(JSON.stringify(prepared)).not.toContain('Marigold');
+    database.close();
+  });
+
+  it('requires and consumes one administrator confirmation', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const memory = new SqliteMemoryStore(database);
+    let now = occurredAt + 5_000;
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory,
+      now: () => now,
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    service.apply(source(occurredAt));
+    service.apply({
+      ...source(occurredAt + 1_000, {
+        messageId: '52345678901234568',
+        platformEventId: 'second-marigold',
+      }),
+      speakerId: '42345678901234568',
+      speakerName: 'Another Member',
+    });
+
+    const requested = await service.forget({
+      canModerateContext: true,
+      content: 'Chief, forget every message about Project Marigold',
+      now,
+      requestMessageId: '62345678901234568',
+      requesterId: '72345678901234567',
+    });
+    expect(requested).toMatchObject({
+      sourceCount: 2,
+      status: 'confirmation-required',
+    });
+    if (requested.status !== 'confirmation-required') {
+      throw new Error('expected a confirmation request');
+    }
+    const stored = database
+      .prepare(
+        `select source_ids_json as sourceIds, document_ids_json as documentIds,
+                memory_ids_json as memoryIds, scope_type as scopeType, status
+         from context_deletion_requests`,
+      )
+      .get() as Record<string, unknown>;
+    expect(stored.status).toBe('pending');
+    expect(stored.scopeType).toBe('topic');
+    expect(JSON.stringify(stored)).not.toContain('Marigold');
+    expect(
+      database
+        .prepare(
+          `select count(*) from conversation_events
+           where content_state = 'available' and content like '%Marigold%'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(2);
+
+    await expect(
+      service.forget({
+        canModerateContext: true,
+        confirmationNonce: requested.confirmationNonce,
+        content: `Chief, confirm forget ${requested.confirmationNonce}`,
+        now,
+        requestMessageId: '62345678901234569',
+        requesterId: '72345678901234567',
+      }),
+    ).resolves.toMatchObject({ sourceCount: 2, status: 'forgotten' });
+    await expect(
+      service.forget({
+        canModerateContext: true,
+        confirmationNonce: requested.confirmationNonce,
+        content: `Chief, confirm forget ${requested.confirmationNonce}`,
+        now,
+        requestMessageId: '62345678901234570',
+        requesterId: '72345678901234567',
+      }),
+    ).resolves.toEqual({ status: 'confirmation-invalid' });
+    expect(
+      database
+        .prepare('select status from context_deletion_requests')
+        .pluck()
+        .get(),
+    ).toBe('consumed');
+
+    service.apply({
+      ...source(occurredAt + 2_000, {
+        content: 'Project Juniper launches Monday.',
+        messageId: '52345678901234569',
+        platformEventId: 'juniper',
+      }),
+      speakerId: '42345678901234568',
+    });
+    const expiring = await service.forget({
+      canModerateContext: true,
+      content: 'Chief, forget every message about Project Juniper',
+      now,
+      requestMessageId: '62345678901234571',
+      requesterId: '72345678901234567',
+    });
+    if (expiring.status !== 'confirmation-required') {
+      throw new Error('expected an expiring confirmation request');
+    }
+    now += 5 * 60 * 1_000 + 1;
+    await expect(
+      service.forget({
+        canModerateContext: true,
+        confirmationNonce: expiring.confirmationNonce,
+        content: `Chief, confirm forget ${expiring.confirmationNonce}`,
+        now,
+        requestMessageId: '62345678901234572',
+        requesterId: '72345678901234567',
+      }),
+    ).resolves.toEqual({ status: 'confirmation-expired' });
+    expect(
+      database
+        .prepare(
+          `select count(*) from context_deletion_requests
+           where status = 'pending'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare(
+          `select count(*) from conversation_events
+           where content_state = 'available' and content like '%Juniper%'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(1);
+
+    service.apply({
+      ...source(now + 1_000, {
+        content: 'Project Kestrel launches Tuesday.',
+        messageId: '52345678901234583',
+        platformEventId: 'kestrel',
+      }),
+      speakerId: '42345678901234568',
+    });
+    await expect(
+      service.forget({
+        canModerateContext: true,
+        content: 'Chief, forget every message about Project Kestrel',
+        now,
+        requestMessageId: '62345678901234584',
+        requesterId: '72345678901234567',
+      }),
+    ).resolves.toMatchObject({ status: 'confirmation-required' });
+    service.maintain(now + 5 * 60 * 1_000 + 1);
+    expect(
+      database
+        .prepare(
+          `select count(*) from context_deletion_requests
+           where status = 'pending'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(0);
+    database.close();
+  });
+
+  it('fails closed before revealing a cross-member match', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    service.apply({
+      ...source(occurredAt, {
+        content: 'The launch is still scheduled for Friday.',
+      }),
+      speakerId: '42345678901234568',
+      speakerName: 'Another Member',
+    });
+
+    await expect(
+      service.forget({
+        canModerateContext: false,
+        content: 'Chief, forget every message from Another Member',
+        now: occurredAt + 5_000,
+        requestMessageId: '62345678901234573',
+        requesterId: '42345678901234567',
+      }),
+    ).resolves.toEqual({ status: 'unauthorized' });
+    expect(
+      database
+        .prepare('select count(*) from context_deletion_requests')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    await expect(
+      service.forget({
+        canModerateContext: false,
+        content: 'Chief, forget every message about HiddenNoMatchMarker',
+        now: occurredAt + 5_000,
+        requestMessageId: '62345678901234588',
+        requesterId: '42345678901234567',
+      }),
+    ).resolves.toEqual({ status: 'unauthorized' });
+
+    const administratorRequest = await service.forget({
+      canModerateContext: true,
+      content: 'Chief, forget every message from Another Member',
+      now: occurredAt + 5_000,
+      requestMessageId: '62345678901234574',
+      requesterId: '72345678901234567',
+    });
+    expect(administratorRequest).toMatchObject({
+      sourceCount: 1,
+      status: 'confirmation-required',
+    });
+    if (administratorRequest.status !== 'confirmation-required') {
+      throw new Error('expected administrator confirmation');
+    }
+    expect(
+      database
+        .prepare('select scope_type from context_deletion_requests')
+        .pluck()
+        .get(),
+    ).toBe('member');
+    expect(
+      database
+        .prepare(
+          `select count(*) from conversation_events
+           where content_state = 'available'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(1);
+    await expect(
+      service.forget({
+        canModerateContext: false,
+        confirmationNonce: administratorRequest.confirmationNonce,
+        content: `Chief, confirm forget ${administratorRequest.confirmationNonce}`,
+        now: occurredAt + 6_000,
+        requestMessageId: '62345678901234575',
+        requesterId: '72345678901234567',
+      }),
+    ).resolves.toEqual({ status: 'unauthorized' });
+    expect(
+      database
+        .prepare(
+          `select count(*) from conversation_events
+           where content_state = 'available'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(1);
+    await expect(
+      service.forget({
+        canModerateContext: true,
+        confirmationNonce: administratorRequest.confirmationNonce,
+        content: `Chief, confirm forget ${administratorRequest.confirmationNonce}`,
+        now: occurredAt + 7_000,
+        requestMessageId: '62345678901234576',
+        requesterId: '72345678901234567',
+      }),
+    ).resolves.toMatchObject({ status: 'forgotten' });
+    database.close();
+  });
+
+  it('clarifies ambiguous narrow matches before offering broad confirmation', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    for (const [index, messageId] of [
+      '52345678901234579',
+      '52345678901234580',
+    ].entries()) {
+      service.apply({
+        ...source(occurredAt + index, {
+          content: `OrchidMarker appears in source ${String(index)}.`,
+          messageId,
+          platformEventId: `orchid-${String(index)}`,
+        }),
+      });
+    }
+
+    await expect(
+      service.forget({
+        canModerateContext: false,
+        content: 'Chief, forget OrchidMarker',
+        now: occurredAt + 5_000,
+        requestMessageId: '62345678901234578',
+        requesterId: source(occurredAt).speakerId,
+      }),
+    ).resolves.toEqual({ status: 'clarification-required' });
+    expect(
+      database
+        .prepare('select count(*) from context_deletion_requests')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare(
+          `select count(*) from conversation_events
+           where content_state = 'available'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(2);
+
+    await expect(
+      service.forget({
+        canModerateContext: false,
+        content: 'Chief, forget every message about OrchidMarker',
+        now: occurredAt + 5_000,
+        requestMessageId: '62345678901234579',
+        requesterId: source(occurredAt).speakerId,
+      }),
+    ).resolves.toMatchObject({
+      sourceCount: 2,
+      status: 'confirmation-required',
+    });
+    database.close();
+  });
+
+  it('includes a provenance-free durable memory in an administrator purge', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const memory = new SqliteMemoryStore(database);
+    let captured: ContextForgetJournalEntry | undefined;
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory,
+      timeZone,
+      uploadForgetJournal: (entry) => {
+        captured = entry;
+        return Promise.resolve();
+      },
+    });
+    const memoryId = memory.applyMemory({
+      canonicalText: 'StandaloneMarker is a migrated durable fact.',
+      confidence: 0.95,
+      embedding: embedding(0.8),
+      kind: 'fact',
+      provenance: { migrated: true },
+      sourceEventId: null,
+      timestamp: occurredAt,
+    });
+
+    const requested = await service.forget({
+      canModerateContext: true,
+      content: 'Chief, forget all records about StandaloneMarker',
+      now: occurredAt + 5_000,
+      requestMessageId: '62345678901234580',
+      requesterId: '72345678901234567',
+    });
+    expect(requested).toMatchObject({
+      memoryCount: 1,
+      sourceCount: 0,
+      status: 'confirmation-required',
+    });
+    if (requested.status !== 'confirmation-required') {
+      throw new Error('expected durable-memory confirmation');
+    }
+    await expect(
+      service.forget({
+        canModerateContext: true,
+        confirmationNonce: requested.confirmationNonce,
+        content: `Chief, confirm forget ${requested.confirmationNonce}`,
+        now: occurredAt + 5_000,
+        requestMessageId: '62345678901234581',
+        requesterId: '72345678901234567',
+      }),
+    ).resolves.toMatchObject({ memoryCount: 1, status: 'forgotten' });
+    expect(
+      database
+        .prepare('select canonical_text from memories where id = ?')
+        .pluck()
+        .get(memoryId),
+    ).toBe('');
+    expect(
+      database
+        .prepare('select scope_type from context_tombstones')
+        .pluck()
+        .get(),
+    ).toBe('topic');
+    if (captured === undefined) throw new Error('expected journal upload');
+    const olderBackup = openChiefDatabase(':memory:');
+    try {
+      migrateChiefDatabase(olderBackup);
+      new ChannelContextService({
+        channelId,
+        conversation: new ConversationStore(olderBackup),
+        database: olderBackup,
+        guildId,
+        memory: new SqliteMemoryStore(olderBackup),
+        timeZone,
+      }).replayForgetJournal(captured, occurredAt + 6_000);
+      expect(
+        olderBackup
+          .prepare(
+            `select scope_type, upload_status from context_tombstones
+             join context_forget_journal using (tombstone_key)`,
+          )
+          .get(),
+      ).toEqual({ scope_type: 'topic', upload_status: 'uploaded' });
+    } finally {
+      olderBackup.close();
+    }
+    database.close();
+  });
+
+  it('scrubs durable-memory supersession history and private snapshots', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const memory = new SqliteMemoryStore(database);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory,
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    const originalSource = service.apply({
+      ...source(occurredAt, {
+        content: 'DinnerMarker is scheduled for six.',
+        messageId: '52345678901234581',
+        platformEventId: 'dinner-six',
+      }),
+    });
+    const correctionSource = service.apply({
+      ...source(occurredAt + 1_000, {
+        content: 'Correction: SevenMarker is scheduled for seven.',
+        messageId: '52345678901234582',
+        platformEventId: 'dinner-seven',
+      }),
+    });
+    if (
+      originalSource.status !== 'applied' ||
+      originalSource.memorySourceEventId === null ||
+      correctionSource.status !== 'applied' ||
+      correctionSource.memorySourceEventId === null
+    ) {
+      throw new Error('expected memory source provenance');
+    }
+    const originalId = memory.applyMemory({
+      canonicalText: 'DinnerMarker is scheduled for six.',
+      confidence: 0.95,
+      embedding: embedding(0.5),
+      kind: 'plan',
+      provenance: {},
+      sourceEventId: originalSource.memorySourceEventId,
+      timestamp: occurredAt + 2_000,
+    });
+    memory.supersede(originalId, {
+      canonicalText: 'SevenMarker is scheduled for seven.',
+      confidence: 0.97,
+      embedding: embedding(0.6),
+      kind: 'plan',
+      provenance: {},
+      sourceEventId: correctionSource.memorySourceEventId,
+      timestamp: occurredAt + 3_000,
+    });
+
+    await expect(
+      service.forget({
+        canModerateContext: false,
+        content: 'Chief, forget SevenMarker',
+        now: occurredAt + 5_000,
+        requestMessageId: '62345678901234583',
+        requesterId: source(occurredAt).speakerId,
+      }),
+    ).resolves.toMatchObject({ status: 'forgotten' });
+    expect(
+      database
+        .prepare('select canonical_text from memories order by id')
+        .pluck()
+        .all(),
+    ).toEqual(['', '']);
+    expect(
+      database
+        .prepare('select content from source_events order by id')
+        .pluck()
+        .all(),
+    ).toEqual(['', '']);
+    database.close();
+  });
+
+  it('rolls back every store when journal insertion fails', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    service.apply(source(occurredAt));
+    database.exec(`
+      create trigger reject_forget_journal
+      before insert on context_forget_journal
+      begin
+        select raise(abort, 'simulated journal failure');
+      end;
+    `);
+
+    await expect(
+      service.forget({
+        canModerateContext: false,
+        content: 'Chief, forget Project Marigold launches Friday',
+        now: occurredAt + 5_000,
+        requestMessageId: '62345678901234586',
+        requesterId: source(occurredAt).speakerId,
+      }),
+    ).rejects.toThrow('simulated journal failure');
+    expect(
+      database
+        .prepare(
+          `select content_state, content from conversation_events
+           where discord_message_id = ?`,
+        )
+        .get(source(occurredAt).messageId),
+    ).toMatchObject({
+      content: 'Project Marigold launches Friday.',
+      content_state: 'available',
+    });
+    expect(
+      database.prepare('select count(*) from context_tombstones').pluck().get(),
+    ).toBe(0);
+    expect(lexicalIds(database, 'conversation_event_fts', 'Marigold')).toEqual([
+      1,
+    ]);
+    database.close();
+  });
+
+  it('withholds acknowledgement until a failed journal upload retries', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const memory = new SqliteMemoryStore(database);
+    const failing = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory,
+      timeZone,
+      uploadForgetJournal: vi.fn().mockRejectedValue(new Error('unavailable')),
+    });
+    failing.apply(source(occurredAt));
+
+    await expect(
+      failing.forget({
+        canModerateContext: false,
+        content: 'Chief, forget Project Marigold',
+        now: occurredAt + 5_000,
+        requestMessageId: '62345678901234575',
+        requesterId: source(occurredAt).speakerId,
+      }),
+    ).resolves.toMatchObject({ status: 'journal-pending' });
+    expect(
+      database
+        .prepare('select upload_status from context_forget_journal')
+        .pluck()
+        .get(),
+    ).toBe('failed');
+    expect(
+      database
+        .prepare('select content_state from conversation_events')
+        .pluck()
+        .get(),
+    ).toBe('scrubbed');
+    expect(failing.status(occurredAt + 5_001)).toMatchObject({
+      degraded: true,
+      reason: 'forget-journal',
+    });
+
+    const upload = vi.fn().mockResolvedValue(undefined);
+    const restarted = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory,
+      timeZone,
+      uploadForgetJournal: upload,
+    });
+    await expect(
+      restarted.flushForgetJournal(occurredAt + 10_000),
+    ).resolves.toEqual({ status: 'uploaded' });
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(upload.mock.calls)).not.toContain('Marigold');
+    expect(
+      database
+        .prepare('select upload_status from context_forget_journal')
+        .pluck()
+        .get(),
+    ).toBe('uploaded');
+    expect(
+      database
+        .prepare('select content_state from conversation_events')
+        .pluck()
+        .get(),
+    ).toBe('scrubbed');
+    database.close();
+  });
+
+  it('tombstones expired raw evidence found through retained lineage', async () => {
+    const occurredAt = Date.parse('2026-06-01T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const memory = new SqliteMemoryStore(database);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory,
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    const created = service.apply(
+      source(occurredAt, { content: 'Project Marigold launches Friday.' }),
+    );
+    if (created.eventId === null) throw new Error('expected a source event');
+    const contextStore = new ContextStore(database);
+    contextStore.activateDocumentRevision({
+      ...sourceJobInput(database, 'final'),
+      completeness: 'final',
+      confidence: 0.9,
+      createdAt: occurredAt + 2_000,
+      documentKey: 'retained-marigold',
+      embedding: embedding(0.4),
+      eventIds: [created.eventId],
+      generationInputTokens: 10,
+      generationOutputTokens: 5,
+      generationUsageUsd: 0.01,
+      parentDocumentIds: [],
+      retentionDeadline: null,
+      revision: 1,
+      summary: 'Project Marigold launches Friday.',
+      tier: 'hourly',
+      topicKey: null,
+    });
+    service.maintain(occurredAt + thirtyDays);
+    expect(
+      database
+        .prepare('select content_state_reason from conversation_events')
+        .pluck()
+        .get(),
+    ).toBe('retention-expired');
+
+    await expect(
+      service.forget({
+        canModerateContext: false,
+        content: 'Chief, forget Project Marigold launches Friday',
+        now: occurredAt + thirtyDays + 1,
+        requestMessageId: '62345678901234576',
+        requesterId: source(occurredAt).speakerId,
+      }),
+    ).resolves.toMatchObject({ sourceCount: 1, status: 'forgotten' });
+    expect(
+      database
+        .prepare('select content_state_reason from conversation_events')
+        .pluck()
+        .get(),
+    ).toBe('locally-forgotten');
+    expect(
+      database
+        .prepare(
+          `select scope_type from context_tombstones order by scope_type`,
+        )
+        .pluck()
+        .all(),
+    ).toEqual(['document', 'source']);
+    expect(service.apply(source(occurredAt))).toMatchObject({
+      status: 'suppressed',
+    });
+    database.close();
+  });
+
+  it('forgets a self-authored source after raw retention expires', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    service.apply({
+      ...source(occurredAt),
+      speakerName: 'Retention Member',
+    });
+    service.maintain(occurredAt + thirtyDays);
+
+    const requested = await service.forget({
+      canModerateContext: false,
+      content: 'Chief, forget every message from Retention Member',
+      now: occurredAt + thirtyDays + 1,
+      requestMessageId: '62345678901234585',
+      requesterId: source(occurredAt).speakerId,
+    });
+    expect(requested).toMatchObject({
+      sourceCount: 1,
+      status: 'confirmation-required',
+    });
+    if (requested.status !== 'confirmation-required') {
+      throw new Error('expected broad self-delete confirmation');
+    }
+    await expect(
+      service.forget({
+        canModerateContext: false,
+        confirmationNonce: requested.confirmationNonce,
+        content: `Chief, confirm forget ${requested.confirmationNonce}`,
+        now: occurredAt + thirtyDays + 2,
+        requestMessageId: '62345678901234587',
+        requesterId: source(occurredAt).speakerId,
+      }),
+    ).resolves.toMatchObject({ sourceCount: 1, status: 'forgotten' });
+    expect(
+      database
+        .prepare(
+          `select count(*) from context_tombstones
+           where scope_type = 'source'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(1);
+    database.close();
+  });
+
+  it('replays a forget journal into a restored pre-purge database', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'chief-forget-'));
+    const backupPath = join(directory, 'before-forget.db');
+    const afterForgetBackupPath = join(directory, 'after-forget.db');
+    const missingSourceBackupPath = join(directory, 'before-forget-missing.db');
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    let captured: ContextForgetJournalEntry | undefined;
+    const database = openChiefDatabase(':memory:');
+    try {
+      migrateChiefDatabase(database);
+      const memory = new SqliteMemoryStore(database);
+      const service = new ChannelContextService({
+        channelId,
+        conversation: new ConversationStore(database),
+        database,
+        guildId,
+        memory,
+        timeZone,
+        uploadForgetJournal: (entry) => {
+          captured = entry;
+          return Promise.resolve();
+        },
+      });
+      const created = service.apply(source(occurredAt));
+      if (
+        created.status !== 'applied' ||
+        created.memorySourceEventId === null
+      ) {
+        throw new Error('expected source provenance');
+      }
+      new ContextStore(database).activateDocumentRevision({
+        ...sourceJobInput(database, 'provisional'),
+        completeness: 'provisional',
+        confidence: 0.9,
+        createdAt: occurredAt + 2_000,
+        documentKey: 'restore-marigold',
+        embedding: embedding(0.4),
+        eventIds: [created.eventId],
+        generationInputTokens: 10,
+        generationOutputTokens: 5,
+        generationUsageUsd: 0.01,
+        parentDocumentIds: [],
+        retentionDeadline: null,
+        revision: 1,
+        summary: 'Project Marigold launches Friday.',
+        tier: 'hourly',
+        topicKey: null,
+      });
+      memory.applyMemory({
+        canonicalText: 'Project Marigold launches Friday.',
+        confidence: 0.95,
+        embedding: embedding(0.7),
+        kind: 'fact',
+        provenance: {},
+        sourceEventId: created.memorySourceEventId,
+        timestamp: occurredAt + 3_000,
+      });
+      await database.backup(backupPath);
+      await database.backup(missingSourceBackupPath);
+      await service.forget({
+        canModerateContext: false,
+        content: 'Chief, forget Project Marigold launches Friday',
+        now: occurredAt + 5_000,
+        requestMessageId: '62345678901234582',
+        requesterId: source(occurredAt).speakerId,
+      });
+      if (captured === undefined) throw new Error('expected journal upload');
+      await database.backup(afterForgetBackupPath);
+
+      const afterForget = openChiefDatabase(afterForgetBackupPath);
+      try {
+        expect(
+          afterForget
+            .prepare(
+              `select
+                 (select count(*) from conversation_events
+                  where content like '%Marigold%') +
+                 (select count(*) from context_documents
+                  where summary like '%Marigold%') +
+                 (select count(*) from memories
+                  where canonical_text like '%Marigold%') +
+                 (select count(*) from source_events
+                  where content like '%Marigold%')`,
+            )
+            .pluck()
+            .get(),
+        ).toBe(0);
+        expect(
+          lexicalIds(afterForget, 'conversation_event_fts', 'Marigold'),
+        ).toEqual([]);
+        expect(
+          lexicalIds(afterForget, 'context_document_fts', 'Marigold'),
+        ).toEqual([]);
+      } finally {
+        afterForget.close();
+      }
+
+      const restored = openChiefDatabase(backupPath);
+      try {
+        migrateChiefDatabase(restored);
+        const restarted = new ChannelContextService({
+          channelId,
+          conversation: new ConversationStore(restored),
+          database: restored,
+          guildId,
+          memory: new SqliteMemoryStore(restored),
+          timeZone,
+        });
+        restarted.replayForgetJournal(captured, occurredAt + 6_000);
+        restarted.replayForgetJournal(captured, occurredAt + 7_000);
+        expect(
+          restored
+            .prepare('select content_state from conversation_events')
+            .pluck()
+            .get(),
+        ).toBe('scrubbed');
+        expect(
+          restored
+            .prepare(
+              `select rowid from conversation_event_fts
+               where conversation_event_fts match 'Marigold'`,
+            )
+            .pluck()
+            .all(),
+        ).toEqual([]);
+        expect(
+          restored.prepare('select state from context_documents').pluck().get(),
+        ).toBe('suppressed');
+        expect(
+          restored
+            .prepare('select count(*) from context_document_vectors')
+            .pluck()
+            .get(),
+        ).toBe(0);
+        expect(
+          restored.prepare('select canonical_text from memories').pluck().get(),
+        ).toBe('');
+        expect(
+          restored
+            .prepare('select upload_status from context_forget_journal')
+            .pluck()
+            .get(),
+        ).toBe('uploaded');
+      } finally {
+        restored.close();
+      }
+
+      const missingSource = openChiefDatabase(missingSourceBackupPath);
+      try {
+        migrateChiefDatabase(missingSource);
+        const sourceId = missingSource
+          .prepare('select id from conversation_events')
+          .pluck()
+          .get() as number;
+        missingSource
+          .prepare('delete from conversation_event_fts where rowid = ?')
+          .run(sourceId);
+        missingSource
+          .prepare('delete from context_document_events where event_id = ?')
+          .run(sourceId);
+        missingSource
+          .prepare('delete from conversation_events where id = ?')
+          .run(sourceId);
+        new ChannelContextService({
+          channelId,
+          conversation: new ConversationStore(missingSource),
+          database: missingSource,
+          guildId,
+          memory: new SqliteMemoryStore(missingSource),
+          timeZone,
+        }).replayForgetJournal(captured, occurredAt + 8_000);
+        expect(
+          missingSource
+            .prepare(
+              `select count(*) from context_tombstones
+               where scope_type = 'source' and scope_id = ?`,
+            )
+            .pluck()
+            .get(captured.payload.sourceScopeIds[0]),
+        ).toBe(1);
+      } finally {
+        missingSource.close();
+      }
+    } finally {
+      database.close();
+      await rm(directory, { force: true, recursive: true });
+    }
   });
 
   it('removes retained text from lexical search at raw expiry', () => {

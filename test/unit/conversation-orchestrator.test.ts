@@ -944,7 +944,15 @@ describe('ConversationOrchestrator', () => {
       },
       assembler: createAssembler(database, new ConversationStore(database)),
       budget,
-      context: createContext(database),
+      context: new ChannelContextService({
+        channelId: 'main-text',
+        conversation: new ConversationStore(database),
+        database,
+        guildId: 'presidents',
+        memory: store,
+        timeZone: 'America/New_York',
+        uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+      }),
       conversation: new ConversationStore(database),
       memory: new MemoryService({
         budget,
@@ -1000,7 +1008,8 @@ describe('ConversationOrchestrator', () => {
         speakerName: 'President Test',
       }),
     ).resolves.toMatchObject({
-      content: 'I have removed that from the record Mr. President',
+      content:
+        'I have removed that from local active context; recovery copies may retain older encrypted bytes for up to 30 days Mr. President',
       status: 'completed',
     });
     expect(
@@ -1013,6 +1022,96 @@ describe('ConversationOrchestrator', () => {
     expect(
       database.prepare('select count(*) from memory_jobs').pluck().get(),
     ).toBe(0);
+    expect(answerText).not.toHaveBeenCalled();
+    database.close();
+  });
+
+  it('routes explicit forgetting through historical context without paid work', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const store = new SqliteMemoryStore(database);
+    const conversation = new ConversationStore(database);
+    const context = new ChannelContextService({
+      channelId: 'main-text',
+      conversation,
+      database,
+      guildId: 'presidents',
+      memory: store,
+      timeZone: 'America/New_York',
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    context.apply({
+      content: 'Project Marigold launches Friday.',
+      messageId: '52345678901234567',
+      occurredAt: 90,
+      requestId: '52345678901234567',
+      role: 'human',
+      speakerId: 'president-1',
+      speakerName: 'President Test',
+      type: 'upsert',
+    });
+    const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+    const extract = vi.fn();
+    const embed = vi.fn();
+    const answerText = vi.fn<ChiefAgent['answerText']>();
+    const memory = new MemoryService({
+      budget,
+      embed,
+      estimateUsd: 0.1,
+      extract,
+      store,
+    });
+    const orchestrator = new ConversationOrchestrator({
+      agent: {
+        answerText,
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe: vi.fn(),
+      },
+      assembler: createAssembler(database, conversation, memory),
+      budget,
+      context,
+      conversation,
+      memory,
+      now: () => 110,
+    });
+
+    await expect(
+      orchestrator.handleText({
+        content: 'Chief, forget Project Marigold launches Friday',
+        kind: 'request',
+        occurredAt: 100,
+        platformSourceId: '62345678901234567',
+        prompt: 'forget Project Marigold launches Friday',
+        requestId: '62345678901234567',
+        speakerId: 'president-1',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toMatchObject({
+      content:
+        'I have removed that from local active context; recovery copies may retain older encrypted bytes for up to 30 days Mr. President',
+      status: 'completed',
+    });
+    expect(
+      database
+        .prepare(
+          `select content_state from conversation_events
+           where discord_message_id = '52345678901234567'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe('scrubbed');
+    expect(
+      database
+        .prepare(
+          `select count(*) from conversation_events
+           where content like '%Marigold%'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(extract).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
     expect(answerText).not.toHaveBeenCalled();
     database.close();
   });

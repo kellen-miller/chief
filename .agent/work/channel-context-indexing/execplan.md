@@ -21,7 +21,7 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 - [x] (2026-07-14 06:41Z) Task 2 normalized live Discord creates, edits, partials, single/bulk deletes, and delivered Chief chunks; synchronized edit/delete effects across source, memory, and context state; added resumable gap and weekly identity reconciliation with persisted coverage proof; and passed 267 tests plus a clean final review after three correction loops.
 - [x] (2026-07-14 08:05Z) Task 3 added one protected paid-work queue, fair deadline-ordered background scheduling, categorized/month-safe budget accounting, provisional/final hourly plus daily/weekly/topic rollups, strict bounded summarization and segmentation, tiered retention, non-readiness lag diagnostics, and graceful draining; 300 tests and final review passed after two correction loops.
 - [x] (2026-07-14 09:39Z) Task 4 assembled one bounded text/Realtime context with one embedding per query, per-tier source and rollup retrieval, recent/history budgeting, provenance links, deterministic replay, privacy/as-of boundaries, and utterance-safe voice recall; 331 tests and final review passed after three correction loops.
-- [ ] Milestone 5: implement authorized correction, confirmation, forgetting, and lineage rebuild.
+- [x] (2026-07-14 10:11Z) Milestone 5 implemented redacted cross-store candidate discovery, current self/admin authorization, single-use broad confirmation, one synchronous atomic deletion, content-free upload/retry/replay, durable suppression across restore, and stale-job-safe lineage rebuild; 345 tests pass.
 - [ ] Milestone 6: add dry-run and resumable full-history backfill.
 - [ ] Milestone 7: expose degraded health, document operations, and validate rollback.
 - [ ] Milestone 8: complete deterministic, quality, container, and live acceptance evidence.
@@ -78,6 +78,12 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
   Evidence: Task 4 paired distant-vector tests preserve named/selective evidence for capitalized and lowercase queries while rejecting modifier-only source and rollup matches.
 - Observation: every Realtime context side effect must remain bound to the committed utterance across concurrent tool calls.
   Evidence: Task 4 coalesces concurrent recall, rejects greeting/noise queries, permits one successful call, and prevents stale cross-utterance completion from consuming the next utterance's allowance.
+- Observation: authorization at confirmation creation is not sufficient for a delayed destructive action.
+  Evidence: a requester could lose administrator authority during the five-minute confirmation window. Task 5 now reevaluates the current permission snapshot before it consumes the confirmation, while ordinary self-authorship remains independently valid.
+- Observation: a verified forget journal must carry enough policy identity to suppress rows that do not exist in the restored artifact.
+  Evidence: a pre-deletion backup can predate the selected source, document, or memory. Task 5 replay recreates source/document/topic tombstones from the content-free payload before scrubbing whichever referenced rows are present.
+- Observation: an external-content FTS row for a superseded durable memory was already removed when the replacement became active.
+  Evidence: deleting that index row again produced `SQLITE_CORRUPT_VTAB`. Task 5 traverses and scrubs the full predecessor chain but removes FTS/vector entries only for active indexed versions.
 
 ## Decision Log
 
@@ -132,10 +138,16 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 - Decision: emit content-free external journal entries for authoritative Discord source deletions as well as explicit local forget operations.
   Rationale: both operations must remain suppressed when Chief starts from an older recovery artifact; reconciliation after startup is too late.
   Date/Author: 2026-07-14, Codex during implementation preflight.
+- Decision: require confirmation for every broad scope, store only a nonce checksum and stable candidate IDs, and reevaluate authorization when the confirmation is presented.
+  Rationale: candidate counts and target text do not belong in an authorization response, a leaked database must not reveal a usable nonce, and administrator authority may change during the confirmation window.
+  Date/Author: 2026-07-14, Codex during Task 5 implementation.
+- Decision: make replay tombstone-first and artifact-independent.
+  Rationale: a supported older backup may lack a referenced row, but the verified journal's stable IDs must still prevent that scope from being reintroduced by ingestion, rebuild, or later restore.
+  Date/Author: 2026-07-14, Codex during Task 5 implementation.
 
 ## Outcomes & Retrospective
 
-Planning is complete but implementation has not started. Update this section after each milestone with user-visible behavior, measured freshness, validation evidence, remaining owner actions, and any divergence from the approved design.
+Milestones 1 through 5 are implemented. Task 5 makes natural-language forgetting a redacted, authorized, confirmation-aware operation that removes selected material from active local SQL, search, vectors, durable memory, private extraction snapshots, assembled context, and restored backups after journal replay. The repository gate passes 345 deterministic tests with no provider or live Discord calls. Production upload/startup integration and lifecycle policy remain in the operational milestone; no live acceptance is claimed.
 
 ## Context and Orientation
 
@@ -423,3 +435,4 @@ Current relevant dependencies are `discord.js` 14.26.5, `openai` 6.46.0, `@opena
 - 2026-07-14: Improvement pass 3 moved paid backfill into the running process so one queue and budget remain authoritative, prohibited persistent expired raw text during backfill, retained real source links without retaining local content, and corrected concrete container/policy/restore commands against repository scripts. Usefulness score: 10/10 because it prevented cross-process overspend and made the operational instructions executable.
 - 2026-07-14: Improvement pass 4 resolved adversarial findings across the real repository: dynamic Realtime recall, budget admission headroom, partial/bulk/offline Discord lifecycle handling, synchronous atomic deletion, actual delivered reply IDs, schema-aware restore checks, backup forget-journal replay, safe SQLite migration/FTS semantics, and measurable quality gates. Usefulness score: 10/10 because each change closed a concrete correctness, privacy, availability, or release-decision gap that queue priority or broad acceptance prose had hidden.
 - 2026-07-14: Improvement pass 5 closed the resolution review's remaining recovery and identity seams: unconditional fail-closed journal replay on every host start, migration-0002 recovery through a separate image, bounded local recovery artifacts, one source row per Chief reply chunk, covered deletion-inference logic, and explicit source-FTS retrieval. Usefulness score: 10/10 because it removed operator bypass, old-image, forgotten-byte, coverage, duplicate-chunk, and one-second retrieval ambiguities before implementation.
+- 2026-07-14: Task 5 implemented the planned synchronous deletion seam and refined confirmation-time permission checks, broad no-match redaction, supersession-chain scrubbing, and artifact-independent tombstone replay from executable regressions. These changes preserve the approved policy while closing concrete permission-loss, FTS, and older-backup failure modes.

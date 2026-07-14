@@ -541,6 +541,72 @@ export class SqliteMemoryStore {
     })();
   }
 
+  /**
+   * Synchronous deletion primitive. The caller owns the shared outer
+   * transaction so this method must not open or commit one itself.
+   */
+  public supersedeForContextDeletion(
+    memoryIds: readonly number[],
+    now: number,
+  ): readonly number[] {
+    const uniqueIds = [...new Set(memoryIds)].filter(Number.isSafeInteger);
+    if (uniqueIds.length === 0) return [];
+    const placeholders = uniqueIds.map(() => '?').join(', ');
+    const affected = this.#database
+      .prepare(
+        `with recursive affected(id) as (
+           select id from memories where id in (${placeholders})
+           union
+           select m.id from memories m join affected a
+             on m.superseded_by = a.id
+         )
+         select m.id, m.state from affected a join memories m on m.id = a.id
+         order by m.id`,
+      )
+      .all(...uniqueIds) as { readonly id: number; readonly state: string }[];
+    const existingIds = affected.map(({ id }) => id);
+    for (const { id, state } of affected) {
+      if (state === 'active') this.#deleteIndexes(id);
+    }
+    if (existingIds.length > 0) {
+      const existingPlaceholders = existingIds.map(() => '?').join(', ');
+      this.#database
+        .prepare(
+          `update memories
+           set canonical_text = '', provenance_json = '{}',
+               state = 'superseded', superseded_by = null, updated_at = ?
+           where id in (${existingPlaceholders})`,
+        )
+        .run(now, ...existingIds);
+    }
+    return existingIds;
+  }
+
+  /**
+   * Synchronous deletion primitive. It preserves content-free provenance
+   * identity while removing the private extraction snapshot and stale work.
+   */
+  public scrubContextSources(sourceScopeIds: readonly string[]): void {
+    const uniqueScopeIds = [...new Set(sourceScopeIds)];
+    if (uniqueScopeIds.length === 0) return;
+    const placeholders = uniqueScopeIds.map(() => '?').join(', ');
+    this.#database
+      .prepare(
+        `delete from memory_jobs where source_event_id in (
+           select id from source_events
+           where source_scope_id in (${placeholders})
+         )`,
+      )
+      .run(...uniqueScopeIds);
+    this.#database
+      .prepare(
+        `update source_events
+         set content = '', extraction_status = 'completed'
+         where source_scope_id in (${placeholders})`,
+      )
+      .run(...uniqueScopeIds);
+  }
+
   #deleteSourceMemories(sourceEventId: number): void {
     const ids = this.#database
       .prepare('select id from memories where source_event_id = ?')

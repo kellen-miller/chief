@@ -7,6 +7,7 @@ import {
   migrateChiefDatabase,
   openChiefDatabase,
 } from '../../src/memory/database.js';
+import { SqliteMemoryStore } from '../../src/memory/memory-store.js';
 import { SqliteUsageLedger } from '../../src/usage/sqlite-usage-ledger.js';
 import { UsageBudget } from '../../src/usage/usage-budget.js';
 
@@ -719,6 +720,138 @@ describe('ChannelContextService rollups', () => {
         .pluck()
         .get(),
     ).toBe(0);
+    database.close();
+  });
+
+  it('rebuilds from remaining lineage after a concurrent local forget', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    let current = occurredAt + 1_000;
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    let releaseSummary = (): void => undefined;
+    const summaryGate = new Promise<void>((resolve) => {
+      releaseSummary = resolve;
+    });
+    let announceSummary = (): void => undefined;
+    const summaryStarted = new Promise<void>((resolve) => {
+      announceSummary = resolve;
+    });
+    let summaryAttempt = 0;
+    const service = new ChannelContextService({
+      budget: new UsageBudget({
+        ceilingUsd: 10,
+        indexingCeilingUsd: 3,
+        ledger: new SqliteUsageLedger(database),
+        now: () => current,
+        warningUsd: 5,
+      }),
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      embed: () =>
+        Promise.resolve({
+          embedding: new Float32Array(1_536).fill(0.25),
+          usageUsd: 0.001,
+        }),
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      now: () => current,
+      summarizer: {
+        summarize: async (input) => {
+          summaryAttempt += 1;
+          if (summaryAttempt === 1) {
+            announceSummary();
+            await summaryGate;
+          }
+          return {
+            confidence: 0.9,
+            inputTokens: 20,
+            outputTokens: 8,
+            sourceIds: input.sources.map(({ id }) => id),
+            summary: input.sources.map(({ text }) => text).join(' '),
+            topicProposals: [],
+            usageUsd: 0.02,
+          };
+        },
+      },
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    const forgotten = service.apply({
+      content: 'MarigoldSecret belongs only to the first source.',
+      messageId: '52345678901234577',
+      occurredAt,
+      requestId: 'request-local-race-1',
+      role: 'human',
+      speakerId: '42345678901234567',
+      speakerName: 'President Test',
+      type: 'upsert',
+    });
+    const retained = service.apply({
+      content: 'JuniperSecret belongs only to the second source.',
+      messageId: '52345678901234578',
+      occurredAt: occurredAt + 1,
+      requestId: 'request-local-race-2',
+      role: 'human',
+      speakerId: '42345678901234567',
+      speakerName: 'President Test',
+      type: 'upsert',
+    });
+    current += 5 * 60 * 1_000;
+    const running = service.runNext(current);
+    await summaryStarted;
+
+    await expect(
+      service.forget({
+        canModerateContext: false,
+        content: 'Chief, forget MarigoldSecret',
+        now: current,
+        requestMessageId: '62345678901234577',
+        requesterId: '42345678901234567',
+      }),
+    ).resolves.toMatchObject({ sourceCount: 1, status: 'forgotten' });
+    releaseSummary();
+    await expect(running).resolves.toEqual({ status: 'failed' });
+
+    await expect(service.runNext(current)).resolves.toMatchObject({
+      status: 'completed',
+      tier: 'hourly',
+    });
+    expect(
+      database
+        .prepare(
+          `select summary from context_documents
+           where state = 'active' and is_internal = 0`,
+        )
+        .pluck()
+        .get(),
+    ).toContain('JuniperSecret');
+    expect(
+      database
+        .prepare(
+          `select summary from context_documents
+           where state = 'active' and is_internal = 0`,
+        )
+        .pluck()
+        .get(),
+    ).not.toContain('MarigoldSecret');
+    expect(
+      database
+        .prepare(
+          `select event_id from context_document_events
+           where document_id in (
+             select id from context_documents where state = 'active'
+           )`,
+        )
+        .pluck()
+        .all(),
+    ).toEqual([retained.eventId]);
+    expect(
+      database
+        .prepare('select content_state from conversation_events where id = ?')
+        .pluck()
+        .get(forgotten.eventId),
+    ).toBe('scrubbed');
     database.close();
   });
 

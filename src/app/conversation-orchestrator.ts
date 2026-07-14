@@ -6,6 +6,7 @@ import type {
 import {
   ChannelContextService,
   type ContextApplyResult,
+  type ContextForgetReceipt,
   type DeliveredReplyInput,
 } from '../context/channel-context-service.js';
 import type { ContextAssembler } from '../context/context-assembler.js';
@@ -93,6 +94,22 @@ export interface ConversationReservationEstimates {
   readonly voiceUsd: number;
 }
 
+type ExplicitTurn =
+  | {
+      readonly canModerateContext: boolean;
+      readonly confirmationNonce?: string;
+      readonly content: string;
+      readonly kind: 'context-forget';
+      readonly requesterId: string;
+      readonly requestMessageId: string;
+    }
+  | {
+      readonly intent: ExplicitMemoryIntent;
+      readonly kind: 'memory';
+      readonly source: SourceObservation;
+      readonly sourceEventId: number;
+    };
+
 export interface ConversationOrchestratorOptions {
   readonly agent: ChiefAgent;
   readonly assembler: Pick<ContextAssembler, 'assemble'>;
@@ -118,7 +135,8 @@ export type ConversationTelemetry =
       readonly type: 'context-prepared';
     }
   | {
-      readonly outcome: MemoryMutationReceipt['status'];
+      readonly outcome:
+        ContextForgetReceipt['status'] | MemoryMutationReceipt['status'];
       readonly type: 'explicit-memory';
     };
 
@@ -162,24 +180,27 @@ export class ConversationOrchestrator {
     turn: NormalizedTextTurn,
   ): Promise<ConversationResult | null> {
     let eventId: number;
-    let explicit:
-      | {
-          readonly intent: ExplicitMemoryIntent;
-          readonly source: SourceObservation;
-          readonly sourceEventId: number;
-        }
-      | undefined;
+    let explicit: ExplicitTurn | undefined;
     try {
       const intent =
         turn.kind === 'request'
           ? detectExplicitMemoryIntent(turn.content)
+          : null;
+      const confirmationNonce =
+        turn.kind === 'request'
+          ? detectForgetConfirmationNonce(turn.content)
           : null;
       const applied = this.#context.apply({
         attachmentMetadataJson: turn.attachmentMetadataJson ?? '[]',
         canModerateContext: turn.canModerateContext ?? false,
         content: turn.content,
         editedAt: turn.editedAt ?? null,
-        memoryExtraction: intent === null ? 'automatic' : 'explicit',
+        memoryExtraction:
+          intent === 'forget' || confirmationNonce !== null
+            ? 'none'
+            : intent === null
+              ? 'automatic'
+              : 'explicit',
         messageId: turn.platformSourceId,
         occurredAt: turn.occurredAt,
         platformEventId: turn.platformSourceId,
@@ -207,13 +228,23 @@ export class ConversationOrchestrator {
         retentionDeadline: turn.occurredAt + SOURCE_RETENTION_MS,
         speakerId: turn.speakerId,
       };
-      if (intent === null) {
+      if (intent === 'forget' || confirmationNonce !== null) {
+        explicit = {
+          canModerateContext: turn.canModerateContext ?? false,
+          ...(confirmationNonce === null ? {} : { confirmationNonce }),
+          content: turn.content,
+          kind: 'context-forget',
+          requestMessageId: turn.platformSourceId,
+          requesterId: turn.speakerId,
+        };
+      } else if (intent === null) {
         if (applied.memorySourceEventId === null) {
           this.#memory.observeAutomatic(source);
         }
       } else {
         explicit = {
           intent,
+          kind: 'memory',
           source,
           sourceEventId:
             applied.memorySourceEventId ?? this.#memory.observeExplicit(source),
@@ -232,24 +263,36 @@ export class ConversationOrchestrator {
     return this.#handlePaidText(turn, eventId);
   }
 
-  #handleExplicit(explicit: {
-    readonly intent: ExplicitMemoryIntent;
-    readonly source: SourceObservation;
-    readonly sourceEventId: number;
-  }): Promise<ConversationResult> {
+  #handleExplicit(explicit: ExplicitTurn): Promise<ConversationResult> {
     return this.#enqueue(async () => {
-      const receipt = await this.#memory.applyExplicit({
-        ...explicit,
-        now: this.#now(),
-      });
+      const receipt =
+        explicit.kind === 'context-forget'
+          ? await this.#context.forget({
+              canModerateContext: explicit.canModerateContext,
+              ...(explicit.confirmationNonce === undefined
+                ? {}
+                : { confirmationNonce: explicit.confirmationNonce }),
+              content: explicit.content,
+              now: this.#now(),
+              requestMessageId: explicit.requestMessageId,
+              requesterId: explicit.requesterId,
+            })
+          : await this.#memory.applyExplicit({
+              intent: explicit.intent,
+              now: this.#now(),
+              source: explicit.source,
+              sourceEventId: explicit.sourceEventId,
+            });
       this.#telemetry?.({ outcome: receipt.status, type: 'explicit-memory' });
       return this.#recordLocalReply(
         explicitReceiptContent(receipt),
-        receipt.status === 'budget-paused'
-          ? 'budget-paused'
-          : receipt.status === 'failed'
-            ? 'failed'
-            : 'completed',
+        receipt.status === 'journal-pending'
+          ? 'failed'
+          : receipt.status === 'budget-paused'
+            ? 'budget-paused'
+            : receipt.status === 'failed'
+              ? 'failed'
+              : 'completed',
       );
     });
   }
@@ -720,14 +763,28 @@ export class ConversationOrchestrator {
   }
 }
 
-function explicitReceiptContent(receipt: MemoryMutationReceipt): string {
+function explicitReceiptContent(
+  receipt: ContextForgetReceipt | MemoryMutationReceipt,
+): string {
   switch (receipt.status) {
     case 'created':
       return 'I have committed that to the record';
     case 'superseded':
       return 'I have corrected the record';
     case 'forgotten':
-      return 'I have removed that from the record';
+      return 'I have removed that from local active context; recovery copies may retain older encrypted bytes for up to 30 days';
+    case 'confirmation-required':
+      return `That scope requires confirmation. Reply “Chief, confirm forget ${receipt.confirmationNonce}” within five minutes`;
+    case 'confirmation-expired':
+      return 'That deletion confirmation expired, so I changed nothing';
+    case 'confirmation-invalid':
+      return 'That deletion confirmation is invalid or already used, so I changed nothing';
+    case 'unauthorized':
+      return 'I cannot remove another member or a whole topic without current administrator authority';
+    case 'clarification-required':
+      return 'I could not identify one authorized target, so I changed nothing';
+    case 'journal-pending':
+      return 'I removed the target from local active context, but recovery-journal upload failed, so I cannot confirm completion yet';
     case 'conflict':
       return 'I found a conflicting memory and need clarification before treating either as settled';
     case 'rejected-sensitive':
@@ -739,6 +796,14 @@ function explicitReceiptContent(receipt: MemoryMutationReceipt): string {
     case 'failed':
       return 'The memory update failed, so I did not save that';
   }
+}
+
+function detectForgetConfirmationNonce(content: string): string | null {
+  return (
+    /\bconfirm\s+forget\s+([a-f\d]{24})\b/iu
+      .exec(content)?.[1]
+      ?.toLowerCase() ?? null
+  );
 }
 
 function countHistoricalContext(

@@ -465,6 +465,22 @@ export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID =
   '0004_discord_source_lifecycle';
 export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_CHECKSUM = 'chief-0004-v7';
 
+const CONTEXT_FORGETTING_MIGRATION = `
+alter table context_deletion_requests
+  add column source_ids_json text not null default '[]';
+alter table context_deletion_requests
+  add column document_ids_json text not null default '[]';
+alter table context_deletion_requests
+  add column memory_ids_json text not null default '[]';
+alter table context_deletion_requests
+  add column request_source_id text not null default '';
+alter table context_forget_journal
+  add column payload_json text not null default '{}';
+`;
+
+export const CONTEXT_FORGETTING_MIGRATION_ID = '0005_context_forgetting';
+export const CONTEXT_FORGETTING_MIGRATION_CHECKSUM = 'chief-0005-v2';
+
 interface Migration {
   readonly checksum: string;
   readonly id: string;
@@ -496,6 +512,11 @@ const MIGRATIONS: readonly Migration[] = [
     checksum: DISCORD_SOURCE_LIFECYCLE_MIGRATION_CHECKSUM,
     id: DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID,
     sql: DISCORD_SOURCE_LIFECYCLE_MIGRATION,
+  },
+  {
+    checksum: CONTEXT_FORGETTING_MIGRATION_CHECKSUM,
+    id: CONTEXT_FORGETTING_MIGRATION_ID,
+    sql: CONTEXT_FORGETTING_MIGRATION,
   },
 ];
 
@@ -556,6 +577,13 @@ export function verifyContextDatabaseSchema(
       .pluck()
       .get(DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID);
     if (lifecycleChecksum !== DISCORD_SOURCE_LIFECYCLE_MIGRATION_CHECKSUM) {
+      return false;
+    }
+    const forgettingChecksum = database
+      .prepare('select checksum from schema_migrations where id = ?')
+      .pluck()
+      .get(CONTEXT_FORGETTING_MIGRATION_ID);
+    if (forgettingChecksum !== CONTEXT_FORGETTING_MIGRATION_CHECKSUM) {
       return false;
     }
     for (const table of [

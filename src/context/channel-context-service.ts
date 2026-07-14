@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import type Database from 'better-sqlite3';
 
@@ -9,6 +9,10 @@ import {
 import type { SqliteMemoryStore } from '../memory/memory-store.js';
 import type { UsageBudget } from '../usage/usage-budget.js';
 import { contextPeriod, type ContextPeriod } from './context-period.js';
+import {
+  ContextDeletionStore,
+  type ContextForgetJournalEntry,
+} from './context-deletion-store.js';
 import { ContextStore } from './context-store.js';
 import {
   contextSummaryResultSchema,
@@ -92,7 +96,41 @@ export interface ChannelContextServiceOptions {
   readonly now?: () => number;
   readonly summarizer?: ContextSummarizer;
   readonly timeZone: string;
+  readonly uploadForgetJournal?: (
+    entry: ContextForgetJournalEntry,
+  ) => Promise<void>;
 }
+
+export interface ContextForgetRequest {
+  readonly canModerateContext: boolean;
+  readonly confirmationNonce?: string;
+  readonly content: string;
+  readonly now: number;
+  readonly requestMessageId: string;
+  readonly requesterId: string;
+}
+
+export type ContextForgetReceipt =
+  | {
+      readonly status:
+        | 'clarification-required'
+        | 'confirmation-expired'
+        | 'confirmation-invalid'
+        | 'unauthorized';
+    }
+  | {
+      readonly confirmationNonce: string;
+      readonly documentCount: number;
+      readonly memoryCount: number;
+      readonly sourceCount: number;
+      readonly status: 'confirmation-required';
+    }
+  | {
+      readonly documentCount: number;
+      readonly memoryCount: number;
+      readonly sourceCount: number;
+      readonly status: 'forgotten' | 'journal-pending';
+    };
 
 export type ContextJobResult =
   | { readonly status: 'idle' }
@@ -121,6 +159,7 @@ export interface ContextStatus {
   readonly pendingJobs: number;
   readonly reason:
     | 'backlog'
+    | 'forget-journal'
     | 'indexing-budget'
     | 'interactive-headroom'
     | 'overall-budget'
@@ -205,6 +244,8 @@ export class ChannelContextService {
   readonly #now: () => number;
   readonly #summarizer: ContextSummarizer | undefined;
   readonly #timeZone: string;
+  readonly #uploadForgetJournal:
+    ((entry: ContextForgetJournalEntry) => Promise<void>) | undefined;
 
   public constructor(options: ChannelContextServiceOptions) {
     this.#budget = options.budget;
@@ -227,6 +268,7 @@ export class ChannelContextService {
     this.#now = options.now ?? Date.now;
     this.#summarizer = options.summarizer;
     this.#timeZone = options.timeZone;
+    this.#uploadForgetJournal = options.uploadForgetJournal;
   }
 
   public apply(change: ContextSourceChange): ContextApplyResult {
@@ -239,6 +281,195 @@ export class ChannelContextService {
 
   public hasSource(messageId: string): boolean {
     return this.#eventId(messageId) !== null;
+  }
+
+  public async forget(
+    request: ContextForgetRequest,
+  ): Promise<ContextForgetReceipt> {
+    const memory = this.#memory;
+    if (memory === undefined) {
+      return { status: 'clarification-required' };
+    }
+    const deletion = new ContextDeletionStore({
+      channelId: this.#channelId,
+      database: this.#database,
+      guildId: this.#guildId,
+      memory,
+      timeZone: this.#timeZone,
+    });
+    if (request.confirmationNonce !== undefined) {
+      const confirmation = deletion.confirmation({
+        confirmationChecksum: digest(request.confirmationNonce),
+        now: request.now,
+        requesterId: request.requesterId,
+      });
+      if (confirmation.status === 'expired') {
+        return { status: 'confirmation-expired' };
+      }
+      if (confirmation.status === 'invalid') {
+        return { status: 'confirmation-invalid' };
+      }
+      if (
+        !deletion.requesterCanDelete(
+          confirmation.candidates,
+          request.requesterId,
+          request.canModerateContext,
+        )
+      ) {
+        return { status: 'unauthorized' };
+      }
+      return this.#finishForget(
+        deletion,
+        deletion.delete({
+          candidates: confirmation.candidates,
+          confirmationRequestId: confirmation.requestId,
+          now: request.now,
+          requestSourceScopeIds: [confirmation.requestSourceScopeId],
+        }),
+        request.now,
+      );
+    }
+    const target = extractForgetTarget(request.content);
+    if (target === null) return { status: 'clarification-required' };
+    const excludedScopeId = this.#sourceScopeId(request.requestMessageId);
+    const candidates =
+      target.scope === 'member'
+        ? deletion.discoverMember(target.target, excludedScopeId)
+        : deletion.discover(target.target, excludedScopeId);
+    if (
+      candidates.sourceScopeIds.length === 0 &&
+      candidates.documentKeys.length === 0 &&
+      candidates.memoryIds.length === 0
+    ) {
+      return {
+        status:
+          (target.scope === 'member' || target.broad) &&
+          !request.canModerateContext
+            ? 'unauthorized'
+            : 'clarification-required',
+      };
+    }
+    if (
+      !deletion.requesterCanDelete(
+        candidates,
+        request.requesterId,
+        request.canModerateContext,
+      )
+    ) {
+      return { status: 'unauthorized' };
+    }
+    const narrowSelfSource = deletion.isNarrowSelfSource(
+      candidates,
+      request.requesterId,
+    );
+    if (
+      !narrowSelfSource &&
+      !target.broad &&
+      candidates.sourceScopeIds.length !== 1
+    ) {
+      return { status: 'clarification-required' };
+    }
+    if (target.broad || !narrowSelfSource) {
+      const confirmationNonce = randomBytes(12).toString('hex');
+      deletion.createConfirmation({
+        candidates,
+        confirmationChecksum: digest(confirmationNonce),
+        now: request.now,
+        requestSourceScopeId: excludedScopeId,
+        requesterId: request.requesterId,
+        scopeType:
+          target.scope === 'member'
+            ? 'member'
+            : target.broad
+              ? 'topic'
+              : 'source',
+      });
+      return {
+        confirmationNonce,
+        documentCount: candidates.documentKeys.length,
+        memoryCount: candidates.memoryIds.length,
+        sourceCount: candidates.sourceScopeIds.length,
+        status: 'confirmation-required',
+      };
+    }
+    const result = deletion.delete({
+      candidates,
+      now: request.now,
+      requestSourceScopeIds: [excludedScopeId],
+    });
+    return this.#finishForget(deletion, result, request.now);
+  }
+
+  async #finishForget(
+    deletion: ContextDeletionStore,
+    result: ReturnType<ContextDeletionStore['delete']>,
+    now: number,
+  ): Promise<ContextForgetReceipt> {
+    try {
+      if (this.#uploadForgetJournal === undefined) {
+        throw new Error('forget journal uploader is unavailable');
+      }
+      await this.#uploadForgetJournal(result.journal);
+      deletion.markJournalUploaded(result.journalId, now);
+      return {
+        documentCount: result.documentCount,
+        memoryCount: result.memoryCount,
+        sourceCount: result.sourceCount,
+        status: 'forgotten',
+      };
+    } catch {
+      deletion.markJournalFailed(result.journalId, now);
+      return {
+        documentCount: result.documentCount,
+        memoryCount: result.memoryCount,
+        sourceCount: result.sourceCount,
+        status: 'journal-pending',
+      };
+    }
+  }
+
+  public async flushForgetJournal(
+    now: number,
+  ): Promise<{ readonly status: 'failed' | 'idle' | 'uploaded' }> {
+    const memory = this.#memory;
+    if (memory === undefined) return { status: 'idle' };
+    const deletion = new ContextDeletionStore({
+      channelId: this.#channelId,
+      database: this.#database,
+      guildId: this.#guildId,
+      memory,
+      timeZone: this.#timeZone,
+    });
+    const pending = deletion.nextForgetJournal(now);
+    if (pending === null) return { status: 'idle' };
+    try {
+      if (this.#uploadForgetJournal === undefined) {
+        throw new Error('forget journal uploader is unavailable');
+      }
+      await this.#uploadForgetJournal(pending.entry);
+      deletion.markJournalUploaded(pending.id, now);
+      return { status: 'uploaded' };
+    } catch {
+      deletion.markJournalFailed(pending.id, now);
+      return { status: 'failed' };
+    }
+  }
+
+  public replayForgetJournal(
+    entry: ContextForgetJournalEntry,
+    now: number,
+  ): void {
+    const memory = this.#memory;
+    if (memory === undefined) {
+      throw new Error('context forget replay requires durable memory storage');
+    }
+    new ContextDeletionStore({
+      channelId: this.#channelId,
+      database: this.#database,
+      guildId: this.#guildId,
+      memory,
+      timeZone: this.#timeZone,
+    }).replayForgetJournal(entry, now);
   }
 
   public recordDeliveredReply(input: DeliveredReplyInput): void {
@@ -347,6 +578,12 @@ export class ChannelContextService {
           )
           .run(now, ...expiringDocumentIds);
       }
+      this.#database
+        .prepare(
+          `delete from context_deletion_requests
+           where status = 'pending' and expires_at <= ?`,
+        )
+        .run(now);
       return result;
     })();
   }
@@ -402,12 +639,24 @@ export class ChannelContextService {
          order by freshness_deadline, id limit 1`,
       )
       .get(now) as { readonly error: string | null } | undefined;
-    const reason = contextLagReason(
-      overdue?.error,
-      this.#summarizer !== undefined && this.#embed !== undefined,
-    );
+    const journalPending =
+      this.#database
+        .prepare(
+          `select exists(
+             select 1 from context_forget_journal
+             where upload_status in ('pending', 'failed')
+           )`,
+        )
+        .pluck()
+        .get() === 1;
+    const reason = journalPending
+      ? 'forget-journal'
+      : contextLagReason(
+          overdue?.error,
+          this.#summarizer !== undefined && this.#embed !== undefined,
+        );
     return {
-      degraded: overdue !== undefined || failedJobs > 0,
+      degraded: journalPending || overdue !== undefined || failedJobs > 0,
       failedJobs,
       lagMsByTier,
       pendingJobs,
@@ -1224,11 +1473,31 @@ export class ChannelContextService {
     }
     const scopeId = this.#sourceScopeId(change.messageId);
     const tombstoneKey = `source:${scopeId}`;
-    const checksum = digest({
+    const tombstoneChecksum = digest({
       occurredAt: change.deletedAt,
       reason,
       scopeId,
       scopeType: 'source',
+    });
+    const memoryIds = this.#database
+      .prepare(
+        `select m.id from memories m join source_events s
+           on s.id = m.source_event_id
+         where s.platform_source_id = ? order by m.id`,
+      )
+      .pluck()
+      .all(change.messageId) as number[];
+    const payload = {
+      documentIds: [] as number[],
+      memoryIds,
+      sourceScopeIds: [scopeId],
+      tombstoneKeys: [tombstoneKey],
+    };
+    const journalKey = `forget:${scopeId}`;
+    const journalChecksum = digest({
+      journalKey,
+      occurredAt: change.deletedAt,
+      payload,
     });
     this.#database
       .prepare(
@@ -1237,20 +1506,22 @@ export class ChannelContextService {
          values (?, 'source', ?, ?, ?, ?)
          on conflict(scope_type, scope_id) do nothing`,
       )
-      .run(tombstoneKey, scopeId, reason, change.deletedAt, checksum);
+      .run(tombstoneKey, scopeId, reason, change.deletedAt, tombstoneChecksum);
     this.#database
       .prepare(
         `insert into context_forget_journal
-           (journal_key, scope_id, tombstone_key, occurred_at, checksum)
-         values (?, ?, ?, ?, ?)
+           (journal_key, scope_id, tombstone_key, occurred_at, checksum,
+            payload_json)
+         values (?, ?, ?, ?, ?, ?)
          on conflict(journal_key) do nothing`,
       )
       .run(
-        `forget:${scopeId}`,
+        journalKey,
         scopeId,
         tombstoneKey,
         change.deletedAt,
-        checksum,
+        journalChecksum,
+        JSON.stringify(payload),
       );
 
     const eventId = this.#eventId(change.messageId);
@@ -1699,6 +1970,31 @@ function parseDocumentIds(value: string): number[] {
     throw new Error('context job has invalid source document IDs');
   }
   return parsed as number[];
+}
+
+function extractForgetTarget(content: string): {
+  readonly broad: boolean;
+  readonly scope: 'member' | 'subject';
+  readonly target: string;
+} | null {
+  const match = /\bforget\b\s+(?:that\s+)?([\s\S]+)/iu.exec(content);
+  const target = match?.[1]?.replace(/[.!?]+$/u, '').trim();
+  if (target === undefined || target.length === 0) return null;
+  const member = /\b(?:messages?\s+)?(?:from|by)\s+([\s\S]+)$/iu.exec(
+    target,
+  )?.[1];
+  if (member !== undefined) {
+    return { broad: true, scope: 'member', target: member.trim() };
+  }
+  const broad = /\b(?:all|every|everything|topic|whole)\b/iu.test(target);
+  const subject = target
+    .replace(
+      /^(?:(?:all|every)\s+messages?|everything|the\s+whole\s+topic)\s+(?:about\s+)?/iu,
+      '',
+    )
+    .replace(/^topic\s+(?:about\s+)?/iu, '')
+    .trim();
+  return { broad, scope: 'subject', target: subject };
 }
 
 function retentionDeadline(

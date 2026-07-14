@@ -73,6 +73,7 @@ describe('ConversationStore', () => {
       '0002_conversation_events',
       '0003_channel_context',
       '0004_discord_source_lifecycle',
+      '0005_context_forgetting',
     ]);
     reopened.close();
   });
