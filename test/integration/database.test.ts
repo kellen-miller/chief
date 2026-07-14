@@ -69,6 +69,11 @@ describe('Chief database', () => {
     directories.push(directory);
     const database = openChiefDatabase(join(directory, 'chief.db'));
 
+    migrateChiefDatabase(database, '0012_context_accounting_origin');
+    const priorMigrations = database
+      .prepare('select id, checksum from schema_migrations order by id')
+      .all();
+    expect(verifyContextDatabaseSchema(database)).toBe(false);
     migrateChiefDatabase(database);
     migrateChiefDatabase(database);
 
@@ -97,7 +102,15 @@ describe('Chief database', () => {
       '0010_context_backfill_ownership',
       '0011_usage_reservation_origin',
       '0012_context_accounting_origin',
+      '0013_legacy_source_scope',
     ]);
+    expect(
+      database
+        .prepare(
+          "select id, checksum from schema_migrations where id != '0013_legacy_source_scope' order by id",
+        )
+        .all(),
+    ).toEqual(priorMigrations);
     expect(verifyContextDatabaseSchema(database)).toBe(true);
     database.close();
   });

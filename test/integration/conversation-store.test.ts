@@ -81,6 +81,7 @@ describe('ConversationStore', () => {
       '0010_context_backfill_ownership',
       '0011_usage_reservation_origin',
       '0012_context_accounting_origin',
+      '0013_legacy_source_scope',
     ]);
     reopened.close();
   });

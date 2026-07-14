@@ -620,6 +620,16 @@ export const CONTEXT_ACCOUNTING_ORIGIN_MIGRATION_ID =
   '0012_context_accounting_origin';
 export const CONTEXT_ACCOUNTING_ORIGIN_MIGRATION_CHECKSUM = 'chief-0012-v1';
 
+const LEGACY_SOURCE_SCOPE_MIGRATION = `
+update source_events set source_scope_id = platform_source_id
+where source_scope_id = '' and medium = 'text'
+  and length(platform_source_id) between 17 and 20
+  and platform_source_id not glob '*[^0-9]*';
+`;
+
+export const LEGACY_SOURCE_SCOPE_MIGRATION_ID = '0013_legacy_source_scope';
+export const LEGACY_SOURCE_SCOPE_MIGRATION_CHECKSUM = 'chief-0013-v1';
+
 interface Migration {
   readonly checksum: string;
   readonly id: string;
@@ -697,6 +707,11 @@ const MIGRATIONS: readonly Migration[] = [
     id: CONTEXT_ACCOUNTING_ORIGIN_MIGRATION_ID,
     migrate: repairReservationOriginOwnership,
     sql: CONTEXT_ACCOUNTING_ORIGIN_MIGRATION,
+  },
+  {
+    checksum: LEGACY_SOURCE_SCOPE_MIGRATION_CHECKSUM,
+    id: LEGACY_SOURCE_SCOPE_MIGRATION_ID,
+    sql: LEGACY_SOURCE_SCOPE_MIGRATION,
   },
 ];
 
@@ -1453,6 +1468,13 @@ export function verifyContextDatabaseSchema(
     if (
       accountingOriginChecksum !== CONTEXT_ACCOUNTING_ORIGIN_MIGRATION_CHECKSUM
     ) {
+      return false;
+    }
+    const legacySourceScopeChecksum = database
+      .prepare('select checksum from schema_migrations where id = ?')
+      .pluck()
+      .get(LEGACY_SOURCE_SCOPE_MIGRATION_ID);
+    if (legacySourceScopeChecksum !== LEGACY_SOURCE_SCOPE_MIGRATION_CHECKSUM) {
       return false;
     }
     for (const table of [

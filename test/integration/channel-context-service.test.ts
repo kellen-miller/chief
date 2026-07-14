@@ -1099,6 +1099,7 @@ describe('ChannelContextService', () => {
       database,
       guildId,
       memory,
+      now: () => occurredAt + 1_000,
       timeZone,
       uploadForgetJournal: (entry) => {
         captured = entry;
@@ -3072,6 +3073,7 @@ describe('ChannelContextService', () => {
         database,
         guildId,
         memory,
+        now: () => occurredAt + 1_000,
         timeZone,
         uploadForgetJournal: (entry) => {
           captured = entry;
@@ -3263,6 +3265,7 @@ describe('ChannelContextService', () => {
       database,
       guildId,
       memory: new SqliteMemoryStore(database),
+      now: () => occurredAt + 1_000,
       timeZone,
     });
     const created = service.apply(

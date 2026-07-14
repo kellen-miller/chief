@@ -5,6 +5,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  rm,
   stat,
   utimes,
   writeFile,
@@ -13,6 +14,12 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+
+import {
+  CHANNEL_CONTEXT_MIGRATION_ID,
+  migrateChiefDatabase,
+  openChiefDatabase,
+} from '../../src/memory/database.js';
 
 const recovery = `registry/chief@sha256:${'b'.repeat(64)}`;
 const target = `registry/chief@sha256:${'a'.repeat(64)}`;
@@ -106,6 +113,26 @@ describe('container startup recovery preflight', () => {
     expect(commands).toContain('logger -t chief');
   });
 
+  it('starts with a real exact migration-0003 database', async () => {
+    const fixture = await createFixture();
+    await rm(fixture.database);
+    const database = openChiefDatabase(fixture.database);
+    migrateChiefDatabase(database, CHANNEL_CONTEXT_MIGRATION_ID);
+    database.close();
+
+    const result = await runContainer(fixture, undefined, {
+      database: CHANNEL_CONTEXT_MIGRATION_ID,
+      realDatabaseCapability: true,
+      target: CHANNEL_CONTEXT_MIGRATION_ID,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    const commands = await readFile(fixture.commandLog, 'utf8');
+    expect(commands).toContain('database-capability');
+    expect(commands).toContain('gcloud secrets');
+    expect(commands).toContain('docker run --name chief');
+  });
+
   it('replays every retained generation without overwriting downloads', async () => {
     const fixture = await createFixture();
     const firstGeneration = 'gs://chief-backups/forget-journal/entry.json#101';
@@ -146,6 +173,7 @@ async function createFixture(): Promise<{
   readonly commandLog: string;
   readonly config: string;
   readonly data: string;
+  readonly database: string;
   readonly deployState: string;
   readonly gid: string;
   readonly journal: string;
@@ -157,6 +185,7 @@ async function createFixture(): Promise<{
   const commandLog = join(root, 'commands.log');
   const config = join(root, 'chief.env');
   const data = join(root, 'data');
+  const database = join(data, 'chief.db');
   const deployState = join(data, 'deploy.env');
   const journal = join(root, 'entry.json');
   const runtime = join(root, 'run');
@@ -167,7 +196,7 @@ async function createFixture(): Promise<{
   await mkdir(bin);
   await mkdir(data);
   await writeFile(commandLog, '');
-  await writeFile(join(data, 'chief.db'), 'database');
+  await writeFile(database, 'database');
   await writeFile(journal, '{"schemaVersion":1}\n');
   await writeFile(
     config,
@@ -198,6 +227,10 @@ if [[ " $* " == *' recover-forget-journals '* ]] && [[ "\${FAIL_REPLAY:-0}" == 1
   exit 1
 fi
 if [[ " $* " == *' database-capability '* ]]; then
+  if [[ "\${REAL_DATABASE_CAPABILITY:-0}" == 1 ]]; then
+    exec node --import tsx "$REPOSITORY/src/cli.ts" \
+      database-capability --database "\${@: -1}"
+  fi
   printf '%s\n' "\${DATABASE_CAPABILITY:-0003_channel_context}"
   exit 0
 fi
@@ -225,6 +258,7 @@ exit 0
     commandLog,
     config,
     data,
+    database,
     deployState,
     gid,
     journal,
@@ -244,6 +278,7 @@ async function runContainer(
   capabilities: {
     readonly database: string;
     readonly journalObjects?: string;
+    readonly realDatabaseCapability?: boolean;
     readonly target: string;
   } = {
     database: '0003_channel_context',
@@ -268,6 +303,10 @@ async function runContainer(
           capabilities.journalObjects ??
           'gs://chief-backups/forget-journal/entry.json#100',
         PATH: `${fixture.bin}:${process.env.PATH ?? ''}`,
+        REAL_DATABASE_CAPABILITY: capabilities.realDatabaseCapability
+          ? '1'
+          : '0',
+        REPOSITORY: resolve('.'),
         TARGET_CAPABILITY: capabilities.target,
       },
       stdio: ['ignore', 'ignore', 'pipe'],

@@ -10,6 +10,7 @@ import { ContextDeletionStore } from '../../src/context/context-deletion-store.j
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import { backupChiefDatabase } from '../../src/memory/backup.js';
 import {
+  CHANNEL_CONTEXT_MIGRATION_ID,
   migrateChiefDatabase,
   openChiefDatabase,
 } from '../../src/memory/database.js';
@@ -69,6 +70,22 @@ describe('database recovery', () => {
     expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
       false,
     );
+    database.close();
+  });
+
+  it('recognizes an exact migration-0003 database capability', () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database, CHANNEL_CONTEXT_MIGRATION_ID);
+    for (const tier of ['hourly', 'daily', 'weekly', 'long-term'] as const) {
+      insertMigration0003Document(database, tier);
+    }
+
+    expect(restorableDatabaseCapability(database)).toBe(
+      CHANNEL_CONTEXT_MIGRATION_ID,
+    );
+    expect(
+      verifyRestorableDatabase(database, CHANNEL_CONTEXT_MIGRATION_ID),
+    ).toBe(true);
     database.close();
   });
 
@@ -222,28 +239,36 @@ describe('database recovery', () => {
   });
 
   it('replays a real memory-only forget into a migration-0002 snapshot', () => {
-    const sourceScopeId = 'guild/channel/memory-message';
+    const sourceScopeId = '52345678901234567';
     const current = openChiefDatabase(':memory:');
+    migrateChiefDatabase(current, '0002_conversation_events');
+    const currentFixture = insertMigration0002Memory(current);
+    current
+      .prepare(
+        `insert into source_events
+           (platform_source_id, speaker_id, medium, content, occurred_at,
+            retention_deadline, extraction_status)
+         values ('voice:legacy-session', 'speaker', 'voice', 'voice source',
+                 1, 99999, 'completed')`,
+      )
+      .run();
     migrateChiefDatabase(current);
+    expect(
+      current
+        .prepare('select source_scope_id from source_events where id = ?')
+        .pluck()
+        .get(currentFixture.sourceId),
+    ).toBe(sourceScopeId);
+    expect(
+      current
+        .prepare(
+          `select source_scope_id from source_events
+           where platform_source_id = 'voice:legacy-session'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe('');
     const currentMemory = new SqliteMemoryStore(current);
-    const currentSourceId = currentMemory.observe({
-      content: 'memory-only forgotten source',
-      medium: 'text',
-      occurredAt: 1,
-      platformSourceId: 'memory-message',
-      retentionDeadline: 99_999,
-      sourceScopeId,
-      speakerId: 'speaker',
-    });
-    const currentMemoryId = currentMemory.applyMemory({
-      canonicalText: 'memory-only forgotten fact',
-      confidence: 0.9,
-      embedding: new Float32Array(1536),
-      kind: 'fact',
-      provenance: {},
-      sourceEventId: currentSourceId,
-      timestamp: 2,
-    });
     const { journal: entry } = new ContextDeletionStore({
       channelId: 'channel',
       database: current,
@@ -253,76 +278,23 @@ describe('database recovery', () => {
     }).delete({
       candidates: {
         documentKeys: [],
-        memoryIds: [currentMemoryId],
+        memoryIds: [currentFixture.memoryId],
         sourceScopeIds: [],
       },
       now: 5,
     });
 
     expect(entry.payload.sourceScopeIds).toContain(sourceScopeId);
+    expectMemoryRecoveryScrubbed(current);
 
     const restored = openChiefDatabase(':memory:');
     migrateChiefDatabase(restored, '0002_conversation_events');
-    const restoredSourceId = Number(
-      restored
-        .prepare(
-          `insert into source_events
-             (platform_source_id, speaker_id, medium, content, occurred_at,
-              retention_deadline, extraction_status)
-           values ('memory-message', 'speaker', 'text',
-                   'memory-only forgotten source', 1, 99999, 'pending')`,
-        )
-        .run().lastInsertRowid,
-    );
-    restored
-      .prepare(
-        `insert into memory_jobs (source_event_id, not_before)
-         values (?, 1)`,
-      )
-      .run(restoredSourceId);
-    const restoredMemoryId = Number(
-      restored
-        .prepare(
-          `insert into memories
-             (source_event_id, canonical_text, kind, confidence,
-              provenance_json, state, created_at, updated_at)
-           values (?, 'memory-only forgotten fact', 'fact', 0.9, '{}',
-                   'active', 1, 1)`,
-        )
-        .run(restoredSourceId).lastInsertRowid,
-    );
-    expect(restoredMemoryId).toBe(currentMemoryId);
-    restored
-      .prepare('insert into memory_fts (rowid, canonical_text) values (?, ?)')
-      .run(restoredMemoryId, 'memory-only forgotten fact');
-    restored
-      .prepare(
-        'insert into memory_vectors (memory_id, embedding) values (?, ?)',
-      )
-      .run(BigInt(restoredMemoryId), JSON.stringify(Array(1536).fill(0)));
+    const restoredFixture = insertMigration0002Memory(restored);
+    expect(restoredFixture).toEqual(currentFixture);
 
     replayForgetJournals(restored, [entry], 10);
 
-    expect(
-      restored.prepare('select content from source_events').pluck().get(),
-    ).toBe('');
-    expect(
-      restored.prepare('select count(*) from memory_jobs').pluck().get(),
-    ).toBe(0);
-    expect(
-      restored.prepare('select canonical_text from memories').pluck().get(),
-    ).toBe('');
-    expect(
-      restored
-        .prepare(
-          "select count(*) from memory_fts where memory_fts match 'forgotten'",
-        )
-        .pluck()
-        .get(),
-    ).toBe(0);
-    expect(
-      restored.prepare('select count(*) from memory_vectors').pluck().get(),
-    ).toBe(0);
+    expectMemoryRecoveryScrubbed(restored);
     restored.close();
     current.close();
   });
@@ -517,6 +489,108 @@ function insertContextDocument(
     )
     .run(BigInt(id), JSON.stringify(Array(1536).fill(0)));
   return id;
+}
+
+function insertMigration0003Document(
+  database: ReturnType<typeof openChiefDatabase>,
+  tier: 'daily' | 'hourly' | 'long-term' | 'weekly',
+): number {
+  const id = Number(
+    database
+      .prepare(
+        `insert into context_documents
+           (document_key, tier, period_start, period_end, timezone, topic_key,
+            revision, completeness, state, content_state,
+            content_state_reason, summary, confidence, retention_deadline,
+            created_at, updated_at, generation_input_tokens,
+            generation_output_tokens, generation_usage_usd)
+         values (?, ?, 0, ?, 'America/New_York', null, 1, 'final', 'active',
+                 'available', 'retained', ?, 0.9, null, 1, 1, 1, 1, 0)`,
+      )
+      .run(
+        `restore-${tier}`,
+        tier,
+        tier === 'long-term' ? null : 10,
+        `searchable ${tier} summary`,
+      ).lastInsertRowid,
+  );
+  database
+    .prepare('insert into context_document_fts (rowid, content) values (?, ?)')
+    .run(id, `searchable ${tier} summary`);
+  database
+    .prepare(
+      'insert into context_document_vectors (document_id, embedding) values (?, ?)',
+    )
+    .run(BigInt(id), JSON.stringify(Array(1536).fill(0)));
+  return id;
+}
+
+function insertMigration0002Memory(
+  database: ReturnType<typeof openChiefDatabase>,
+): { readonly memoryId: number; readonly sourceId: number } {
+  const sourceId = Number(
+    database
+      .prepare(
+        `insert into source_events
+           (platform_source_id, speaker_id, medium, content, occurred_at,
+            retention_deadline, extraction_status)
+         values ('52345678901234567', 'speaker', 'text',
+                 'memory-only forgotten source', 1, 99999, 'pending')`,
+      )
+      .run().lastInsertRowid,
+  );
+  database
+    .prepare(
+      `insert into memory_jobs (source_event_id, not_before)
+       values (?, 1)`,
+    )
+    .run(sourceId);
+  const memoryId = Number(
+    database
+      .prepare(
+        `insert into memories
+           (source_event_id, canonical_text, kind, confidence,
+            provenance_json, state, created_at, updated_at)
+         values (?, 'memory-only forgotten fact', 'fact', 0.9, '{}',
+                 'active', 1, 1)`,
+      )
+      .run(sourceId).lastInsertRowid,
+  );
+  database
+    .prepare('insert into memory_fts (rowid, canonical_text) values (?, ?)')
+    .run(memoryId, 'memory-only forgotten fact');
+  database
+    .prepare('insert into memory_vectors (memory_id, embedding) values (?, ?)')
+    .run(BigInt(memoryId), JSON.stringify(Array(1536).fill(0)));
+  return { memoryId, sourceId };
+}
+
+function expectMemoryRecoveryScrubbed(
+  database: ReturnType<typeof openChiefDatabase>,
+): void {
+  expect(
+    database.prepare('select content from source_events').pluck().get(),
+  ).toBe('');
+  expect(
+    database.prepare('select count(*) from memory_jobs').pluck().get(),
+  ).toBe(0);
+  expect(
+    database
+      .prepare('select canonical_text from memories where state = ?')
+      .pluck()
+      .get('superseded'),
+  ).toBe('');
+  expect(
+    database
+      .prepare(
+        "select count(*) from memory_fts where memory_fts match 'forgotten'",
+      )
+      .pluck()
+      .get(),
+  ).toBe(0);
+  expect(
+    database.prepare('select count(*) from memory_vectors').pluck().get(),
+  ).toBe(0);
 }
 
 function recordContextSource(

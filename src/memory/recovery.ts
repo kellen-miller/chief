@@ -9,6 +9,8 @@ import type { ContextForgetJournalEntry } from '../context/context-deletion-stor
 import {
   CHANNEL_CONTEXT_MIGRATION_CHECKSUM,
   CHANNEL_CONTEXT_MIGRATION_ID,
+  CONTEXT_BACKFILL_MIGRATION_ID,
+  DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID,
   verifyRecordedMigrationSet,
 } from './database.js';
 
@@ -72,21 +74,34 @@ export function verifyRestorableDatabase(
     if ((database.pragma('foreign_key_check') as unknown[]).length !== 0) {
       return false;
     }
-    if (!verifyContextIndexes(database)) return false;
-    const inconsistentBackfillProgress =
-      database
-        .prepare(
-          `select exists(
-             select 1 from context_backfills b
-             where b.page_count != (
-               select count(*) from context_backfill_pages p
-               where p.run_id = b.id
-             )
-           )`,
-        )
-        .pluck()
-        .get() === 1;
-    if (inconsistentBackfillProgress) return false;
+    if (
+      !verifyContextIndexes(
+        database,
+        hasMigration(database, DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID),
+      )
+    ) {
+      return false;
+    }
+    const hasBackfillProgress = hasMigration(
+      database,
+      CONTEXT_BACKFILL_MIGRATION_ID,
+    );
+    if (hasBackfillProgress) {
+      const inconsistentBackfillProgress =
+        database
+          .prepare(
+            `select exists(
+               select 1 from context_backfills b
+               where b.page_count != (
+                 select count(*) from context_backfill_pages p
+                 where p.run_id = b.id
+               )
+             )`,
+          )
+          .pluck()
+          .get() === 1;
+      if (inconsistentBackfillProgress) return false;
+    }
     const tombstones = database
       .prepare(
         `select scope_type as scopeType, scope_id as scopeId, reason,
@@ -107,12 +122,14 @@ export function verifyRestorableDatabase(
     ) {
       return false;
     }
-    for (const table of [
-      'context_tombstones',
-      'context_backfills',
-      'context_backfill_pages',
-      'context_backfill_segments',
-    ]) {
+    const requiredTables = ['context_tombstones', 'context_backfills'];
+    if (hasBackfillProgress) {
+      requiredTables.push(
+        'context_backfill_pages',
+        'context_backfill_segments',
+      );
+    }
+    for (const table of requiredTables) {
       database.prepare(`select count(*) from ${table}`).pluck().get();
     }
     return true;
@@ -121,7 +138,13 @@ export function verifyRestorableDatabase(
   }
 }
 
-function verifyContextIndexes(database: Database.Database): boolean {
+function verifyContextIndexes(
+  database: Database.Database,
+  hasInternalDocuments: boolean,
+): boolean {
+  const publicDocumentFilter = hasInternalDocuments
+    ? 'and is_internal = 0'
+    : '';
   database.exec(`
     drop table if exists temp.context_restore_actual_vocab;
     drop table if exists temp.context_restore_expected_vocab;
@@ -132,7 +155,7 @@ function verifyContextIndexes(database: Database.Database): boolean {
     insert into temp.context_restore_expected_fts (rowid, content)
       select id, summary from context_documents
       where state = 'active' and content_state = 'available'
-        and is_internal = 0;
+        ${publicDocumentFilter};
     create virtual table temp.context_restore_actual_vocab using fts5vocab(
       main, context_document_fts, instance
     );
@@ -147,7 +170,7 @@ function verifyContextIndexes(database: Database.Database): boolean {
           `with expected(id) as (
              select id from context_documents
              where state = 'active' and content_state = 'available'
-               and is_internal = 0
+               ${publicDocumentFilter}
            )
            select
              exists(
@@ -197,7 +220,7 @@ function verifyContextIndexes(database: Database.Database): boolean {
          from tiers t
          left join context_documents d
            on d.tier = t.tier and d.state = 'active'
-          and d.content_state = 'available' and d.is_internal = 0
+          and d.content_state = 'available' ${publicDocumentFilter}
          left join context_document_fts f on f.rowid = d.id
          left join context_document_vectors v on v.document_id = d.id
          group by t.tier order by t.tier`,
@@ -328,15 +351,14 @@ function scrubMemories(
   now: number,
 ): void {
   const sourceColumns = tableColumns(database, 'source_events');
-  const sourceIdColumn = sourceColumns.has('source_scope_id')
-    ? 'source_scope_id'
-    : 'platform_source_id';
-  const sourceEventIds = selectIds(
-    database,
-    'source_events',
-    sourceIdColumn,
-    sourceIds,
-  );
+  const sourceEventIds = [
+    ...new Set([
+      ...(sourceColumns.has('source_scope_id')
+        ? selectIds(database, 'source_events', 'source_scope_id', sourceIds)
+        : []),
+      ...selectIds(database, 'source_events', 'platform_source_id', sourceIds),
+    ]),
+  ];
   const memoryIds = new Set(entry.payload.memoryIds);
   if (sourceEventIds.length > 0) {
     const placeholders = sourceEventIds.map(() => '?').join(', ');
