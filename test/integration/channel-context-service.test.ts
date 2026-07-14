@@ -30,6 +30,11 @@ const channelId = '22345678901234567';
 const timeZone = 'America/New_York';
 const sevenDays = 7 * 24 * 60 * 60 * 1_000;
 const thirtyDays = 30 * 24 * 60 * 60 * 1_000;
+const nonActiveBackfillCases = [
+  ['paused', 'paused', 'run-budget'],
+  ['failed', 'failed', 'induced-job-failed'],
+  ['replaced', 'failed', 'replaced'],
+] as const;
 
 function createHarness(now: number) {
   const database = openChiefDatabase(':memory:');
@@ -51,6 +56,92 @@ function createHarness(now: number) {
       current = value;
     },
   };
+}
+
+function createPaidContextHarness(
+  database: ReturnType<typeof openChiefDatabase>,
+  now: number,
+): { readonly budget: UsageBudget; readonly service: ChannelContextService } {
+  const budget = new UsageBudget({
+    ceilingUsd: 10,
+    indexingCeilingUsd: 3,
+    ledger: new SqliteUsageLedger(database),
+    now: () => now,
+    warningUsd: 5,
+  });
+  const service = new ChannelContextService({
+    backfillPricing: {
+      embeddingInputPerMillionUsd: 0,
+      summaryInputPerMillionUsd: 0,
+      summaryOutputPerMillionUsd: 0,
+    },
+    budget,
+    channelId,
+    conversation: new ConversationStore(database),
+    database,
+    embed: () => Promise.resolve({ embedding: embedding(0.2), usageUsd: 0 }),
+    estimateUsd: 0.01,
+    guildId,
+    now: () => now,
+    summarizer: {
+      summarize: (input) =>
+        Promise.resolve({
+          confidence: 0.9,
+          inputTokens: 1,
+          outputTokens: 1,
+          sourceIds: input.sources.map(({ id }) => id),
+          summary: `${input.tier} live ownership summary.`,
+          topicProposals:
+            input.tier === 'daily'
+              ? [
+                  {
+                    label: 'Project Marigold',
+                    sourceIds: input.sources.map(({ id }) => id),
+                  },
+                ]
+              : [],
+          usageUsd: 0,
+        }),
+    },
+    timeZone,
+  });
+  return { budget, service };
+}
+
+function insertStaleBackfillReservation(
+  database: ReturnType<typeof openChiefDatabase>,
+  budget: UsageBudget,
+  input: {
+    readonly key: string;
+    readonly now: number;
+    readonly pauseReason: string;
+    readonly status: 'failed' | 'paused';
+  },
+): { readonly reservationId: string; readonly runId: number } {
+  const runId = Number(
+    database
+      .prepare(
+        `insert into context_backfills
+           (run_key, scope_id, status, maximum_usage_usd, created_at,
+            updated_at, pause_reason)
+         values (?, ?, ?, 1, ?, ?, ?)`,
+      )
+      .run(
+        input.key,
+        `${guildId}/${channelId}`,
+        input.status,
+        input.now,
+        input.now,
+        input.pauseReason,
+      ).lastInsertRowid,
+  );
+  const reservation = budget.reserve('context-rollup', 0.01, {
+    backfillRunId: runId,
+    priority: 'background',
+    workCategory: 'indexing',
+  });
+  if (!reservation.allowed) throw new Error('expected stale reservation');
+  return { reservationId: reservation.id, runId };
 }
 
 function source(
@@ -431,6 +522,182 @@ describe('ChannelContextService', () => {
         { actualUsd: 0.01, backfillRunId: runId },
         { actualUsd: 0, backfillRunId: null },
       ]);
+      database.close();
+    },
+  );
+
+  it.each(nonActiveBackfillCases)(
+    'returns a derived conflict from a %s backfill to live ownership',
+    async (label, runStatus, pauseReason) => {
+      const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+      const now = occurredAt + 2 * 24 * 60 * 60 * 1_000;
+      const database = openChiefDatabase(':memory:');
+      migrateChiefDatabase(database);
+      const { budget, service } = createPaidContextHarness(database, now);
+      service.apply(source(occurredAt));
+      const day = contextPeriod({
+        instant: occurredAt,
+        tier: 'daily',
+        timeZone,
+      });
+      const stale = insertStaleBackfillReservation(database, budget, {
+        key: `derived-${label}`,
+        now,
+        pauseReason,
+        status: runStatus,
+      });
+      database
+        .prepare(
+          `insert into context_jobs
+             (job_key, tier, period_start, period_end, timezone, topic_key,
+              completeness, source_revision_checksum, not_before,
+              freshness_deadline, source_document_ids_json, status,
+              lease_expires_at, usage_reservation_id, backfill_run_id)
+           values (?, 'daily', ?, ?, ?, null, 'final', 'stale-derived', ?, ?,
+                   '[]', 'leased', ?, ?, ?)`,
+        )
+        .run(
+          `${day.key}:final`,
+          day.start,
+          day.end,
+          timeZone,
+          day.end,
+          day.end + 30 * 60 * 1_000,
+          now + 60_000,
+          stale.reservationId,
+          stale.runId,
+        );
+
+      await expect(service.runNext(now)).resolves.toMatchObject({
+        status: 'completed',
+        tier: 'hourly',
+      });
+
+      expect(
+        database
+          .prepare(
+            `select backfill_run_id as backfillRunId, status,
+                    usage_reservation_id as usageReservationId
+             from context_jobs where tier = 'daily'`,
+          )
+          .get(),
+      ).toEqual({
+        backfillRunId: null,
+        status: 'pending',
+        usageReservationId: stale.reservationId,
+      });
+      await expect(service.runNext(now)).resolves.toMatchObject({
+        status: 'completed',
+        tier: 'daily',
+      });
+      expect(
+        database
+          .prepare(
+            'select actual_usage_usd from context_backfills where id = ?',
+          )
+          .pluck()
+          .get(stale.runId),
+      ).toBe(0.01);
+      expect(
+        database
+          .prepare(
+            `select count(*) from usage_ledger
+             where backfill_run_id is null and actual_usd is not null`,
+          )
+          .pluck()
+          .get(),
+      ).toBe(2);
+      database.close();
+    },
+  );
+
+  it.each(nonActiveBackfillCases)(
+    'returns a topic conflict from a %s backfill to live ownership',
+    async (label, runStatus, pauseReason) => {
+      const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+      const now = occurredAt + 2 * 24 * 60 * 60 * 1_000;
+      const database = openChiefDatabase(':memory:');
+      migrateChiefDatabase(database);
+      const { budget, service } = createPaidContextHarness(database, now);
+      service.apply(source(occurredAt));
+      await service.runNext(now);
+      const stale = insertStaleBackfillReservation(database, budget, {
+        key: `topic-${label}`,
+        now,
+        pauseReason,
+        status: runStatus,
+      });
+      const topicKey = createHash('sha256')
+        .update(JSON.stringify('project marigold'))
+        .digest('hex')
+        .slice(0, 32);
+      database
+        .prepare(
+          `insert into context_jobs
+             (job_key, tier, period_start, period_end, timezone, topic_key,
+              topic_label, completeness, source_revision_checksum,
+              source_document_ids_json, not_before, freshness_deadline,
+              status, lease_expires_at, usage_reservation_id,
+              backfill_run_id)
+           values (?, 'long-term', ?, null, ?, ?, 'Project Marigold', 'final',
+                   'stale-topic', '[]', ?, ?, 'leased', ?, ?, ?)`,
+        )
+        .run(
+          `long-term:${timeZone}:${topicKey}:final`,
+          occurredAt,
+          timeZone,
+          topicKey,
+          now,
+          now + 24 * 60 * 60 * 1_000,
+          now + 60_000,
+          stale.reservationId,
+          stale.runId,
+        );
+
+      await expect(service.runNext(now)).resolves.toMatchObject({
+        status: 'completed',
+        tier: 'daily',
+      });
+
+      expect(
+        database
+          .prepare(
+            `select backfill_run_id as backfillRunId, status,
+                    usage_reservation_id as usageReservationId
+             from context_jobs where tier = 'long-term'`,
+          )
+          .get(),
+      ).toEqual({
+        backfillRunId: null,
+        status: 'pending',
+        usageReservationId: stale.reservationId,
+      });
+      database
+        .prepare(
+          `update context_jobs set status = 'completed' where tier = 'weekly'`,
+        )
+        .run();
+      await expect(service.runNext(now)).resolves.toMatchObject({
+        status: 'completed',
+        tier: 'long-term',
+      });
+      expect(
+        database
+          .prepare(
+            'select actual_usage_usd from context_backfills where id = ?',
+          )
+          .pluck()
+          .get(stale.runId),
+      ).toBe(0.01);
+      expect(
+        database
+          .prepare(
+            `select count(*) from usage_ledger
+             where backfill_run_id is null and actual_usd is not null`,
+          )
+          .pluck()
+          .get(),
+      ).toBe(3);
       database.close();
     },
   );

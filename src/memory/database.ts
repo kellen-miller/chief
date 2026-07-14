@@ -567,6 +567,12 @@ export const CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_ID =
   '0008_context_backfill_lifecycle';
 export const CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_CHECKSUM = 'chief-0008-v1';
 
+const CONTEXT_BACKFILL_TARGETING_MIGRATION = `select 1;`;
+
+export const CONTEXT_BACKFILL_TARGETING_MIGRATION_ID =
+  '0009_context_backfill_targeting';
+export const CONTEXT_BACKFILL_TARGETING_MIGRATION_CHECKSUM = 'chief-0009-v1';
+
 interface Migration {
   readonly checksum: string;
   readonly id: string;
@@ -621,6 +627,12 @@ const MIGRATIONS: readonly Migration[] = [
     id: CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_ID,
     migrate: guardLegacyBackfillAccounting,
     sql: CONTEXT_BACKFILL_LIFECYCLE_MIGRATION,
+  },
+  {
+    checksum: CONTEXT_BACKFILL_TARGETING_MIGRATION_CHECKSUM,
+    id: CONTEXT_BACKFILL_TARGETING_MIGRATION_ID,
+    migrate: targetLegacyBackfillAccounting,
+    sql: CONTEXT_BACKFILL_TARGETING_MIGRATION,
   },
 ];
 
@@ -726,6 +738,188 @@ function guardLegacyBackfillAccounting(database: Database.Database): void {
     .run(guardRunId, guardRunId);
 }
 
+interface LegacyContextJobRow {
+  readonly backfillRunId: number | null;
+  readonly id: number;
+  readonly periodEnd: number | null;
+  readonly periodStart: number;
+  readonly reservationOccurredAt: number | null;
+  readonly sourceDocumentIdsJson: string;
+  readonly tier: string;
+  readonly usageReservationId: string | null;
+}
+
+function targetLegacyBackfillAccounting(database: Database.Database): void {
+  const accountingAppliedAt = database
+    .prepare('select applied_at from schema_migrations where id = ?')
+    .pluck()
+    .get(CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_ID) as number;
+  const jobs = database
+    .prepare(
+      `select j.id, j.tier, j.period_start as periodStart,
+              j.period_end as periodEnd,
+              j.source_document_ids_json as sourceDocumentIdsJson,
+              j.usage_reservation_id as usageReservationId,
+              j.backfill_run_id as backfillRunId,
+              l.occurred_at as reservationOccurredAt
+       from context_jobs j
+       left join usage_ledger l on l.id = j.usage_reservation_id
+       where j.status in ('pending', 'leased')`,
+    )
+    .all() as LegacyContextJobRow[];
+  const recoveredRunIds = new Set<number>();
+
+  for (const job of jobs) {
+    const createdAfterAccounting =
+      job.reservationOccurredAt !== null &&
+      job.reservationOccurredAt > accountingAppliedAt;
+    const provableRunIds = createdAfterAccounting
+      ? []
+      : provableBackfillRunIds(database, job, accountingAppliedAt);
+    const targetRunId = provableRunIds[0];
+    if (targetRunId !== undefined) {
+      database
+        .prepare('update context_jobs set backfill_run_id = ? where id = ?')
+        .run(targetRunId, job.id);
+      if (job.usageReservationId !== null) {
+        database
+          .prepare(
+            `update usage_ledger set backfill_run_id = ?
+             where id = ? and actual_usd is null`,
+          )
+          .run(targetRunId, job.usageReservationId);
+      }
+      recoveredRunIds.add(targetRunId);
+      continue;
+    }
+
+    if (
+      job.backfillRunId !== null &&
+      migrationGuardedRun(database, job.backfillRunId)
+    ) {
+      if (job.usageReservationId !== null) {
+        database
+          .prepare(
+            `update usage_ledger set backfill_run_id = null
+             where id = ? and actual_usd is null
+               and backfill_run_id = ?`,
+          )
+          .run(job.usageReservationId, job.backfillRunId);
+      }
+      database
+        .prepare('update context_jobs set backfill_run_id = null where id = ?')
+        .run(job.id);
+    }
+  }
+
+  const now = Date.now();
+  const recover = database.prepare(
+    `update context_backfills
+     set status = 'paused', completed_at = null,
+         pause_reason = 'migration-accounting-resume-required',
+         updated_at = ?
+     where id = ? and (
+       status in ('active', 'paused', 'completed')
+       or pause_reason = 'migration-accounting-rebuild-required'
+     )`,
+  );
+  for (const runId of recoveredRunIds) recover.run(now, runId);
+}
+
+function provableBackfillRunIds(
+  database: Database.Database,
+  job: LegacyContextJobRow,
+  accountingAppliedAt: number,
+): number[] {
+  const runIds = database
+    .prepare(
+      `select distinct s.run_id
+       from context_backfill_segments s
+       join context_backfills b on b.id = s.run_id
+       where b.created_at <= ? and s.committed_at <= ?
+       order by s.run_id desc`,
+    )
+    .pluck()
+    .all(accountingAppliedAt, accountingAppliedAt) as number[];
+  return runIds.filter((runId) => {
+    if (
+      (job.tier === 'daily' || job.tier === 'weekly') &&
+      job.periodEnd !== null &&
+      database
+        .prepare(
+          `select exists(
+             select 1 from context_backfill_segments
+             where run_id = ? and period_start >= ? and period_end <= ?
+           )`,
+        )
+        .pluck()
+        .get(runId, job.periodStart, job.periodEnd) === 1
+    ) {
+      return true;
+    }
+    return legacySourceDocumentIds(job.sourceDocumentIdsJson).some(
+      (documentId) => documentDescendsFromRun(database, documentId, runId),
+    );
+  });
+}
+
+function legacySourceDocumentIds(value: string): number[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is number => Number.isSafeInteger(item) && item > 0,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function documentDescendsFromRun(
+  database: Database.Database,
+  documentId: number,
+  runId: number,
+): boolean {
+  return (
+    database
+      .prepare(
+        `with recursive ancestry(id) as (
+           select ?
+           union
+           select p.parent_document_id
+           from context_document_parents p
+           join ancestry a on a.id = p.document_id
+         )
+         select exists(
+           select 1 from ancestry a
+           join context_backfill_segments s on s.document_id = a.id
+           where s.run_id = ?
+         )`,
+      )
+      .pluck()
+      .get(documentId, runId) === 1
+  );
+}
+
+function migrationGuardedRun(
+  database: Database.Database,
+  runId: number,
+): boolean {
+  return (
+    database
+      .prepare(
+        `select exists(
+           select 1 from context_backfills where id = ? and pause_reason in (
+             'migration-accounting-resume-required',
+             'migration-accounting-rebuild-required'
+           )
+         )`,
+      )
+      .pluck()
+      .get(runId) === 1
+  );
+}
+
 function backfillContextForgetJournals(database: Database.Database): void {
   const rows = database
     .prepare(
@@ -821,6 +1015,16 @@ export function verifyContextDatabaseSchema(
     if (
       backfillLifecycleChecksum !==
       CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_CHECKSUM
+    ) {
+      return false;
+    }
+    const backfillTargetingChecksum = database
+      .prepare('select checksum from schema_migrations where id = ?')
+      .pluck()
+      .get(CONTEXT_BACKFILL_TARGETING_MIGRATION_ID);
+    if (
+      backfillTargetingChecksum !==
+      CONTEXT_BACKFILL_TARGETING_MIGRATION_CHECKSUM
     ) {
       return false;
     }

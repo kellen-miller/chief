@@ -9,6 +9,7 @@ import { ContextBackfillService } from '../../src/context/context-backfill.js';
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import {
   CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_ID,
+  CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_ID,
   CONTEXT_BACKFILL_MIGRATION_ID,
   migrateChiefDatabase,
   openChiefDatabase,
@@ -90,6 +91,7 @@ describe('Chief database', () => {
       '0006_context_backfill',
       '0007_context_backfill_accounting',
       '0008_context_backfill_lifecycle',
+      '0009_context_backfill_targeting',
     ]);
     expect(verifyContextDatabaseSchema(database)).toBe(true);
     database.close();
@@ -110,6 +112,7 @@ describe('Chief database', () => {
         )
         .run(now, now, now).lastInsertRowid,
     );
+    insertLegacyBackfillSegment(database, runId);
     database
       .prepare(
         `insert into usage_ledger
@@ -160,6 +163,36 @@ describe('Chief database', () => {
         .get(),
     ).toBe(2);
 
+    const accountingAppliedAt = Number(
+      database
+        .prepare('select applied_at from schema_migrations where id = ?')
+        .pluck()
+        .get(CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_ID),
+    );
+    database
+      .prepare(
+        `insert into usage_ledger
+           (id, operation, work_category, priority, reservation_usd,
+            actual_usd, occurred_at, occurrence_month, backfill_run_id,
+            reconciled_at)
+         values ('post-0007-live-reservation', 'context-rollup', 'indexing',
+                 'background', 0.02, null, ?, ?, null, null)`,
+      )
+      .run(accountingAppliedAt + 1, Date.UTC(2026, 6, 1));
+    database
+      .prepare(
+        `insert into context_jobs
+           (job_key, tier, period_start, period_end, timezone, topic_key,
+            completeness, source_revision_checksum, not_before,
+            freshness_deadline, usage_reservation_id, status,
+            lease_expires_at, backfill_run_id)
+         values ('post-0007-live-daily', 'daily', 0, 100,
+                 'America/New_York', null, 'final', 'live-checksum', 0, 50,
+                 'post-0007-live-reservation', 'leased', ?, null)`,
+      )
+      .run(now - 1);
+
+    migrateChiefDatabase(database, CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_ID);
     migrateChiefDatabase(database);
 
     expect(
@@ -176,11 +209,15 @@ describe('Chief database', () => {
     expect(
       database
         .prepare(
-          `select backfill_run_id as backfillRunId
+          `select job_key as jobKey, backfill_run_id as backfillRunId
            from context_jobs order by job_key`,
         )
         .all(),
-    ).toEqual([{ backfillRunId: runId }, { backfillRunId: runId }]);
+    ).toEqual([
+      { backfillRunId: runId, jobKey: 'legacy-induced-daily' },
+      { backfillRunId: runId, jobKey: 'legacy-induced-weekly' },
+      { backfillRunId: null, jobKey: 'post-0007-live-daily' },
+    ]);
     expect(
       database
         .prepare(
@@ -190,6 +227,40 @@ describe('Chief database', () => {
         )
         .get(),
     ).toEqual({ actualUsd: null, backfillRunId: runId });
+
+    const context = new ChannelContextService({
+      budget: new UsageBudget({
+        ceilingUsd: 10,
+        indexingCeilingUsd: 3,
+        ledger: new SqliteUsageLedger(database),
+        now: () => now,
+        warningUsd: 5,
+      }),
+      channelId: 'channel',
+      conversation: new ConversationStore(database),
+      database,
+      embed: () =>
+        Promise.resolve({ embedding: new Float32Array(1536), usageUsd: 0 }),
+      guildId: 'guild',
+      now: () => now,
+      summarizer: {
+        summarize: () => {
+          throw new Error('empty legacy job must not call the provider');
+        },
+      },
+      timeZone: 'America/New_York',
+    });
+    expect(context.nextDeadline(now)).not.toBeNull();
+    await expect(context.runNext(now)).resolves.toEqual({ status: 'idle' });
+    expect(
+      database
+        .prepare(
+          `select actual_usd as actualUsd,
+                  backfill_run_id as backfillRunId
+           from usage_ledger where id = 'post-0007-live-reservation'`,
+        )
+        .get(),
+    ).toEqual({ actualUsd: 0.02, backfillRunId: null });
 
     const backfill = new ContextBackfillService({
       channelId: 'channel',
@@ -206,6 +277,117 @@ describe('Chief database', () => {
       pauseReason: null,
       status: 'active',
     });
+    await expect(context.runNext(now)).resolves.toEqual({ status: 'idle' });
+    await expect(context.runNext(now)).resolves.toEqual({ status: 'idle' });
+    await expect(backfill.runNext(now)).resolves.toEqual({
+      runId,
+      status: 'completed',
+    });
+    expect(
+      database
+        .prepare(
+          `select actual_usage_usd as actualUsageUsd, status
+           from context_backfills where id = ?`,
+        )
+        .get(runId),
+    ).toEqual({ actualUsageUsd: 0.05, status: 'completed' });
+    database.close();
+  });
+
+  it('reopens a run falsely completed between 0007 and 0008', async () => {
+    const database = openChiefDatabase(':memory:');
+    const now = Date.UTC(2026, 6, 14, 12);
+    migrateChiefDatabase(database, CONTEXT_BACKFILL_MIGRATION_ID);
+    const runId = Number(
+      database
+        .prepare(
+          `insert into context_backfills
+             (run_key, scope_id, status, maximum_usage_usd, created_at,
+              updated_at, activated_at, next_page_index)
+           values ('deployment-interval', 'guild/channel', 'active', 0.1,
+                   ?, ?, ?, null)`,
+        )
+        .run(now, now, now).lastInsertRowid,
+    );
+    insertLegacyBackfillSegment(database, runId);
+    database
+      .prepare(
+        `insert into usage_ledger
+           (id, operation, work_category, priority, reservation_usd,
+            actual_usd, occurred_at, occurrence_month, backfill_run_id,
+            reconciled_at)
+         values ('deployment-interval-reservation', 'context-rollup',
+                 'indexing', 'background', 0.03, null, ?, ?, null, null)`,
+      )
+      .run(now, Date.UTC(2026, 6, 1));
+    database
+      .prepare(
+        `insert into context_jobs
+           (job_key, tier, period_start, period_end, timezone, topic_key,
+            completeness, source_revision_checksum, not_before,
+            freshness_deadline, usage_reservation_id, status,
+            lease_expires_at)
+         values ('deployment-interval-daily', 'daily', 0, 100,
+                 'America/New_York', null, 'final', 'legacy-checksum', 100,
+                 200, 'deployment-interval-reservation', 'leased', ?)`,
+      )
+      .run(now - 1);
+    migrateChiefDatabase(database, CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_ID);
+    database
+      .prepare(
+        `update context_backfills
+         set status = 'completed', completed_at = ?, updated_at = ?
+         where id = ?`,
+      )
+      .run(now + 1, now + 1, runId);
+    migrateChiefDatabase(database, CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_ID);
+
+    migrateChiefDatabase(database);
+
+    expect(
+      database
+        .prepare(
+          `select completed_at as completedAt, pause_reason as pauseReason,
+                  status
+           from context_backfills where id = ?`,
+        )
+        .get(runId),
+    ).toEqual({
+      completedAt: null,
+      pauseReason: 'migration-accounting-resume-required',
+      status: 'paused',
+    });
+    expect(
+      database
+        .prepare(
+          `select backfill_run_id from context_jobs
+           where job_key = 'deployment-interval-daily'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(runId);
+    expect(
+      database
+        .prepare(
+          `select backfill_run_id from usage_ledger
+           where id = 'deployment-interval-reservation'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(runId);
+
+    const backfill = new ContextBackfillService({
+      channelId: 'channel',
+      database,
+      guildId: 'guild',
+      now: () => now,
+      pricing: {
+        embeddingInputPerMillionUsd: 0,
+        summaryInputPerMillionUsd: 0,
+        summaryOutputPerMillionUsd: 0,
+      },
+    });
+    await backfill.resume(runId);
     const context = new ChannelContextService({
       budget: new UsageBudget({
         ceilingUsd: 10,
@@ -229,19 +411,16 @@ describe('Chief database', () => {
       timeZone: 'America/New_York',
     });
     await expect(context.runNext(now)).resolves.toEqual({ status: 'idle' });
-    await expect(context.runNext(now)).resolves.toEqual({ status: 'idle' });
     await expect(backfill.runNext(now)).resolves.toEqual({
       runId,
       status: 'completed',
     });
     expect(
       database
-        .prepare(
-          `select actual_usage_usd as actualUsageUsd, status
-           from context_backfills where id = ?`,
-        )
+        .prepare(`select actual_usage_usd from context_backfills where id = ?`)
+        .pluck()
         .get(runId),
-    ).toEqual({ actualUsageUsd: 0.05, status: 'completed' });
+    ).toBe(0.03);
     database.close();
   });
 
@@ -399,4 +578,45 @@ function embedding(value: number): Float32Array {
   const result = new Float32Array(1536);
   result[0] = value;
   return result;
+}
+
+function insertLegacyBackfillSegment(
+  database: ReturnType<typeof openChiefDatabase>,
+  runId: number,
+): void {
+  database
+    .prepare(
+      `insert into context_backfill_pages
+         (run_id, page_index, request_before_source_id, oldest_source_id,
+          newest_source_id, eligible_count, eligible_bytes, eligible_tokens,
+          identity_checksum, completed_at)
+       values (?, 0, null, '100', '200', 1, 8, 2, 'legacy-page', 100)`,
+    )
+    .run(runId);
+  const documentId = Number(
+    database
+      .prepare(
+        `insert into context_documents
+           (document_key, tier, period_start, period_end, timezone, topic_key,
+            revision, completeness, state, content_state,
+            content_state_reason, summary, confidence, retention_deadline,
+            created_at, updated_at, generation_input_tokens,
+            generation_output_tokens, generation_usage_usd, is_internal)
+         values ('legacy-segment', 'hourly', 10, 20, 'America/New_York', null,
+                 1, 'final', 'active', 'available', 'retained',
+                 'Legacy segment summary.', 0.9, null, 100, 100, 1, 1, 0,
+                 1)`,
+      )
+      .run().lastInsertRowid,
+  );
+  database
+    .prepare(
+      `insert into context_backfill_segments
+         (run_id, segment_key, page_index, period_start, period_end,
+          source_checksum, source_count, document_id, actual_usage_usd,
+          committed_at)
+       values (?, 'legacy-segment', 0, 10, 20, 'legacy-source', 1, ?, 0,
+               100)`,
+    )
+    .run(runId, documentId);
 }
