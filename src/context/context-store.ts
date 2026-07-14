@@ -109,6 +109,9 @@ export class ContextStore {
     if (input.eventIds.length === 0 && input.parentDocumentIds.length === 0) {
       throw new Error('context document requires lineage');
     }
+    if (input.tier !== 'hourly' && input.parentDocumentIds.length === 0) {
+      throw new Error('higher context tier requires parent lineage');
+    }
     const sourceAvailable = this.#database.prepare(
       `select exists(
          select 1 from conversation_events

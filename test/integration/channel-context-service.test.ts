@@ -564,6 +564,41 @@ describe('ContextStore', () => {
     database.close();
   });
 
+  it.each(['daily', 'weekly', 'long-term'] as const)(
+    'rejects raw source lineage for $tier documents atomically',
+    (tier) => {
+      const { contextStore, database, service } = createHarness(1_000);
+      const created = service.apply(source(500));
+      if (created.eventId === null) throw new Error('expected a source event');
+      const eventId = created.eventId;
+
+      expect(() =>
+        contextStore.activateDocumentRevision(
+          documentInput({
+            documentKey: `${tier}-raw-source`,
+            eventIds: [eventId],
+            parentDocumentIds: [],
+            periodEnd: tier === 'long-term' ? null : 3_000,
+            summary: 'Raw source must not bypass hierarchy.',
+            tier,
+          }),
+        ),
+      ).toThrow('higher context tier requires parent lineage');
+      for (const table of [
+        'context_documents',
+        'context_document_fts',
+        'context_document_vectors',
+        'context_document_events',
+        'context_document_parents',
+      ]) {
+        expect(
+          database.prepare(`select count(*) from ${table}`).pluck().get(),
+        ).toBe(0);
+      }
+      database.close();
+    },
+  );
+
   it('requires final parents for every higher context tier', () => {
     const { contextStore, database, service } = createHarness(1_000);
     const created = service.apply(source(500));
