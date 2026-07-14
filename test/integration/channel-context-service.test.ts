@@ -504,8 +504,8 @@ describe('ChannelContextService', () => {
         )
         .all(),
     ).toEqual([
-      { error: 'source-invalidated', status: 'failed' },
-      { error: 'source-invalidated', status: 'failed' },
+      { error: 'rebuild', status: 'pending' },
+      { error: 'rebuild', status: 'pending' },
     ]);
     expect(
       database
@@ -554,9 +554,23 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
-  it('distinguishes local forgetting from Discord deletion', () => {
+  it('distinguishes local forgetting from Discord deletion on replay', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
-    const { database, service } = createHarness(occurredAt + 1_000);
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    let captured: ContextForgetJournalEntry | undefined;
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal: (entry) => {
+        captured = entry;
+        return Promise.resolve();
+      },
+    });
     const created = service.apply(source(occurredAt));
 
     service.apply({
@@ -577,7 +591,36 @@ describe('ChannelContextService', () => {
     expect(
       database.prepare('select reason from context_tombstones').pluck().get(),
     ).toBe('locally-forgotten');
-    database.close();
+    await expect(
+      service.flushForgetJournal(occurredAt + 3_000),
+    ).resolves.toEqual({ status: 'uploaded' });
+    if (captured === undefined) throw new Error('expected journal upload');
+
+    const restored = openChiefDatabase(':memory:');
+    try {
+      migrateChiefDatabase(restored);
+      const restoredService = new ChannelContextService({
+        channelId,
+        conversation: new ConversationStore(restored),
+        database: restored,
+        guildId,
+        memory: new SqliteMemoryStore(restored),
+        timeZone,
+      });
+      const restoredSource = restoredService.apply(source(occurredAt));
+      restoredService.replayForgetJournal(captured, occurredAt + 4_000);
+      expect(
+        restored
+          .prepare(
+            'select content_state_reason from conversation_events where id = ?',
+          )
+          .pluck()
+          .get(restoredSource.eventId),
+      ).toBe('locally-forgotten');
+    } finally {
+      restored.close();
+      database.close();
+    }
   });
 
   it('uploads authoritative deletion journals through the same outbox', async () => {
@@ -616,6 +659,206 @@ describe('ChannelContextService', () => {
         .get(),
     ).toBe('uploaded');
     database.close();
+  });
+
+  it('scrubs authoritative descendants equivalently live and on replay', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    let captured: ContextForgetJournalEntry | undefined;
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal: (entry) => {
+        captured = entry;
+        return Promise.resolve();
+      },
+    });
+    const created = service.apply(
+      source(occurredAt, {
+        content: 'AuthoritativeDeleteMarker source evidence.',
+      }),
+    );
+    if (created.eventId === null) throw new Error('expected source event');
+    const documentId = new ContextStore(database).activateDocumentRevision({
+      ...documentInput({
+        ...sourceJobInput(database, 'provisional'),
+        completeness: 'provisional',
+        documentKey: 'authoritative-delete-document',
+        eventIds: [created.eventId],
+        summary: 'AuthoritativeDeleteMarker topic summary.',
+        topicLabel: 'AuthoritativeDeleteTopic',
+      }),
+    });
+    database
+      .prepare(
+        `insert into context_jobs
+           (job_key, tier, period_start, period_end, timezone, topic_key,
+            topic_label, completeness, source_revision_checksum,
+            source_document_ids_json, not_before, freshness_deadline, status)
+         values ('authoritative-delete-topic', 'long-term', ?, null, ?,
+                 'authoritative-delete-topic', 'AuthoritativeDeleteTopic',
+                 'final', 'old', ?, ?, ?, 'completed')`,
+      )
+      .run(
+        occurredAt,
+        timeZone,
+        JSON.stringify([documentId]),
+        occurredAt,
+        occurredAt,
+      );
+
+    service.apply({
+      deletedAt: occurredAt + 1_000,
+      messageId: source(occurredAt).messageId,
+      reason: 'discord-deleted',
+      type: 'delete',
+    });
+    await expect(
+      service.flushForgetJournal(occurredAt + 1_000),
+    ).resolves.toEqual({ status: 'uploaded' });
+    if (captured === undefined) throw new Error('expected journal upload');
+    expect(captured.payload.documentKeys).toEqual([
+      'authoritative-delete-document',
+    ]);
+    expect(
+      database
+        .prepare(
+          `select state, content_state as contentState,
+                  content_state_reason as contentStateReason, summary,
+                  topic_label as topicLabel
+           from context_documents where id = ?`,
+        )
+        .get(documentId),
+    ).toEqual({
+      contentState: 'scrubbed',
+      contentStateReason: 'discord-deleted',
+      state: 'suppressed',
+      summary: '',
+      topicLabel: null,
+    });
+    expect(
+      database
+        .prepare(
+          `select topic_label from context_jobs
+           where job_key = 'authoritative-delete-topic'`,
+        )
+        .pluck()
+        .get(),
+    ).toBeNull();
+
+    const restored = openChiefDatabase(':memory:');
+    try {
+      migrateChiefDatabase(restored);
+      const restoredDocumentId = Number(
+        restored
+          .prepare(
+            `insert into context_documents
+               (document_key, tier, period_start, period_end, timezone,
+                topic_key, topic_label, revision, completeness, state,
+                content_state, content_state_reason, summary, confidence,
+                retention_deadline, created_at, updated_at,
+                generation_input_tokens, generation_output_tokens,
+                generation_usage_usd, is_internal)
+             values ('authoritative-delete-document', 'hourly', ?, ?, ?, null,
+                     'AuthoritativeDeleteTopic', 1, 'provisional', 'active',
+                     'available', 'retained',
+                     'AuthoritativeDeleteMarker restored summary.', 0.9, null,
+                     ?, ?, 10, 5, 0.01, 0)`,
+          )
+          .run(
+            occurredAt,
+            occurredAt + 60 * 60 * 1_000,
+            timeZone,
+            occurredAt,
+            occurredAt,
+          ).lastInsertRowid,
+      );
+      restored
+        .prepare(
+          `insert into context_document_fts (rowid, content) values (?, ?)`,
+        )
+        .run(restoredDocumentId, 'AuthoritativeDeleteMarker restored summary.');
+      restored
+        .prepare(
+          `insert into context_document_vectors (document_id, embedding)
+           values (?, ?)`,
+        )
+        .run(
+          BigInt(restoredDocumentId),
+          JSON.stringify(Array.from(embedding(0.7))),
+        );
+      restored
+        .prepare(
+          `insert into context_jobs
+             (job_key, tier, period_start, period_end, timezone, topic_key,
+              topic_label, completeness, source_revision_checksum,
+              source_document_ids_json, not_before, freshness_deadline, status)
+           values ('restored-authoritative-topic', 'long-term', ?, null, ?,
+                   'authoritative-delete-topic', 'AuthoritativeDeleteTopic',
+                   'final', 'old', ?, ?, ?, 'completed')`,
+        )
+        .run(
+          occurredAt,
+          timeZone,
+          JSON.stringify([restoredDocumentId]),
+          occurredAt,
+          occurredAt,
+        );
+      new ChannelContextService({
+        channelId,
+        conversation: new ConversationStore(restored),
+        database: restored,
+        guildId,
+        memory: new SqliteMemoryStore(restored),
+        timeZone,
+      }).replayForgetJournal(captured, occurredAt + 2_000);
+
+      expect(
+        restored
+          .prepare(
+            `select state, content_state as contentState,
+                    content_state_reason as contentStateReason, summary,
+                    topic_label as topicLabel
+             from context_documents where id = ?`,
+          )
+          .get(restoredDocumentId),
+      ).toEqual({
+        contentState: 'scrubbed',
+        contentStateReason: 'discord-deleted',
+        state: 'suppressed',
+        summary: '',
+        topicLabel: null,
+      });
+      expect(
+        restored
+          .prepare(
+            `select topic_label from context_jobs
+             where job_key = 'restored-authoritative-topic'`,
+          )
+          .pluck()
+          .get(),
+      ).toBeNull();
+      expect(
+        restored
+          .prepare('select count(*) from context_document_fts')
+          .pluck()
+          .get(),
+      ).toBe(0);
+      expect(
+        restored
+          .prepare('select count(*) from context_document_vectors')
+          .pluck()
+          .get(),
+      ).toBe(0);
+    } finally {
+      restored.close();
+      database.close();
+    }
   });
 
   it('upgrades a pending 0004 journal through flush and replay', async () => {
@@ -1364,6 +1607,137 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
+  it('keeps every lowercase subject term as a deletion anchor', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    for (const [index, content] of [
+      'alice vacation begins monday.',
+      'bob vacation begins tuesday.',
+    ].entries()) {
+      service.apply(
+        source(occurredAt + index, {
+          content,
+          messageId: String(52345678901234605n + BigInt(index)),
+          platformEventId: `lowercase-subject-${String(index)}`,
+        }),
+      );
+    }
+
+    const requested = await service.forget({
+      canModerateContext: false,
+      content: 'Chief, forget every message about alice vacation',
+      now: occurredAt + 5_000,
+      requestMessageId: '62345678901234605',
+      requesterId: source(occurredAt).speakerId,
+    });
+    expect(requested).toMatchObject({
+      sourceCount: 1,
+      status: 'confirmation-required',
+    });
+    if (requested.status !== 'confirmation-required') {
+      throw new Error('expected lowercase subject confirmation');
+    }
+    await service.forget({
+      canModerateContext: false,
+      confirmationNonce: requested.confirmationNonce,
+      content: `Chief, confirm forget ${requested.confirmationNonce}`,
+      now: occurredAt + 6_000,
+      requestMessageId: '62345678901234606',
+      requesterId: source(occurredAt).speakerId,
+    });
+    expect(
+      database
+        .prepare(
+          `select content, content_state as contentState
+           from conversation_events order by id`,
+        )
+        .all(),
+    ).toEqual([
+      { content: '', contentState: 'scrubbed' },
+      { content: 'bob vacation begins tuesday.', contentState: 'available' },
+    ]);
+    database.close();
+  });
+
+  it('does not select a sole raw source only through derived text', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    const created = service.apply(
+      source(occurredAt, { content: 'The launch code is Cobalt.' }),
+    );
+    if (created.eventId === null) throw new Error('expected source event');
+    new ContextStore(database).activateDocumentRevision({
+      ...documentInput({
+        ...sourceJobInput(database, 'final'),
+        documentKey: 'derived-only-marigold',
+        eventIds: [created.eventId],
+        summary: 'Project Marigold uses the launch code.',
+      }),
+    });
+
+    const requested = await service.forget({
+      canModerateContext: true,
+      content: 'Chief, forget all records about Project Marigold',
+      now: occurredAt + 5_000,
+      requestMessageId: '62345678901234607',
+      requesterId: 'moderator',
+    });
+    expect(requested).toMatchObject({
+      documentCount: 1,
+      sourceCount: 0,
+      status: 'confirmation-required',
+    });
+    if (requested.status !== 'confirmation-required') {
+      throw new Error('expected derived document confirmation');
+    }
+    await expect(
+      service.forget({
+        canModerateContext: true,
+        confirmationNonce: requested.confirmationNonce,
+        content: `Chief, confirm forget ${requested.confirmationNonce}`,
+        now: occurredAt + 6_000,
+        requestMessageId: '62345678901234608',
+        requesterId: 'moderator',
+      }),
+    ).resolves.toMatchObject({
+      documentCount: 1,
+      sourceCount: 0,
+      status: 'forgotten',
+    });
+    expect(
+      database
+        .prepare(
+          `select content, content_state as contentState
+           from conversation_events where id = ?`,
+        )
+        .get(created.eventId),
+    ).toEqual({
+      content: 'The launch code is Cobalt.',
+      contentState: 'available',
+    });
+    database.close();
+  });
+
   it('discovers every exact broad match before acknowledging deletion', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
@@ -1455,6 +1829,22 @@ describe('ChannelContextService', () => {
         requesterId: '72345678901234567',
       }),
     ).resolves.toEqual({ status: 'clarification-required' });
+    const hiddenNarrow = await service.forget({
+      canModerateContext: false,
+      content: 'Chief, forget CeilingMarker',
+      now: occurredAt + 6_000,
+      requestMessageId: '62345678901235001',
+      requesterId: '72345678901234567',
+    });
+    const absentNarrow = await service.forget({
+      canModerateContext: false,
+      content: 'Chief, forget AbsentCeilingMarker',
+      now: occurredAt + 6_000,
+      requestMessageId: '62345678901235002',
+      requesterId: '72345678901234567',
+    });
+    expect(hiddenNarrow).toEqual(absentNarrow);
+    expect(hiddenNarrow).toEqual({ status: 'clarification-required' });
     expect(
       database
         .prepare('select count(*) from context_deletion_requests')
@@ -2316,6 +2706,68 @@ describe('ChannelContextService', () => {
       database.close();
       await rm(directory, { force: true, recursive: true });
     }
+  });
+
+  it('ignores snapshot-local document IDs during journal replay', () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+    });
+    const created = service.apply(
+      source(occurredAt, {
+        content: 'Project Juniper remains unrelated.',
+      }),
+    );
+    if (created.eventId === null) throw new Error('expected unrelated source');
+    const unrelatedDocumentId = new ContextStore(
+      database,
+    ).activateDocumentRevision({
+      ...documentInput({
+        ...sourceJobInput(database, 'provisional'),
+        completeness: 'provisional',
+        documentKey: 'collision-juniper',
+        eventIds: [created.eventId],
+        summary: 'Project Juniper remains unrelated.',
+      }),
+    });
+    const targetScopeId = `${guildId}/${channelId}/52345678901234999`;
+    const payload = {
+      documentIds: [unrelatedDocumentId],
+      documentKeys: ['missing-marigold-document'],
+      memoryIds: [],
+      sourceScopeIds: [targetScopeId],
+      tombstoneKeys: [`source:${targetScopeId}`],
+    };
+    const journalKey = 'forget:numeric-document-collision';
+    const checksum = createHash('sha256')
+      .update(JSON.stringify({ journalKey, occurredAt, payload }))
+      .digest('hex');
+
+    service.replayForgetJournal(
+      { checksum, journalKey, occurredAt, payload },
+      occurredAt + 1_000,
+    );
+
+    expect(
+      database
+        .prepare(
+          `select state, content_state as contentState, summary
+           from context_documents where id = ?`,
+        )
+        .get(unrelatedDocumentId),
+    ).toEqual({
+      contentState: 'available',
+      state: 'active',
+      summary: 'Project Juniper remains unrelated.',
+    });
+    database.close();
   });
 
   it('removes retained text from lexical search at raw expiry', () => {

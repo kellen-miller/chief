@@ -26,6 +26,13 @@ export interface ContextDocumentRevisionInput {
   readonly topicLabel?: string | null;
 }
 
+export function contextDocumentGenerationScopeId(
+  documentKey: string,
+  sourceRevisionChecksum: string,
+): string {
+  return `generation:${JSON.stringify([documentKey, sourceRevisionChecksum])}`;
+}
+
 export class ContextStore {
   readonly #database: Database.Database;
 
@@ -194,11 +201,23 @@ export class ContextStore {
         `select exists(
            select 1 from context_tombstones
            where (scope_type = 'document' and scope_id = @documentKey)
+              or (scope_type = 'document'
+                  and scope_id = @documentGenerationScopeId)
               or (scope_type = 'topic' and scope_id = @topicKey)
          )`,
       )
       .pluck()
-      .get({ documentKey: input.documentKey, topicKey: input.topicKey });
+      .get({
+        documentGenerationScopeId:
+          input.sourceRevisionChecksum === undefined
+            ? ''
+            : contextDocumentGenerationScopeId(
+                input.documentKey,
+                input.sourceRevisionChecksum,
+              ),
+        documentKey: input.documentKey,
+        topicKey: input.topicKey,
+      });
     if (tombstoned === 1) {
       throw new Error('context document is tombstoned');
     }

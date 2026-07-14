@@ -542,6 +542,31 @@ export class SqliteMemoryStore {
   }
 
   /**
+   * Synchronous authoritative-deletion primitive. The caller owns the shared
+   * outer transaction, so this method must not open or commit one itself.
+   */
+  public deleteContextSources(sourceScopeIds: readonly string[]): void {
+    const uniqueScopeIds = [...new Set(sourceScopeIds)];
+    if (uniqueScopeIds.length === 0) return;
+    const placeholders = uniqueScopeIds.map(() => '?').join(', ');
+    const sourceEventIds = this.#database
+      .prepare(
+        `select id from source_events
+         where source_scope_id in (${placeholders}) order by id`,
+      )
+      .pluck()
+      .all(...uniqueScopeIds) as number[];
+    for (const sourceEventId of sourceEventIds) {
+      this.#deleteSourceMemories(sourceEventId);
+    }
+    if (sourceEventIds.length === 0) return;
+    const sourcePlaceholders = sourceEventIds.map(() => '?').join(', ');
+    this.#database
+      .prepare(`delete from source_events where id in (${sourcePlaceholders})`)
+      .run(...sourceEventIds);
+  }
+
+  /**
    * Synchronous deletion primitive. The caller owns the shared outer
    * transaction so this method must not open or commit one itself.
    */

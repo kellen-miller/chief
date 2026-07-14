@@ -202,3 +202,62 @@ Final correction verification passed with `pnpm verify`:
   97.43% functions, and 93.93% lines.
 
 `git diff --check` is run again immediately before the correction commit.
+
+## Second correction review response
+
+Status: all six follow-up findings resolved without weakening the first
+correction.
+
+1. A matched aggregate no longer promotes its complete lineage into the raw
+   deletion set. Raw sources are selected only by their own complete lexical
+   match; the sole-lineage fallback is limited to an already-unavailable raw
+   source so retained document evidence can still create the permanent source
+   tombstone required by the existing retention-expiry guarantee. A mixed
+   Marigold/Juniper hour deletes only Marigold and rebuilds the same stable
+   hourly document from Juniper.
+2. Replay treats `documentKeys` as document authority and never resolves the
+   payload's snapshot-local numeric `documentIds`. A collision fixture points
+   the old numeric ID at an unrelated local document and verifies that the
+   unrelated row and indexes remain available.
+3. Authoritative Discord deletion and local forgetting now use one synchronous
+   suppression core. Authoritative journals include all affected stable
+   document keys, and both live mutation and partial-restore replay scrub every
+   descendant summary, FTS/vector row, document topic label, and matching job
+   label. The journal payload carries the suppression reason so exact-message
+   local forgetting remains `locally-forgotten` on replay; deterministic legacy
+   authoritative journals retain their Discord-compatible fallback.
+4. Document no-resurrection is split into permanent stable-key tombstones when
+   no source lineage survives and generation-scoped tombstones when a sanitized
+   rebuild is possible. Activation rejects the forgotten source checksum while
+   allowing a new checksum for the same period and stable document key.
+5. Incomplete discovery above the 1,000-candidate ceiling now returns the same
+   clarification for hidden and absent narrow requests. Broad ordinary-member
+   requests continue to fail closed as unauthorized, while moderators receive
+   clarification instead of a false absence signal.
+6. Deletion discovery requires every normalized non-stopword subject term,
+   including lowercase multiword targets. The shared Task 4 retrieval scorer
+   retains its longest-term fallback, so the stricter deletion anchor does not
+   narrow ordinary lexical retrieval.
+
+Additional audit coverage verifies that an available sole raw source is not
+selected merely because derived text matches, while an unavailable sole source
+still receives the durable tombstone required after retention expiry.
+
+Focused RED-GREEN failures included the mixed rollup reporting two raw sources,
+the same-period rebuild hitting a permanent document tombstone, replay scrubbing
+a numeric-ID collision, an authoritative journal with no document keys, a
+hidden narrow request returning unauthorized, lowercase `alice vacation`
+capturing Bob, local replay changing its reason to `discord-deleted`, and a
+sole available lineage source being promoted through derived text.
+
+Final second-correction verification passed with `pnpm verify`:
+
+- Prettier, ESLint, both TypeScript builds, and all 41 test files passed.
+- 361 tests passed.
+- Coverage was 91.53% statements, 84.46% branches, 94.12% functions, and
+  93.06% lines.
+- `ContextDeletionStore` coverage was 92.64% statements, 84.65% branches,
+  97.80% functions, and 94.01% lines.
+
+No test uses a paid provider or network call. `git diff --check` is rerun
+immediately before the second-correction commit.

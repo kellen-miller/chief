@@ -2,8 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import type Database from 'better-sqlite3';
 
-import type { SqliteMemoryStore } from '../memory/memory-store.js';
+import { SqliteMemoryStore } from '../memory/memory-store.js';
 import { contextPeriod } from './context-period.js';
+import { contextDocumentGenerationScopeId } from './context-store.js';
 import {
   buildLexicalQuery,
   extractLexicalTermSet,
@@ -28,6 +29,7 @@ export interface ContextForgetJournalEntry {
     readonly documentIds: readonly number[];
     readonly documentKeys: readonly string[];
     readonly memoryIds: readonly number[];
+    readonly reason?: 'discord-deleted' | 'locally-forgotten';
     readonly sourceScopeIds: readonly string[];
     readonly tombstoneKeys: readonly string[];
   };
@@ -39,6 +41,10 @@ export interface ContextDeletionResult {
   readonly journalId: number;
   readonly memoryCount: number;
   readonly sourceCount: number;
+}
+
+export interface ContextAuthoritativeDeletionResult {
+  readonly eventId: number | null;
 }
 
 export interface PendingContextForgetJournal {
@@ -63,6 +69,7 @@ interface SourceRow {
 }
 
 interface DocumentRow {
+  readonly completeness: 'final' | 'provisional';
   readonly contentState: string;
   readonly documentKey: string;
   readonly id: number;
@@ -70,10 +77,17 @@ interface DocumentRow {
   readonly periodEnd: number | null;
   readonly periodStart: number;
   readonly state: string;
+  readonly sourceRevisionChecksum: string | null;
   readonly tier: 'daily' | 'hourly' | 'long-term' | 'weekly';
   readonly timeZone: string;
   readonly topicKey: string | null;
   readonly topicLabel: string | null;
+}
+
+interface SuppressionMutationResult {
+  readonly documents: readonly DocumentRow[];
+  readonly payload: ContextForgetJournalEntry['payload'];
+  readonly sources: readonly SourceRow[];
 }
 
 const DELETION_DISCOVERY_PAGE_SIZE = 20;
@@ -90,13 +104,13 @@ export class ContextDeletionStore {
     readonly channelId: string;
     readonly database: Database.Database;
     readonly guildId: string;
-    readonly memory: SqliteMemoryStore;
+    readonly memory?: SqliteMemoryStore | undefined;
     readonly timeZone: string;
   }) {
     this.#channelId = options.channelId;
     this.#database = options.database;
     this.#guildId = options.guildId;
-    this.#memory = options.memory;
+    this.#memory = options.memory ?? new SqliteMemoryStore(options.database);
     this.#timeZone = options.timeZone;
   }
 
@@ -131,7 +145,7 @@ export class ContextDeletionStore {
           readonly scopeId: string;
           readonly text: string;
         }[],
-      lexicalTerms.relevance,
+      lexicalTerms.all,
     );
     const documentMatches = collectCompleteLexicalRows(
       (limit, offset) =>
@@ -149,7 +163,7 @@ export class ContextDeletionStore {
           readonly documentKey: string;
           readonly text: string;
         }[],
-      lexicalTerms.relevance,
+      lexicalTerms.all,
     );
     const memoryMatches = collectCompleteLexicalRows(
       (limit, offset) =>
@@ -164,7 +178,7 @@ export class ContextDeletionStore {
           readonly id: number;
           readonly text: string;
         }[],
-      lexicalTerms.relevance,
+      lexicalTerms.all,
     );
     if (
       !sourceMatches.complete ||
@@ -186,10 +200,7 @@ export class ContextDeletionStore {
     const sourceScopeIds = new Set(
       directSources.filter((scopeId) => scopeId !== excludedSourceScopeId),
     );
-    for (const scopeId of this.#memorySourceScopes(memories)) {
-      if (scopeId !== excludedSourceScopeId) sourceScopeIds.add(scopeId);
-    }
-    for (const scopeId of this.#documentSourceScopes(documents)) {
+    for (const scopeId of this.#unavailableDocumentSourceScopes(documents)) {
       if (scopeId !== excludedSourceScopeId) sourceScopeIds.add(scopeId);
     }
     const result = {
@@ -281,8 +292,9 @@ export class ContextDeletionStore {
     if (memoryScopes.some((scopeId) => !allowedScopes.has(scopeId))) {
       return false;
     }
-    const documentScopes = this.#documentSourceScopes(candidates.documentKeys);
-    return documentScopes.every((scopeId) => allowedScopes.has(scopeId));
+    return candidates.documentKeys.every((documentKey) =>
+      this.#documentHasSourceScope(documentKey, allowedScopes),
+    );
   }
 
   public isNarrowSelfSource(
@@ -405,90 +417,20 @@ export class ContextDeletionStore {
           ...(input.requestSourceScopeIds ?? []),
         ]),
       ];
-      const sources = this.#sourceRows(allSourceScopeIds);
-      const documents = this.#affectedDocuments(
-        sources.map(({ id }) => id),
-        input.candidates.documentKeys,
-      );
-      const sourceDerivedMemoryIds =
-        this.#sourceDerivedMemoryIds(allSourceScopeIds);
-      const memoryIds = [
-        ...new Set([...input.candidates.memoryIds, ...sourceDerivedMemoryIds]),
-      ];
-      const tombstoneKeys: string[] = [];
-      for (const source of sources) {
-        tombstoneKeys.push(
-          this.#insertTombstone({
-            now: input.now,
-            reason: 'locally-forgotten',
-            scopeId: source.scopeId,
-            scopeType: 'source',
-          }),
-        );
-      }
-      for (const documentKey of input.candidates.documentKeys) {
-        tombstoneKeys.push(
-          this.#insertTombstone({
-            now: input.now,
-            reason: 'locally-forgotten',
-            scopeId: documentKey,
-            scopeType: 'document',
-          }),
-        );
-      }
-
-      for (const source of sources) {
-        this.#database
-          .prepare('delete from conversation_event_fts where rowid = ?')
-          .run(source.id);
-      }
-      if (sources.length > 0) {
-        const placeholders = sources.map(() => '?').join(', ');
-        this.#database
-          .prepare(
-            `update conversation_events
-             set content = '', attachment_metadata_json = '[]', deleted_at = ?,
-                 content_state = 'scrubbed',
-                 content_state_reason = 'locally-forgotten'
-             where id in (${placeholders})`,
-          )
-          .run(input.now, ...sources.map(({ id }) => id));
-      }
-      this.#scrubDocuments(documents, input.now);
-      const supersededMemoryIds = this.#memory.supersedeForContextDeletion(
-        memoryIds,
-        input.now,
-      );
-      if (tombstoneKeys.length === 0 && supersededMemoryIds.length > 0) {
-        tombstoneKeys.push(
-          this.#insertTombstone({
-            now: input.now,
-            reason: 'locally-forgotten',
-            scopeId: `memory:${String(supersededMemoryIds[0])}`,
-            scopeType: 'topic',
-          }),
-        );
-      }
-      const memorySourceScopeIds =
-        this.#memorySourceScopes(supersededMemoryIds);
-      this.#memory.scrubContextSources([
-        ...new Set([...allSourceScopeIds, ...memorySourceScopeIds]),
-      ]);
-      this.#enqueueRebuilds(sources, documents, input.now);
-
-      const payload = {
-        documentIds: documents.map(({ id }) => id),
-        documentKeys: [
-          ...new Set(documents.map(({ documentKey }) => documentKey)),
-        ],
-        memoryIds: supersededMemoryIds,
-        sourceScopeIds: sources.map(({ scopeId }) => scopeId),
-        tombstoneKeys,
-      };
+      const { documents, payload, sources } = this.#mutateSuppression({
+        documentKeys: input.candidates.documentKeys,
+        hardDeleteMemorySources: false,
+        memoryIds: input.candidates.memoryIds,
+        now: input.now,
+        reason: 'locally-forgotten',
+        sourceScopeIds: allSourceScopeIds,
+        tombstoneDocuments: true,
+        tombstoneMissingSources: false,
+      });
       const occurredAt = input.now;
       const journalKey = `forget:${randomUUID()}`;
       const checksum = digest({ journalKey, occurredAt, payload });
-      const primaryTombstone = tombstoneKeys[0];
+      const primaryTombstone = payload.tombstoneKeys[0];
       if (primaryTombstone === undefined) {
         throw new Error('context deletion requires a tombstoned scope');
       }
@@ -503,7 +445,7 @@ export class ContextDeletionStore {
           journalKey,
           sources[0]?.scopeId ??
             documents[0]?.documentKey ??
-            `memory:${String(supersededMemoryIds[0] ?? '')}`,
+            `memory:${String(payload.memoryIds[0] ?? '')}`,
           primaryTombstone,
           occurredAt,
           checksum,
@@ -513,9 +455,55 @@ export class ContextDeletionStore {
         documentCount: documents.length,
         journal: { checksum, journalKey, occurredAt, payload },
         journalId: Number(result.lastInsertRowid),
-        memoryCount: supersededMemoryIds.length,
+        memoryCount: payload.memoryIds.length,
         sourceCount: targetSources.length,
       };
+    })();
+  }
+
+  public suppressSource(input: {
+    readonly now: number;
+    readonly reason: 'discord-deleted' | 'locally-forgotten';
+    readonly sourceScopeId: string;
+  }): ContextAuthoritativeDeletionResult {
+    return this.#database.transaction(() => {
+      const { payload, sources } = this.#mutateSuppression({
+        documentKeys: [],
+        hardDeleteMemorySources: true,
+        memoryIds: [],
+        now: input.now,
+        reason: input.reason,
+        sourceScopeIds: [input.sourceScopeId],
+        tombstoneDocuments: false,
+        tombstoneMissingSources: true,
+      });
+      const journalKey = `forget:${input.sourceScopeId}`;
+      const checksum = digest({
+        journalKey,
+        occurredAt: input.now,
+        payload,
+      });
+      const primaryTombstone = payload.tombstoneKeys[0];
+      if (primaryTombstone === undefined) {
+        throw new Error('source suppression requires a source tombstone');
+      }
+      this.#database
+        .prepare(
+          `insert into context_forget_journal
+             (journal_key, scope_id, tombstone_key, occurred_at, checksum,
+              payload_json)
+           values (?, ?, ?, ?, ?, ?)
+           on conflict(journal_key) do nothing`,
+        )
+        .run(
+          journalKey,
+          input.sourceScopeId,
+          primaryTombstone,
+          input.now,
+          checksum,
+          JSON.stringify(payload),
+        );
+      return { eventId: sources[0]?.id ?? null };
     })();
   }
 
@@ -594,26 +582,23 @@ export class ContextDeletionStore {
       throw new Error('context forget journal checksum mismatch');
     }
     this.#database.transaction(() => {
+      const authoritativeSourceScope = entry.payload.sourceScopeIds[0];
+      const reason =
+        entry.payload.reason ??
+        (authoritativeSourceScope !== undefined &&
+        entry.journalKey === `forget:${authoritativeSourceScope}`
+          ? 'discord-deleted'
+          : 'locally-forgotten');
       const sources = this.#sourceRows(entry.payload.sourceScopeIds);
-      const restoredDocumentKeys =
-        entry.payload.documentIds.length === 0
-          ? entry.payload.documentKeys
-          : (this.#database
-              .prepare(
-                `select document_key from context_documents
-                 where id in (${entry.payload.documentIds.map(() => '?').join(', ')})`,
-              )
-              .pluck()
-              .all(...entry.payload.documentIds) as string[]);
       const documents = this.#affectedDocuments(
         sources.map(({ id }) => id),
-        [...new Set([...entry.payload.documentKeys, ...restoredDocumentKeys])],
+        entry.payload.documentKeys,
       );
       const tombstoneKeys = entry.payload.tombstoneKeys.map((tombstoneKey) => {
         const scope = parseTombstoneKey(tombstoneKey);
         return this.#insertTombstone({
           now: entry.occurredAt,
-          reason: 'locally-forgotten',
+          reason,
           scopeId: scope.scopeId,
           scopeType: scope.scopeType,
         });
@@ -622,7 +607,7 @@ export class ContextDeletionStore {
         tombstoneKeys.push(
           this.#insertTombstone({
             now: entry.occurredAt,
-            reason: 'locally-forgotten',
+            reason,
             scopeId,
             scopeType: 'source',
           }),
@@ -640,37 +625,49 @@ export class ContextDeletionStore {
             `update conversation_events
              set content = '', attachment_metadata_json = '[]', deleted_at = ?,
                  content_state = 'scrubbed',
-                 content_state_reason = 'locally-forgotten'
-             where id in (${placeholders})`,
+                 content_state_reason = ?
+             where id in (${placeholders})
+               ${reason === 'discord-deleted' ? "and content_state = 'available'" : ''}`,
           )
-          .run(entry.occurredAt, ...sources.map(({ id }) => id));
+          .run(entry.occurredAt, reason, ...sources.map(({ id }) => id));
       }
-      this.#scrubDocuments(documents, now);
+      this.#scrubDocuments(documents, now, reason);
       const memoryIds = [
         ...new Set([
           ...entry.payload.memoryIds,
           ...this.#sourceDerivedMemoryIds(entry.payload.sourceScopeIds),
         ]),
       ];
-      const supersededMemoryIds = this.#memory.supersedeForContextDeletion(
-        memoryIds,
-        entry.occurredAt,
-      );
-      if (tombstoneKeys.length === 0 && supersededMemoryIds.length > 0) {
+      const affectedMemoryIds =
+        reason === 'discord-deleted'
+          ? memoryIds
+          : this.#memory.supersedeForContextDeletion(
+              memoryIds,
+              entry.occurredAt,
+            );
+      if (reason === 'discord-deleted') {
+        this.#memory.deleteContextSources(entry.payload.sourceScopeIds);
+      }
+      if (tombstoneKeys.length === 0 && affectedMemoryIds.length > 0) {
         tombstoneKeys.push(
           this.#insertTombstone({
             now: entry.occurredAt,
-            reason: 'locally-forgotten',
-            scopeId: `memory:${String(supersededMemoryIds[0])}`,
+            reason,
+            scopeId: `memory:${String(affectedMemoryIds[0])}`,
             scopeType: 'topic',
           }),
         );
       }
-      const memorySourceScopeIds =
-        this.#memorySourceScopes(supersededMemoryIds);
-      this.#memory.scrubContextSources([
-        ...new Set([...entry.payload.sourceScopeIds, ...memorySourceScopeIds]),
-      ]);
+      if (reason === 'locally-forgotten') {
+        const memorySourceScopeIds =
+          this.#memorySourceScopes(affectedMemoryIds);
+        this.#memory.scrubContextSources([
+          ...new Set([
+            ...entry.payload.sourceScopeIds,
+            ...memorySourceScopeIds,
+          ]),
+        ]);
+      }
       this.#enqueueRebuilds(sources, documents, now);
       const primaryTombstone =
         tombstoneKeys[0] ?? entry.payload.tombstoneKeys[0];
@@ -698,6 +695,129 @@ export class ContextDeletionStore {
           now,
         );
     })();
+  }
+
+  #mutateSuppression(input: {
+    readonly documentKeys: readonly string[];
+    readonly hardDeleteMemorySources: boolean;
+    readonly memoryIds: readonly number[];
+    readonly now: number;
+    readonly reason: 'discord-deleted' | 'locally-forgotten';
+    readonly sourceScopeIds: readonly string[];
+    readonly tombstoneDocuments: boolean;
+    readonly tombstoneMissingSources: boolean;
+  }): SuppressionMutationResult {
+    const sources = this.#sourceRows(input.sourceScopeIds);
+    const documents = this.#affectedDocuments(
+      sources.map(({ id }) => id),
+      input.documentKeys,
+    );
+    const memoryIds = [
+      ...new Set([
+        ...input.memoryIds,
+        ...this.#sourceDerivedMemoryIds(input.sourceScopeIds),
+      ]),
+    ];
+    const tombstonedSourceScopes = input.tombstoneMissingSources
+      ? input.sourceScopeIds
+      : sources.map(({ scopeId }) => scopeId);
+    const tombstoneKeys = tombstonedSourceScopes.map((scopeId) =>
+      this.#insertTombstone({
+        now: input.now,
+        reason: input.reason,
+        scopeId,
+        scopeType: 'source',
+      }),
+    );
+    if (input.tombstoneDocuments) {
+      const affectedDocumentIds = new Set(documents.map(({ id }) => id));
+      const deletedEventIds = new Set(sources.map(({ id }) => id));
+      for (const documentKey of input.documentKeys) {
+        const selected = documents.find(
+          (document) =>
+            document.documentKey === documentKey && document.state === 'active',
+        );
+        const survivingLineage = this.#documentHasSurvivingLineage(
+          documentKey,
+          deletedEventIds,
+          affectedDocumentIds,
+        );
+        const scopeId =
+          survivingLineage &&
+          typeof selected?.sourceRevisionChecksum === 'string'
+            ? contextDocumentGenerationScopeId(
+                documentKey,
+                selected.sourceRevisionChecksum,
+              )
+            : documentKey;
+        tombstoneKeys.push(
+          this.#insertTombstone({
+            now: input.now,
+            reason: input.reason,
+            scopeId,
+            scopeType: 'document',
+          }),
+        );
+      }
+    }
+
+    for (const source of sources) {
+      this.#database
+        .prepare('delete from conversation_event_fts where rowid = ?')
+        .run(source.id);
+    }
+    if (sources.length > 0) {
+      const placeholders = sources.map(() => '?').join(', ');
+      this.#database
+        .prepare(
+          `update conversation_events
+           set content = '', attachment_metadata_json = '[]', deleted_at = ?,
+               content_state = 'scrubbed', content_state_reason = ?
+           where id in (${placeholders})
+             ${input.reason === 'discord-deleted' ? "and content_state = 'available'" : ''}`,
+        )
+        .run(input.now, input.reason, ...sources.map(({ id }) => id));
+    }
+    this.#scrubDocuments(documents, input.now, input.reason);
+    const affectedMemoryIds = input.hardDeleteMemorySources
+      ? memoryIds
+      : this.#memory.supersedeForContextDeletion(memoryIds, input.now);
+    if (input.hardDeleteMemorySources) {
+      this.#memory.deleteContextSources(input.sourceScopeIds);
+    }
+    if (tombstoneKeys.length === 0 && affectedMemoryIds.length > 0) {
+      tombstoneKeys.push(
+        this.#insertTombstone({
+          now: input.now,
+          reason: input.reason,
+          scopeId: `memory:${String(affectedMemoryIds[0])}`,
+          scopeType: 'topic',
+        }),
+      );
+    }
+    if (!input.hardDeleteMemorySources) {
+      const memorySourceScopeIds = this.#memorySourceScopes(affectedMemoryIds);
+      this.#memory.scrubContextSources([
+        ...new Set([...input.sourceScopeIds, ...memorySourceScopeIds]),
+      ]);
+    }
+    this.#enqueueRebuilds(sources, documents, input.now);
+    return {
+      documents,
+      payload: {
+        documentIds: documents.map(({ id }) => id),
+        documentKeys: [
+          ...new Set(documents.map(({ documentKey }) => documentKey)),
+        ],
+        memoryIds: affectedMemoryIds,
+        reason: input.reason,
+        sourceScopeIds: input.tombstoneMissingSources
+          ? [...new Set(input.sourceScopeIds)]
+          : sources.map(({ scopeId }) => scopeId),
+        tombstoneKeys,
+      },
+      sources,
+    };
   }
 
   #sourceRows(scopeIds: readonly string[]): SourceRow[] {
@@ -761,18 +881,65 @@ export class ContextDeletionStore {
            select p.document_id from context_document_parents p
            join affected a on p.parent_document_id = a.id
          )
-         select d.id, d.document_key as documentKey, d.state,
+         select d.id, d.document_key as documentKey, d.state, d.completeness,
                 d.content_state as contentState, d.is_internal as isInternal,
                 d.tier, d.period_start as periodStart,
                 d.period_end as periodEnd, d.timezone as timeZone,
-                d.topic_key as topicKey, d.topic_label as topicLabel
+                d.topic_key as topicKey, d.topic_label as topicLabel,
+                (select j.source_revision_checksum from context_jobs j
+                 where j.job_key = d.document_key || ':' || d.completeness
+                 limit 1) as sourceRevisionChecksum
          from context_documents d join affected a on a.id = d.id
          order by d.id`,
       )
       .all(...uniqueRoots) as DocumentRow[];
   }
 
-  #scrubDocuments(documents: readonly DocumentRow[], now: number): void {
+  #documentHasSurvivingLineage(
+    documentKey: string,
+    deletedEventIds: ReadonlySet<number>,
+    affectedDocumentIds: ReadonlySet<number>,
+  ): boolean {
+    const lineage = this.#database
+      .prepare(
+        `with recursive lineage(id) as (
+           select id from context_documents
+           where document_key = ? and state = 'active'
+           union
+           select p.parent_document_id
+           from context_document_parents p join lineage l
+             on p.document_id = l.id
+         )
+         select d.id, d.state, d.content_state as contentState,
+                e.event_id as eventId,
+                c.content_state as eventContentState
+         from lineage l join context_documents d on d.id = l.id
+         left join context_document_events e on e.document_id = l.id
+         left join conversation_events c on c.id = e.event_id`,
+      )
+      .all(documentKey) as {
+      readonly contentState: string;
+      readonly eventContentState: string | null;
+      readonly eventId: number | null;
+      readonly id: number;
+      readonly state: string;
+    }[];
+    return lineage.some(
+      ({ contentState, eventContentState, eventId, id, state }) =>
+        (eventId !== null &&
+          eventContentState === 'available' &&
+          !deletedEventIds.has(eventId)) ||
+        (!affectedDocumentIds.has(id) &&
+          state === 'active' &&
+          contentState === 'available'),
+    );
+  }
+
+  #scrubDocuments(
+    documents: readonly DocumentRow[],
+    now: number,
+    reason: 'discord-deleted' | 'locally-forgotten',
+  ): void {
     for (const document of documents) {
       if (
         document.state !== 'active' ||
@@ -809,11 +976,11 @@ export class ContextDeletionStore {
       .prepare(
         `update context_documents
          set state = 'suppressed', content_state = 'scrubbed',
-             content_state_reason = 'locally-forgotten', summary = '',
+             content_state_reason = ?, summary = '',
              topic_label = null, updated_at = ?
          where id in (${placeholders})`,
       )
-      .run(now, ...ids);
+      .run(reason, now, ...ids);
     const jobPredicates = [
       topicKeys.length === 0
         ? null
@@ -836,7 +1003,7 @@ export class ContextDeletionStore {
 
   #insertTombstone(input: {
     readonly now: number;
-    readonly reason: 'locally-forgotten';
+    readonly reason: 'discord-deleted' | 'locally-forgotten';
     readonly scopeId: string;
     readonly scopeType: 'document' | 'source' | 'topic';
   }): string {
@@ -1063,6 +1230,37 @@ export class ContextDeletionStore {
       .all(...documentKeys) as string[];
   }
 
+  #unavailableDocumentSourceScopes(documentKeys: readonly string[]): string[] {
+    return documentKeys.flatMap((documentKey) => {
+      const scopes = this.#documentSourceScopes([documentKey]);
+      if (scopes.length !== 1) return [];
+      const scopeId = scopes[0];
+      if (scopeId === undefined) return [];
+      const available = this.#database
+        .prepare(
+          `select exists(
+             select 1 from conversation_events c
+             where c.guild_id || '/' || c.channel_id || '/' ||
+                   c.discord_message_id = ?
+               and c.content_state = 'available'
+           )`,
+        )
+        .pluck()
+        .get(scopeId);
+      return available === 1 ? [] : [scopeId];
+    });
+  }
+
+  #documentHasSourceScope(
+    documentKey: string,
+    allowedScopes: ReadonlySet<string>,
+  ): boolean {
+    if (allowedScopes.size === 0) return false;
+    return this.#documentSourceScopes([documentKey]).some((scopeId) =>
+      allowedScopes.has(scopeId),
+    );
+  }
+
   #sourceBelongsTo(scopeId: string, requesterId: string): boolean {
     return (
       this.#database
@@ -1165,6 +1363,14 @@ function parseJournalPayload(
     JSON.stringify(candidate.documentKeys ?? []),
   );
   const memoryIds = parseNumberIds(JSON.stringify(candidate.memoryIds));
+  const reason = candidate.reason;
+  if (
+    reason !== undefined &&
+    reason !== 'discord-deleted' &&
+    reason !== 'locally-forgotten'
+  ) {
+    throw new Error('context forget journal has invalid reason');
+  }
   const sourceScopeIds = parseStringIds(
     JSON.stringify(candidate.sourceScopeIds),
   );
@@ -1173,6 +1379,7 @@ function parseJournalPayload(
     documentIds,
     documentKeys,
     memoryIds,
+    ...(reason === undefined ? {} : { reason }),
     sourceScopeIds,
     tombstoneKeys,
   };

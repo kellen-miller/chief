@@ -1701,6 +1701,136 @@ describe('ChannelContextService rollups', () => {
     database.close();
   });
 
+  it('rebuilds a mixed hour without deleting unrelated raw sources', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    let current = occurredAt + 1_000;
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      budget: new UsageBudget({
+        ceilingUsd: 10,
+        indexingCeilingUsd: 3,
+        ledger: new SqliteUsageLedger(database),
+        now: () => current,
+        warningUsd: 5,
+      }),
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      embed: () =>
+        Promise.resolve({
+          embedding: new Float32Array(1_536).fill(0.25),
+          usageUsd: 0.001,
+        }),
+      estimateUsd: 0.05,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      now: () => current,
+      summarizer: {
+        summarize: (input) =>
+          Promise.resolve({
+            confidence: 0.9,
+            inputTokens: 20,
+            outputTokens: 8,
+            sourceIds: input.sources.map(({ id }) => id),
+            summary: input.sources.map(({ text }) => text).join(' '),
+            topicProposals: [],
+            usageUsd: 0.02,
+          }),
+      },
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    for (const [index, project] of ['Marigold', 'Juniper'].entries()) {
+      service.apply({
+        content: `Project ${project} launches Friday.`,
+        messageId: String(52345678901234700n + BigInt(index)),
+        occurredAt: occurredAt + index,
+        requestId: `mixed-hour-${project.toLowerCase()}`,
+        role: 'human',
+        speakerId: '42345678901234567',
+        speakerName: 'President Test',
+        type: 'upsert',
+      });
+    }
+    current += 5 * 60 * 1_000;
+    await expect(service.runNext(current)).resolves.toMatchObject({
+      status: 'completed',
+      tier: 'hourly',
+    });
+    const documentKey = database
+      .prepare(
+        `select document_key from context_documents
+         where state = 'active' and is_internal = 0`,
+      )
+      .pluck()
+      .get() as string;
+
+    const requested = await service.forget({
+      canModerateContext: false,
+      content: 'Chief, forget every message about Project Marigold',
+      now: current + 1,
+      requestMessageId: '62345678901234700',
+      requesterId: '42345678901234567',
+    });
+    expect(requested).toMatchObject({
+      documentCount: 1,
+      sourceCount: 1,
+      status: 'confirmation-required',
+    });
+    if (requested.status !== 'confirmation-required') {
+      throw new Error('expected mixed-hour confirmation');
+    }
+    await expect(
+      service.forget({
+        canModerateContext: false,
+        confirmationNonce: requested.confirmationNonce,
+        content: `Chief, confirm forget ${requested.confirmationNonce}`,
+        now: current + 2,
+        requestMessageId: '62345678901234701',
+        requesterId: '42345678901234567',
+      }),
+    ).resolves.toMatchObject({ sourceCount: 1, status: 'forgotten' });
+    expect(
+      database
+        .prepare(
+          `select content, content_state as contentState
+           from conversation_events order by id`,
+        )
+        .all(),
+    ).toEqual([
+      { content: '', contentState: 'scrubbed' },
+      {
+        content: 'Project Juniper launches Friday.',
+        contentState: 'available',
+      },
+    ]);
+    expect(
+      database
+        .prepare(
+          `select count(*) from context_tombstones
+           where scope_type = 'document' and scope_id = ?`,
+        )
+        .pluck()
+        .get(documentKey),
+    ).toBe(0);
+
+    current += 5_000;
+    for (let index = 0; index < 4; index += 1) {
+      await service.runNext(current);
+    }
+    expect(
+      database
+        .prepare(
+          `select summary from context_documents
+           where document_key = ? and state = 'active'`,
+        )
+        .pluck()
+        .get(documentKey),
+    ).toBe('Project Juniper launches Friday.');
+    database.close();
+  });
+
   it('reconciles an in-flight reservation after forget and restart', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;

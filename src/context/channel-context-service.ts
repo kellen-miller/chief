@@ -338,9 +338,10 @@ export class ChannelContextService {
         : deletion.discover(target.target, excludedScopeId);
     if (!candidates.complete) {
       return {
-        status: request.canModerateContext
-          ? 'clarification-required'
-          : 'unauthorized',
+        status:
+          request.canModerateContext || !target.broad
+            ? 'clarification-required'
+            : 'unauthorized',
       };
     }
     if (
@@ -1480,77 +1481,18 @@ export class ChannelContextService {
     ) {
       throw new Error('context suppression type and reason do not match');
     }
-    const scopeId = this.#sourceScopeId(change.messageId);
-    const tombstoneKey = `source:${scopeId}`;
-    const tombstoneChecksum = digest({
-      occurredAt: change.deletedAt,
+    const result = new ContextDeletionStore({
+      channelId: this.#channelId,
+      database: this.#database,
+      guildId: this.#guildId,
+      memory: this.#memory,
+      timeZone: this.#timeZone,
+    }).suppressSource({
+      now: change.deletedAt,
       reason,
-      scopeId,
-      scopeType: 'source',
+      sourceScopeId: this.#sourceScopeId(change.messageId),
     });
-    const memoryIds = this.#database
-      .prepare(
-        `select m.id from memories m join source_events s
-           on s.id = m.source_event_id
-         where s.platform_source_id = ? order by m.id`,
-      )
-      .pluck()
-      .all(change.messageId) as number[];
-    const payload = {
-      documentIds: [] as number[],
-      documentKeys: [] as string[],
-      memoryIds,
-      sourceScopeIds: [scopeId],
-      tombstoneKeys: [tombstoneKey],
-    };
-    const journalKey = `forget:${scopeId}`;
-    const journalChecksum = digest({
-      journalKey,
-      occurredAt: change.deletedAt,
-      payload,
-    });
-    this.#database
-      .prepare(
-        `insert into context_tombstones
-           (tombstone_key, scope_type, scope_id, reason, occurred_at, checksum)
-         values (?, 'source', ?, ?, ?, ?)
-         on conflict(scope_type, scope_id) do nothing`,
-      )
-      .run(tombstoneKey, scopeId, reason, change.deletedAt, tombstoneChecksum);
-    this.#database
-      .prepare(
-        `insert into context_forget_journal
-           (journal_key, scope_id, tombstone_key, occurred_at, checksum,
-            payload_json)
-         values (?, ?, ?, ?, ?, ?)
-         on conflict(journal_key) do nothing`,
-      )
-      .run(
-        journalKey,
-        scopeId,
-        tombstoneKey,
-        change.deletedAt,
-        journalChecksum,
-        JSON.stringify(payload),
-      );
-
-    const eventId = this.#eventId(change.messageId);
-    this.#memory?.suppressSource(change.messageId);
-    if (eventId === null) return { eventId, status: 'suppressed' };
-    this.#database
-      .prepare('delete from conversation_event_fts where rowid = ?')
-      .run(eventId);
-    this.#database
-      .prepare(
-        `update conversation_events
-         set content = '', attachment_metadata_json = '[]', deleted_at = ?,
-             content_state = 'scrubbed', content_state_reason = ?
-         where id = ? and content_state = 'available'`,
-      )
-      .run(change.deletedAt, reason, eventId);
-    this.#suppressDescendants(eventId, reason, change.deletedAt);
-    this.#invalidateEventJobs(eventId);
-    return { eventId, status: 'suppressed' };
+    return { eventId: result.eventId, status: 'suppressed' };
   }
 
   #scheduleHourlyJobs(occurredAt: number): void {
@@ -1999,7 +1941,7 @@ function extractForgetTarget(content: string): {
   const broad = /\b(?:all|every|everything|topic|whole)\b/iu.test(target);
   const subject = target
     .replace(
-      /^(?:(?:all|every)\s+messages?|everything|the\s+whole\s+topic)\s+(?:about\s+)?/iu,
+      /^(?:(?:all|every)\s+(?:messages?|records?)|everything|the\s+whole\s+topic)\s+(?:about\s+)?/iu,
       '',
     )
     .replace(/^topic\s+(?:about\s+)?/iu, '')
