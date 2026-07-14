@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { ChannelContextService } from '../../src/context/channel-context-service.js';
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
+import { DiscordReconciliationService } from '../../src/discord/discord-reconciliation-service.js';
 import {
   migrateChiefDatabase,
   openChiefDatabase,
@@ -272,6 +273,115 @@ describe('Discord source lifecycle', () => {
     expect(
       database.prepare('select count(*) from memories').pluck().get(),
     ).toBe(0);
+    database.close();
+  });
+
+  it('infers an offline delete from retained source identity', async () => {
+    const { context, database, memory } = createHarness();
+    const applied = context.apply(source());
+    if (applied.status !== 'applied' || applied.memorySourceEventId === null) {
+      throw new Error('expected a memory source');
+    }
+    const job = memory.leaseNextJob(1_000, 60_000);
+    if (job === null) throw new Error('expected an extraction job');
+    memory.completeJob(job.id);
+    memory.applyMemory({
+      canonicalText: 'Project Marigold launches Friday.',
+      confidence: 0.9,
+      embedding: new Float32Array(1_536),
+      kind: 'fact',
+      provenance: { platformSourceId: messageId },
+      sourceEventId: applied.memorySourceEventId,
+      timestamp: 1_500,
+    });
+
+    let now = 1_001 + 30 * 24 * 60 * 60 * 1_000;
+    memory.maintain(now);
+    context.maintain(now);
+    expect(
+      database
+        .prepare(
+          `select content, source_scope_id as sourceScopeId
+           from source_events where id = ?`,
+        )
+        .get(applied.memorySourceEventId),
+    ).toEqual({
+      content: '',
+      sourceScopeId: `${guildId}/${channelId}/${messageId}`,
+    });
+
+    const deleteTextSource = vi.fn(
+      (input: { readonly deletedAt: number; readonly messageId: string }) =>
+        context.apply({
+          deletedAt: input.deletedAt,
+          messageId: input.messageId,
+          reason: 'discord-deleted',
+          type: 'delete',
+        }),
+    );
+    const reconciliation = new DiscordReconciliationService({
+      channelId,
+      database,
+      guildId,
+      history: {
+        fetchPage: () =>
+          Promise.resolve({
+            complete: true,
+            coverage: {
+              newestMessageId: messageId,
+              oldestMessageId: messageId,
+            },
+            items: [],
+            nextCursor: null,
+            rateLimited: false,
+          }),
+      },
+      lifecycle: { applyTextSource: vi.fn(), deleteTextSource },
+      now: () => now,
+    });
+
+    await expect(reconciliation.reconcileWeeklyIdentity()).resolves.toEqual({
+      status: 'completed',
+    });
+    expect(deleteTextSource).toHaveBeenCalledOnce();
+    expect(deleteTextSource).toHaveBeenCalledWith({
+      deletedAt: now,
+      messageId,
+    });
+    expect(
+      database.prepare('select count(*) from memories').pluck().get(),
+    ).toBe(0);
+    expect(
+      database.prepare('select count(*) from source_events').pluck().get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare(
+          `select content, content_state as contentState,
+                  content_state_reason as reason
+           from conversation_events`,
+        )
+        .get(),
+    ).toEqual({
+      content: '',
+      contentState: 'scrubbed',
+      reason: 'retention-expired',
+    });
+    expect(
+      database.prepare('select count(*) from context_tombstones').pluck().get(),
+    ).toBe(1);
+    expect(
+      database
+        .prepare('select count(*) from context_forget_journal')
+        .pluck()
+        .get(),
+    ).toBe(1);
+
+    now += 7 * 24 * 60 * 60 * 1_000;
+    await expect(reconciliation.reconcileWeeklyIdentity()).resolves.toEqual({
+      status: 'completed',
+    });
+    expect(deleteTextSource).toHaveBeenCalledOnce();
     database.close();
   });
 

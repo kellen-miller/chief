@@ -72,7 +72,7 @@ content-bearing path that applies eligible revisions inside raw retention.
 `pnpm verify` passed:
 
 - Prettier, ESLint, and TypeScript checks passed.
-- 32 test files passed with 264 tests.
+- 32 test files passed with 265 tests.
 - Coverage: 90.38% statements, 83.37% branches, 90.90% functions, and 91.88%
   lines.
 - The production TypeScript build passed.
@@ -139,3 +139,29 @@ Review verification completed with 24 focused Discord unit tests and 61 focused
 integration tests, followed by `pnpm verify`: all 32 files and 264 tests passed,
 coverage stayed above repository thresholds, and formatting, lint, typecheck,
 and the production build all passed.
+
+## Critical re-review response
+
+The remaining retained-identity deletion gap was resolved test-first.
+
+- RED: an end-to-end test created a durable memory, ran both raw-maintenance
+  paths, and then omitted the source snowflake from a completed weekly identity
+  scan covering that exact range. Reconciliation completed but emitted zero
+  deletion callbacks, leaving the durable memory, retained source provenance,
+  and missing tombstone/journal unchanged.
+- GREEN: deletion inference now includes a scrubbed `retention-expired`
+  canonical row only when a text `source_events` identity still matches its
+  exact guild/channel/message scope. The completed scan invokes the normal
+  authoritative delete lifecycle, which revokes the durable memory and
+  content-free provenance and writes the tombstone/journal without restoring
+  expired raw content.
+- Range checks and the completed-pass gate are unchanged. Existing focused
+  tests continue to prove incomplete and rate-limited passes cannot infer
+  deletion. Repeating a completed weekly omission after the full-scan interval
+  emits no second callback, proving idempotency after the retained identity is
+  removed.
+
+Final verification passed with the 12 reconciliation unit tests and 7 source
+lifecycle integration tests focused first, then `pnpm verify`: formatting,
+lint, typecheck, all 32 test files and 265 tests, coverage thresholds, and the
+production build all passed.

@@ -281,9 +281,24 @@ export class DiscordReconciliationService {
     );
     const indexed = this.#database
       .prepare(
-        `select discord_message_id from conversation_events
-         where guild_id = ? and channel_id = ? and medium = 'text'
-           and content_state = 'available'`,
+        `select distinct c.discord_message_id
+         from conversation_events c
+         where c.guild_id = ? and c.channel_id = ? and c.medium = 'text'
+           and (
+             c.content_state = 'available'
+             or (
+               c.content_state = 'scrubbed'
+               and c.content_state_reason = 'retention-expired'
+               and exists (
+                 select 1 from source_events s
+                 where s.platform_source_id = c.discord_message_id
+                   and s.medium = 'text'
+                   and s.source_scope_id =
+                     c.guild_id || '/' || c.channel_id || '/' ||
+                     c.discord_message_id
+               )
+             )
+           )`,
       )
       .pluck()
       .all(this.#guildId, this.#channelId) as string[];
