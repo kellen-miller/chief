@@ -92,7 +92,9 @@ describe('repository policy', () => {
     const app = await read('infra/app/main.tf');
     const health = await read('src/health/health-server.ts');
     const runtime = await read('src/runtime.ts');
+    const dockerfile = await read('Dockerfile');
     const deployScript = await read('scripts/deploy.sh');
+    const restoreScript = await read('scripts/restore.sh');
     const runContainerScript = await read('scripts/run-container.sh');
     const aptScript = await read('scripts/configure-google-cloud-apt.sh');
     for (const suite of [
@@ -157,8 +159,20 @@ describe('repository policy', () => {
     expect(runContainerScript).toContain('RECOVERY_IMAGE');
     expect(runContainerScript).toContain('recover-forget-journals');
     expect(runContainerScript).toContain('forget-journal');
+    expect(runContainerScript).toContain('--all-versions');
+    expect(runContainerScript).toContain('database-capability');
+    expect(restoreScript).toContain('database-capability');
+    expect(dockerfile).toContain(
+      'LABEL io.chief.database-capability="0003_channel_context"',
+    );
     expect(runContainerScript.indexOf('recover-forget-journals')).toBeLessThan(
       runContainerScript.indexOf('DISCORD_TOKEN='),
+    );
+    expect(runContainerScript.indexOf('database-capability')).toBeLessThan(
+      runContainerScript.indexOf('DISCORD_TOKEN='),
+    );
+    expect(restoreScript.indexOf('database-capability')).toBeLessThan(
+      restoreScript.indexOf('systemctl stop'),
     );
   });
 

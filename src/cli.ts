@@ -15,6 +15,7 @@ import { SqliteMemoryStore } from './memory/memory-store.js';
 import {
   readForgetJournalDirectory,
   replayForgetJournals,
+  restorableDatabaseCapability,
   verifyRestorableDatabase,
 } from './memory/recovery.js';
 import { startChief } from './runtime.js';
@@ -85,6 +86,16 @@ async function main(arguments_: readonly string[]): Promise<void> {
       } finally {
         database.close();
       }
+      break;
+    }
+    case 'database-capability': {
+      const database = openChiefDatabase(requireFlag(arguments_, '--database'));
+      const capability = restorableDatabaseCapability(database);
+      database.close();
+      if (capability === null) {
+        throw new Error('database capability verification failed');
+      }
+      process.stdout.write(`${capability}\n`);
       break;
     }
     case 'context-backfill': {

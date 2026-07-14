@@ -797,8 +797,9 @@ export class ContextDeletionStore {
         }),
       );
     }
+    let memorySourceScopeIds: readonly string[] = [];
     if (!input.hardDeleteMemorySources) {
-      const memorySourceScopeIds = this.#memorySourceScopes(affectedMemoryIds);
+      memorySourceScopeIds = this.#memorySourceScopes(affectedMemoryIds);
       this.#memory.scrubContextSources([
         ...new Set([...input.sourceScopeIds, ...memorySourceScopeIds]),
       ]);
@@ -813,9 +814,14 @@ export class ContextDeletionStore {
         ],
         memoryIds: affectedMemoryIds,
         reason: input.reason,
-        sourceScopeIds: input.tombstoneMissingSources
-          ? [...new Set(input.sourceScopeIds)]
-          : sources.map(({ scopeId }) => scopeId),
+        sourceScopeIds: [
+          ...new Set([
+            ...(input.tombstoneMissingSources
+              ? input.sourceScopeIds
+              : sources.map(({ scopeId }) => scopeId)),
+            ...memorySourceScopeIds,
+          ]),
+        ],
         tombstoneKeys,
       },
       sources,

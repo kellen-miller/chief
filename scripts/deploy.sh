@@ -107,10 +107,10 @@ on_error() {
 }
 trap on_error ERR
 
+MIGRATED=true
 docker run --rm --user "$DATA_UID:$DATA_GID" \
   --volume "$DATA_DIR:$DATA_DIR" \
   "$CANDIDATE_IMAGE" migrate --database "$DATABASE"
-MIGRATED=true
 docker run --rm --user "$DATA_UID:$DATA_GID" \
   --volume "$DATA_DIR:$DATA_DIR" \
   "$CANDIDATE_IMAGE" verify-restore --backup "$DATABASE" \

@@ -100,7 +100,7 @@ describe('deploy transaction', () => {
   });
 
   it('never starts the old image against a new database without a backup', async () => {
-    const fixture = await createFixture(true);
+    const fixture = await createFixture({ failCandidate: true });
     await (
       await import('node:fs/promises')
     ).unlink(join(fixture.data, 'chief.db'));
@@ -117,10 +117,25 @@ describe('deploy transaction', () => {
       ),
     ).toBe(true);
   });
+
+  it('restores the old database when migration fails after a partial commit', async () => {
+    const fixture = await createFixture({ failMigration: true });
+
+    const result = await runDeploy(fixture);
+
+    expect(result.code).not.toBe(0);
+    expect(await readFile(join(fixture.data, 'chief.db'), 'utf8')).toBe(
+      'original',
+    );
+    expect(await readFile(join(fixture.data, 'deploy.env'), 'utf8')).toBe(
+      `IMAGE=${previous}\nRECOVERY_IMAGE=${candidate}\n`,
+    );
+  });
 });
 
 interface FixtureOptions {
   readonly failCandidate?: boolean;
+  readonly failMigration?: boolean;
   readonly failPrune?: boolean;
   readonly failTag?: boolean;
 }
@@ -130,6 +145,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<{
   readonly commandLog: string;
   readonly data: string;
   readonly failCandidate: boolean;
+  readonly failMigration: boolean;
   readonly failPrune: boolean;
   readonly failTag: boolean;
   readonly runtime: string;
@@ -174,6 +190,10 @@ case "$command_name" in
       cp "$database" "$destination/backup.db"
       printf '%s\\n' "$destination/backup.db"
     elif [[ "$args" == *" migrate "* ]]; then
+      if [[ "\${FAIL_MIGRATION:-0}" == 1 ]]; then
+        printf '%s' partially-migrated >"$database"
+        exit 1
+      fi
       printf '%s' migrated >"$database"
     fi
     ;;
@@ -198,6 +218,7 @@ exit 0
     commandLog,
     data,
     failCandidate: options.failCandidate ?? false,
+    failMigration: options.failMigration ?? false,
     failPrune: options.failPrune ?? false,
     failTag: options.failTag ?? false,
     runtime,
@@ -214,6 +235,7 @@ async function runDeploy(fixture: {
   readonly commandLog: string;
   readonly data: string;
   readonly failCandidate: boolean;
+  readonly failMigration: boolean;
   readonly failPrune: boolean;
   readonly failTag: boolean;
   readonly runtime: string;
@@ -235,6 +257,7 @@ async function runDeploy(fixture: {
         COMMAND_LOG: fixture.commandLog,
         DOCKER_CONFIG: '',
         FAIL_CANDIDATE: fixture.failCandidate ? '1' : '0',
+        FAIL_MIGRATION: fixture.failMigration ? '1' : '0',
         FAIL_PRUNE: fixture.failPrune ? '1' : '0',
         FAIL_TAG: fixture.failTag ? '1' : '0',
         PATH: `${fixture.bin}:${process.env.PATH ?? ''}`,

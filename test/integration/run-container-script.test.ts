@@ -64,8 +64,11 @@ describe('container startup recovery preflight', () => {
       (await stat(join(fixture.runtime, 'forget-journal'))).mode & 0o777,
     ).toBe(0o700);
     expect(
-      (await stat(join(fixture.runtime, 'forget-journal', 'entry.json'))).mode &
-        0o777,
+      (
+        await stat(
+          join(fixture.runtime, 'forget-journal', 'entry.generation-100.json'),
+        )
+      ).mode & 0o777,
     ).toBe(0o600);
     await expect(access(expiredBackup)).rejects.toMatchObject({
       code: 'ENOENT',
@@ -86,6 +89,55 @@ describe('container startup recovery preflight', () => {
       expect(commands).not.toContain(`docker run --name chief`);
       expect(commands).toContain('logger -t chief');
     }
+  });
+
+  it('refuses a context database for an incompatible target image', async () => {
+    const fixture = await createFixture();
+
+    const result = await runContainer(fixture, undefined, {
+      database: '0003_channel_context',
+      target: '0002_conversation_events',
+    });
+
+    expect(result.code).not.toBe(0);
+    const commands = await readFile(fixture.commandLog, 'utf8');
+    expect(commands).not.toContain('gcloud secrets');
+    expect(commands).not.toContain('docker run --name chief');
+    expect(commands).toContain('logger -t chief');
+  });
+
+  it('replays every retained generation without overwriting downloads', async () => {
+    const fixture = await createFixture();
+    const firstGeneration = 'gs://chief-backups/forget-journal/entry.json#101';
+    const secondGeneration = 'gs://chief-backups/forget-journal/entry.json#202';
+
+    const result = await runContainer(fixture, undefined, {
+      database: '0003_channel_context',
+      journalObjects: `${firstGeneration}\n${secondGeneration}`,
+      target: '0003_channel_context',
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    const commands = await readFile(fixture.commandLog, 'utf8');
+    expect(commands).toContain('storage ls --all-versions --recursive');
+    expect(commands).toContain(`storage cp ${firstGeneration}`);
+    expect(commands).toContain(`storage cp ${secondGeneration}`);
+    await expect(
+      access(
+        join(fixture.runtime, 'forget-journal', 'entry.generation-101.json'),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      access(
+        join(fixture.runtime, 'forget-journal', 'entry.generation-202.json'),
+      ),
+    ).resolves.toBeUndefined();
+    const receipt = await readFile(
+      join(fixture.data, '.forget-journal-replay.receipt'),
+      'utf8',
+    );
+    expect(receipt).toContain(firstGeneration);
+    expect(receipt).toContain(secondGeneration);
   });
 });
 
@@ -129,7 +181,7 @@ set -euo pipefail
 printf 'gcloud %s\n' "$*" >>"$COMMAND_LOG"
 if [[ "$1 $2" == 'storage ls' ]]; then
   [[ "\${FAIL_LIST:-0}" == 1 ]] && exit 1
-  printf 'gs://chief-backups/forget-journal/entry.json\n'
+  printf '%s\n' "\${JOURNAL_OBJECTS:-gs://chief-backups/forget-journal/entry.json#100}"
 elif [[ "$1 $2" == 'storage cp' ]]; then
   cp "$JOURNAL_SOURCE" "\${@: -1}"
 elif [[ "$1" == secrets ]]; then
@@ -143,6 +195,18 @@ fi
 set -euo pipefail
 printf 'docker %s\n' "$*" >>"$COMMAND_LOG"
 if [[ " $* " == *' recover-forget-journals '* ]] && [[ "\${FAIL_REPLAY:-0}" == 1 ]]; then
+  exit 1
+fi
+if [[ " $* " == *' database-capability '* ]]; then
+  printf '%s\n' "\${DATABASE_CAPABILITY:-0003_channel_context}"
+  exit 0
+fi
+if [[ "$1 $2" == 'image inspect' ]]; then
+  printf '%s\n' "\${TARGET_CAPABILITY:-0003_channel_context}"
+  exit 0
+fi
+if [[ " $* " == *' verify-restore '*' --require-migration 0003_channel_context '* ]] &&
+   [[ "\${DATABASE_CAPABILITY:-0003_channel_context}" != 0003_channel_context ]]; then
   exit 1
 fi
 exit 0
@@ -177,6 +241,14 @@ async function executable(path: string, content: string): Promise<void> {
 async function runContainer(
   fixture: Awaited<ReturnType<typeof createFixture>>,
   failure?: 'list' | 'replay',
+  capabilities: {
+    readonly database: string;
+    readonly journalObjects?: string;
+    readonly target: string;
+  } = {
+    database: '0003_channel_context',
+    target: '0003_channel_context',
+  },
 ): Promise<{ readonly code: number | null; readonly stderr: string }> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn('bash', [runContainerScript], {
@@ -188,10 +260,15 @@ async function runContainer(
         CHIEF_DEPLOY_STATE_FILE: fixture.deployState,
         CHIEF_RUNTIME_DIR: fixture.runtime,
         COMMAND_LOG: fixture.commandLog,
+        DATABASE_CAPABILITY: capabilities.database,
         FAIL_LIST: failure === 'list' ? '1' : '0',
         FAIL_REPLAY: failure === 'replay' ? '1' : '0',
         JOURNAL_SOURCE: fixture.journal,
+        JOURNAL_OBJECTS:
+          capabilities.journalObjects ??
+          'gs://chief-backups/forget-journal/entry.json#100',
         PATH: `${fixture.bin}:${process.env.PATH ?? ''}`,
+        TARGET_CAPABILITY: capabilities.target,
       },
       stdio: ['ignore', 'ignore', 'pipe'],
     });

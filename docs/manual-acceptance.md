@@ -45,7 +45,19 @@ If pinned `@discordjs/voice` 0.19.2 fails DAVE receive, upgrade to a verified fi
 - A real GCS backup restores with matching known memory retrieval.
 - `GET /healthz` remains HTTP 200 when only `diagnostics.context.degraded` is true, but returns HTTP 503 when database, Discord, disk, or maintenance critical readiness fails.
 - Run `context-backfill --dry-run`, review its content-free counts/cost estimate, activate a spend-limited sample, and stop/restart or exhaust its run ceiling. Confirm `--status` and `--resume RUN_ID` continue without duplicate context or Discord writes.
-- Inspect `backups/` and `forget-journal/`, verify one current backup with explicit migration 0003 mode, and confirm journals contain identifiers/checksum only—no deleted text or summary.
-- A deliberately unhealthy deployment returns to the prior digest and matching pre-migration database within five minutes while retaining the newer recovery digest. Replace the database manually and confirm the normal systemd start still replays journals before Discord connects.
+- Inspect `backups/` and every current/noncurrent `forget-journal/` generation,
+  verify one current backup with explicit migration 0003 mode, and confirm
+  journals contain identifiers/checksum only—no deleted text or summary. In the
+  drill bucket, retain two generations of one journal name and prove startup
+  downloads both by generation without overwriting either local file; its
+  receipt must name both generation numbers and checksums.
+- A deliberately unhealthy deployment returns to the prior digest and matching
+  pre-migration database within five minutes while retaining the newer recovery
+  digest. Replace the database manually and confirm the normal systemd start
+  still replays journals before Discord connects. Pair a current-schema
+  database with an older or unlabeled target image and prove restore/startup
+  refuses it before stopping the service or reading Discord secrets; pair that
+  old image with its pre-migration database and prove the supported rollback
+  path remains available.
 - Force journal listing failure, malformed JSON, checksum mismatch, and migration-0002 replay in the approved drill environment. Each failure must stop before Discord; successful replay must remain idempotent.
 - Stop the VM and confirm the uptime alert; force a watchdog and backup failure and confirm redacted email alerts.

@@ -34,7 +34,14 @@ describe('restore transaction', () => {
     );
     await executable(
       join(bin, 'docker'),
-      '#!/usr/bin/env bash\nprintf \'docker %s\\n\' "$*" >>"$COMMAND_LOG"\n',
+      `#!/usr/bin/env bash
+printf 'docker %s\n' "$*" >>"$COMMAND_LOG"
+if [[ "$1 $2" == 'image inspect' ]]; then
+  printf '0003_channel_context\n'
+elif [[ " $* " == *' database-capability '* ]]; then
+  printf '0003_channel_context\n'
+fi
+`,
     );
     await executable(
       join(bin, 'systemctl'),
@@ -73,6 +80,58 @@ describe('restore transaction', () => {
     expect(await readFile(log, 'utf8')).toContain(
       `${recovery} verify-restore --backup ${backup}`,
     );
+  });
+
+  it('refuses a context database for an incompatible target image', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'chief-restore-capability-test-'),
+    );
+    const bin = join(root, 'bin');
+    const data = join(root, 'data');
+    const backup = join(data, 'backup.db');
+    const database = join(data, 'chief.db');
+    const log = join(root, 'commands.log');
+    await mkdir(bin);
+    await mkdir(data);
+    await writeFile(database, 'active database');
+    await writeFile(backup, 'context backup');
+    await writeFile(
+      join(data, 'deploy.env'),
+      `IMAGE=${recovery}\nRECOVERY_IMAGE=${recovery}\n`,
+    );
+    await executable(
+      join(bin, 'docker'),
+      `#!/usr/bin/env bash
+printf 'docker %s\n' "$*" >>"$COMMAND_LOG"
+if [[ "$1 $2" == 'image inspect' ]]; then
+  printf '0002_conversation_events\n'
+elif [[ " $* " == *' database-capability '* ]]; then
+  printf '0003_channel_context\n'
+fi
+`,
+    );
+    await executable(
+      join(bin, 'systemctl'),
+      '#!/usr/bin/env bash\nprintf \'systemctl %s\\n\' "$*" >>"$COMMAND_LOG"\n',
+    );
+
+    const result = await run(restoreScript, [target, backup, database], {
+      ...process.env,
+      CHIEF_DATA_GID:
+        typeof process.getgid === 'function'
+          ? process.getgid().toString()
+          : '1000',
+      CHIEF_DATA_UID:
+        typeof process.getuid === 'function'
+          ? process.getuid().toString()
+          : '1000',
+      COMMAND_LOG: log,
+      PATH: `${bin}:${process.env.PATH ?? ''}`,
+    });
+
+    expect(result).not.toBe(0);
+    expect(await readFile(database, 'utf8')).toBe('active database');
+    expect(await readFile(log, 'utf8')).not.toContain('systemctl stop');
   });
 });
 

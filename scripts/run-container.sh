@@ -16,6 +16,7 @@ RUNTIME_DIR="${CHIEF_RUNTIME_DIR:-/run/chief}"
 DATABASE="$DATA_DIR/chief.db"
 RECEIPT="$DATA_DIR/.forget-journal-replay.receipt"
 JOURNAL_DIR="$RUNTIME_DIR/forget-journal"
+JOURNAL_MANIFEST="$RUNTIME_DIR/forget-journal.manifest"
 
 if [[ ! "${IMAGE:-}" =~ @sha256:[0-9a-f]{64}$ ]] ||
    [[ ! "${RECOVERY_IMAGE:-}" =~ @sha256:[0-9a-f]{64}$ ]]; then
@@ -46,12 +47,6 @@ database_checksum() {
   } | sha256sum | awk '{print $1}'
 }
 
-manifest_checksum() {
-  while IFS= read -r path; do
-    sha256sum "$path"
-  done < <(find "$JOURNAL_DIR" -type f -name '*.json' | LC_ALL=C sort)
-}
-
 prune_recovery_artifacts
 rm -rf "$JOURNAL_DIR"
 install -d -o "$DATA_UID" -g "$DATA_GID" -m 0700 "$JOURNAL_DIR"
@@ -64,7 +59,7 @@ GCP_PROJECT_ID="${GCP_PROJECT_ID:-$(
 
 OBJECT_LIST="$RUNTIME_DIR/forget-journal.objects"
 ALL_OBJECTS="$RUNTIME_DIR/bucket.objects"
-if ! gcloud storage ls --recursive \
+if ! gcloud storage ls --all-versions --recursive \
   "gs://$CHIEF_BACKUP_BUCKET/" >"$ALL_OBJECTS"; then
   recovery_failure journal_list
 fi
@@ -74,23 +69,35 @@ while IFS= read -r object; do
     printf '%s\n' "$object" >>"$OBJECT_LIST"
   fi
 done <"$ALL_OBJECTS"
+LC_ALL=C sort -u "$OBJECT_LIST" -o "$OBJECT_LIST"
+: >"$JOURNAL_MANIFEST"
 while IFS= read -r object; do
   [[ -z "$object" ]] && continue
-  if [[ ! "$object" =~ ^gs://[^/]+/forget-journal/[^/]+\.json$ ]]; then
+  if [[ ! "$object" =~ ^gs://[^/]+/forget-journal/[^/#]+\.json#[0-9]+$ ]]; then
     recovery_failure journal_manifest
   fi
-  destination="$JOURNAL_DIR/${object##*/}"
+  versionless="${object%#*}"
+  generation="${object##*#}"
+  filename="${versionless##*/}"
+  destination="$JOURNAL_DIR/${filename%.json}.generation-$generation.json"
   if ! gcloud storage cp "$object" "$destination"; then
     recovery_failure journal_read
   fi
   chown "$DATA_UID:$DATA_GID" "$destination"
   chmod 0600 "$destination"
+  printf 'journal=%s sha256=%s\n' \
+    "$object" "$(sha256sum "$destination" | awk '{print $1}')" \
+    >>"$JOURNAL_MANIFEST"
 done <"$OBJECT_LIST"
+chmod 0600 "$JOURNAL_MANIFEST"
 
 DATABASE_CHECKSUM="$(database_checksum)"
-MANIFEST_CHECKSUM="$(manifest_checksum | sha256sum | awk '{print $1}')"
-EXPECTED_RECEIPT="database=$DATABASE_CHECKSUM
-manifest=$MANIFEST_CHECKSUM"
+MANIFEST_CHECKSUM="$(sha256sum "$JOURNAL_MANIFEST" | awk '{print $1}')"
+EXPECTED_RECEIPT="$(
+  printf 'database=%s\nmanifest=%s\n' \
+    "$DATABASE_CHECKSUM" "$MANIFEST_CHECKSUM"
+  cat "$JOURNAL_MANIFEST"
+)"
 if [[ ! -f "$RECEIPT" ]] || [[ "$(cat "$RECEIPT")" != "$EXPECTED_RECEIPT" ]]; then
   if ! docker run --rm --user "$DATA_UID:$DATA_GID" \
     --volume "$DATA_DIR:$DATA_DIR" \
@@ -101,11 +108,36 @@ if [[ ! -f "$RECEIPT" ]] || [[ "$(cat "$RECEIPT")" != "$EXPECTED_RECEIPT" ]]; th
     recovery_failure journal_replay
   fi
   DATABASE_CHECKSUM="$(database_checksum)"
-  printf 'database=%s\nmanifest=%s\n' \
-    "$DATABASE_CHECKSUM" "$MANIFEST_CHECKSUM" >"$RECEIPT.tmp"
+  {
+    printf 'database=%s\nmanifest=%s\n' \
+      "$DATABASE_CHECKSUM" "$MANIFEST_CHECKSUM"
+    cat "$JOURNAL_MANIFEST"
+  } >"$RECEIPT.tmp"
   chown "$DATA_UID:$DATA_GID" "$RECEIPT.tmp"
   chmod 0600 "$RECEIPT.tmp"
   mv "$RECEIPT.tmp" "$RECEIPT"
+fi
+
+if ! DATABASE_CAPABILITY="$(docker run --rm --user "$DATA_UID:$DATA_GID" \
+  --volume "$DATA_DIR:$DATA_DIR" \
+  "$RECOVERY_IMAGE" database-capability --database "$DATABASE")"; then
+  recovery_failure database_verify
+fi
+if ! TARGET_CAPABILITY="$(docker image inspect \
+  --format '{{ index .Config.Labels "io.chief.database-capability" }}' \
+  "$IMAGE")"; then
+  recovery_failure target_image
+fi
+if [[ -z "$TARGET_CAPABILITY" || "$TARGET_CAPABILITY" == '<no value>' ]]; then
+  TARGET_CAPABILITY=0002_conversation_events
+fi
+if [[ "$DATABASE_CAPABILITY" == 0003_channel_context &&
+      "$TARGET_CAPABILITY" != 0003_channel_context ]]; then
+  recovery_failure target_database
+fi
+if [[ "$DATABASE_CAPABILITY" != 0002_conversation_events &&
+      "$DATABASE_CAPABILITY" != 0003_channel_context ]]; then
+  recovery_failure database_verify
 fi
 
 DISCORD_TOKEN="$(gcloud secrets versions access latest --project="$GCP_PROJECT_ID" --secret=chief-discord-token)"

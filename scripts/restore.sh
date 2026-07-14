@@ -17,6 +17,25 @@ if [[ ! "$IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] ||
 fi
 docker run --rm --user "$DATA_UID:$DATA_GID" --volume "$DATA_DIR:$DATA_DIR" \
   "$RECOVERY_IMAGE" verify-restore --backup "$BACKUP"
+DATABASE_CAPABILITY="$(docker run --rm --user "$DATA_UID:$DATA_GID" \
+  --volume "$DATA_DIR:$DATA_DIR" \
+  "$RECOVERY_IMAGE" database-capability --database "$BACKUP")"
+TARGET_CAPABILITY="$(docker image inspect \
+  --format '{{ index .Config.Labels "io.chief.database-capability" }}' \
+  "$IMAGE")"
+if [[ -z "$TARGET_CAPABILITY" || "$TARGET_CAPABILITY" == '<no value>' ]]; then
+  TARGET_CAPABILITY=0002_conversation_events
+fi
+if [[ "$DATABASE_CAPABILITY" == 0003_channel_context &&
+      "$TARGET_CAPABILITY" != 0003_channel_context ]]; then
+  echo 'restore target cannot run the backup database schema' >&2
+  exit 2
+fi
+if [[ "$DATABASE_CAPABILITY" != 0002_conversation_events &&
+      "$DATABASE_CAPABILITY" != 0003_channel_context ]]; then
+  echo 'restore database capability is invalid' >&2
+  exit 2
+fi
 systemctl stop chief.service
 if [[ -f "$DATABASE" ]]; then
   FAILED_DATABASE="$DATABASE.failed.$(date -u +%Y%m%dT%H%M%SZ)"

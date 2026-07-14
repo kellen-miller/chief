@@ -6,15 +6,18 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ContextForgetJournalEntry } from '../../src/context/context-deletion-store.js';
+import { ContextDeletionStore } from '../../src/context/context-deletion-store.js';
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import { backupChiefDatabase } from '../../src/memory/backup.js';
 import {
   migrateChiefDatabase,
   openChiefDatabase,
 } from '../../src/memory/database.js';
+import { SqliteMemoryStore } from '../../src/memory/memory-store.js';
 import {
   readForgetJournalDirectory,
   replayForgetJournals,
+  restorableDatabaseCapability,
   verifyRestorableDatabase,
 } from '../../src/memory/recovery.js';
 
@@ -33,6 +36,9 @@ describe('database recovery', () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database, '0002_conversation_events');
 
+    expect(restorableDatabaseCapability(database)).toBe(
+      '0002_conversation_events',
+    );
     expect(verifyRestorableDatabase(database)).toBe(true);
     expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
       false,
@@ -42,6 +48,7 @@ describe('database recovery', () => {
         "update schema_migrations set checksum = 'tampered' where id = '0002_conversation_events'",
       )
       .run();
+    expect(restorableDatabaseCapability(database)).toBeNull();
     expect(verifyRestorableDatabase(database)).toBe(false);
     database.close();
   });
@@ -50,6 +57,7 @@ describe('database recovery', () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
 
+    expect(restorableDatabaseCapability(database)).toBe('0003_channel_context');
     expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
       true,
     );
@@ -58,6 +66,52 @@ describe('database recovery', () => {
         "insert into context_document_fts (rowid, content) values (999, 'orphan')",
       )
       .run();
+    expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
+      false,
+    );
+    database.close();
+  });
+
+  it('rejects same-count context FTS content corruption', () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const documentId = insertContextDocument(
+      database,
+      'restore-lexical-target',
+      recordContextSource(database, 'restore-lexical-source'),
+    );
+    database
+      .prepare('delete from context_document_fts where rowid = ?')
+      .run(documentId);
+    database
+      .prepare(
+        'insert into context_document_fts (rowid, content) values (?, ?)',
+      )
+      .run(documentId, 'corrupted replacement');
+
+    expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
+      false,
+    );
+    database.close();
+  });
+
+  it('rejects a same-count vector attached to an orphan document ID', () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const documentId = insertContextDocument(
+      database,
+      'restore-vector-target',
+      recordContextSource(database, 'restore-vector-source'),
+    );
+    database
+      .prepare('delete from context_document_vectors where document_id = ?')
+      .run(BigInt(documentId));
+    database
+      .prepare(
+        'insert into context_document_vectors (document_id, embedding) values (?, ?)',
+      )
+      .run(BigInt(999), JSON.stringify(Array(1536).fill(0)));
+
     expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
       false,
     );
@@ -165,6 +219,112 @@ describe('database recovery', () => {
       database.prepare('select count(*) from memory_vectors').pluck().get(),
     ).toBe(0);
     database.close();
+  });
+
+  it('replays a real memory-only forget into a migration-0002 snapshot', () => {
+    const sourceScopeId = 'guild/channel/memory-message';
+    const current = openChiefDatabase(':memory:');
+    migrateChiefDatabase(current);
+    const currentMemory = new SqliteMemoryStore(current);
+    const currentSourceId = currentMemory.observe({
+      content: 'memory-only forgotten source',
+      medium: 'text',
+      occurredAt: 1,
+      platformSourceId: 'memory-message',
+      retentionDeadline: 99_999,
+      sourceScopeId,
+      speakerId: 'speaker',
+    });
+    const currentMemoryId = currentMemory.applyMemory({
+      canonicalText: 'memory-only forgotten fact',
+      confidence: 0.9,
+      embedding: new Float32Array(1536),
+      kind: 'fact',
+      provenance: {},
+      sourceEventId: currentSourceId,
+      timestamp: 2,
+    });
+    const { journal: entry } = new ContextDeletionStore({
+      channelId: 'channel',
+      database: current,
+      guildId: 'guild',
+      memory: currentMemory,
+      timeZone: 'America/New_York',
+    }).delete({
+      candidates: {
+        documentKeys: [],
+        memoryIds: [currentMemoryId],
+        sourceScopeIds: [],
+      },
+      now: 5,
+    });
+
+    expect(entry.payload.sourceScopeIds).toContain(sourceScopeId);
+
+    const restored = openChiefDatabase(':memory:');
+    migrateChiefDatabase(restored, '0002_conversation_events');
+    const restoredSourceId = Number(
+      restored
+        .prepare(
+          `insert into source_events
+             (platform_source_id, speaker_id, medium, content, occurred_at,
+              retention_deadline, extraction_status)
+           values ('memory-message', 'speaker', 'text',
+                   'memory-only forgotten source', 1, 99999, 'pending')`,
+        )
+        .run().lastInsertRowid,
+    );
+    restored
+      .prepare(
+        `insert into memory_jobs (source_event_id, not_before)
+         values (?, 1)`,
+      )
+      .run(restoredSourceId);
+    const restoredMemoryId = Number(
+      restored
+        .prepare(
+          `insert into memories
+             (source_event_id, canonical_text, kind, confidence,
+              provenance_json, state, created_at, updated_at)
+           values (?, 'memory-only forgotten fact', 'fact', 0.9, '{}',
+                   'active', 1, 1)`,
+        )
+        .run(restoredSourceId).lastInsertRowid,
+    );
+    expect(restoredMemoryId).toBe(currentMemoryId);
+    restored
+      .prepare('insert into memory_fts (rowid, canonical_text) values (?, ?)')
+      .run(restoredMemoryId, 'memory-only forgotten fact');
+    restored
+      .prepare(
+        'insert into memory_vectors (memory_id, embedding) values (?, ?)',
+      )
+      .run(BigInt(restoredMemoryId), JSON.stringify(Array(1536).fill(0)));
+
+    replayForgetJournals(restored, [entry], 10);
+
+    expect(
+      restored.prepare('select content from source_events').pluck().get(),
+    ).toBe('');
+    expect(
+      restored.prepare('select count(*) from memory_jobs').pluck().get(),
+    ).toBe(0);
+    expect(
+      restored.prepare('select canonical_text from memories').pluck().get(),
+    ).toBe('');
+    expect(
+      restored
+        .prepare(
+          "select count(*) from memory_fts where memory_fts match 'forgotten'",
+        )
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      restored.prepare('select count(*) from memory_vectors').pluck().get(),
+    ).toBe(0);
+    restored.close();
+    current.close();
   });
 
   it('replays current context by stable keys, not snapshot-local document IDs', () => {
@@ -357,4 +517,31 @@ function insertContextDocument(
     )
     .run(BigInt(id), JSON.stringify(Array(1536).fill(0)));
   return id;
+}
+
+function recordContextSource(
+  database: ReturnType<typeof openChiefDatabase>,
+  messageId: string,
+): number {
+  return new ConversationStore(database).record({
+    attachmentMetadataJson: '[]',
+    channelId: 'channel',
+    content: 'restore verification source',
+    discordMessageId: messageId,
+    editedAt: null,
+    guildId: 'guild',
+    logicalResponseId: null,
+    medium: 'text',
+    occurredAt: 1,
+    platformEventId: messageId,
+    recentUntil: 1_000,
+    replyToMessageId: null,
+    requestId: messageId,
+    responseChunkIndex: null,
+    retentionDeadline: 2_000,
+    revisionChecksum: `revision-${messageId}`,
+    role: 'human',
+    speakerId: 'speaker',
+    speakerName: 'President',
+  });
 }

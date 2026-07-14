@@ -107,13 +107,18 @@ pnpm chief -- verify-restore --backup ./chief.db --require-migration 0003_channe
 
 Without `--require-migration`, verification accepts a compatible recorded
 migration prefix (including migration 0002) only when every recorded checksum
-matches. Explicit 0003 mode also probes context schema, cross-tier lookup,
-tombstones, retained backfill progress, and FTS/vector consistency.
+matches. Explicit 0003 mode also requires the exact active public document IDs
+in FTS and vectors, exact FTS token positions for every summary, a joined
+hourly/daily/weekly/long-term query, tombstone checksums, and retained backfill
+progress. Count parity alone does not pass.
 
 For a restore, stop Chief, download the selected object, and use the repository
 script. The script verifies with the retained recovery image, atomically swaps
 the database, preserves the failed copy mode 0600 for no more than 30 days, and
-updates the target image while retaining `RECOVERY_IMAGE`:
+updates the target image while retaining `RECOVERY_IMAGE`. Before stopping the
+service it also compares the backup's verified database capability with the
+immutable target-image capability label. A current-schema database is refused
+for an older or unlabeled target image:
 
 ```bash
 sudo /opt/chief/restore.sh IMAGE@sha256:DIGEST /var/lib/chief/backups/KNOWN.db /var/lib/chief/chief.db
@@ -124,10 +129,13 @@ Run `scripts/restore-drill.sh` against a scratch directory before relying on a n
 `deploy.env` contains both `IMAGE` and `RECOVERY_IMAGE`. A normal deploy sets
 both to the capable candidate. Rollback restores the matching pre-migration
 database and previous `IMAGE` together while retaining the candidate recovery
-digest. Every systemd start downloads all retained journals, verifies their
-checksums, replays them idempotently through `RECOVERY_IMAGE`, verifies the
-database, and only then starts `IMAGE`. Never start an older image against the
-newer database or bypass `/opt/chief/run-container.sh` after replacing a file.
+digest. Every systemd start lists current and noncurrent journal generations,
+downloads every object by its generation-qualified GCS URL into a distinct
+file, and records each generation plus checksum in its mode-0600 receipt. It
+then replays them idempotently through `RECOVERY_IMAGE`, verifies the database,
+checks the target-image capability, and only then reads secrets and starts
+`IMAGE`. An older image remains valid only with its compatible pre-migration
+database. Never bypass `/opt/chief/run-container.sh` after replacing a file.
 
 Local `pre-deploy/*.db`, `chief.db.failed.*`, and bucket backups are encrypted at
 rest but can contain logically plaintext bytes forgotten after they were

@@ -33,6 +33,23 @@ const journalSchema = z
   })
   .strict();
 
+export type RestorableDatabaseCapability =
+  '0002_conversation_events' | '0003_channel_context';
+
+export function restorableDatabaseCapability(
+  database: Database.Database,
+): RestorableDatabaseCapability | null {
+  if (!verifyRestorableDatabase(database)) return null;
+  if (hasMigration(database, CHANNEL_CONTEXT_MIGRATION_ID)) {
+    return verifyRestorableDatabase(database, CHANNEL_CONTEXT_MIGRATION_ID)
+      ? CHANNEL_CONTEXT_MIGRATION_ID
+      : null;
+  }
+  return hasMigration(database, '0002_conversation_events')
+    ? '0002_conversation_events'
+    : null;
+}
+
 export function verifyRestorableDatabase(
   database: Database.Database,
   requiredMigration?: string,
@@ -55,53 +72,7 @@ export function verifyRestorableDatabase(
     if ((database.pragma('foreign_key_check') as unknown[]).length !== 0) {
       return false;
     }
-    const expectedSearchable = Number(
-      database
-        .prepare(
-          `select count(*) from context_documents
-           where state = 'active' and content_state = 'available'
-             and is_internal = 0`,
-        )
-        .pluck()
-        .get(),
-    );
-    const lexicalCount = Number(
-      database
-        .prepare('select count(*) from context_document_fts')
-        .pluck()
-        .get(),
-    );
-    const vectorCount = Number(
-      database
-        .prepare('select count(*) from context_document_vectors')
-        .pluck()
-        .get(),
-    );
-    if (
-      lexicalCount !== expectedSearchable ||
-      vectorCount !== expectedSearchable
-    ) {
-      return false;
-    }
-    const tierCounts = database
-      .prepare(
-        `select d.tier, count(*) as count from context_document_fts f
-         join context_documents d on d.id = f.rowid
-         where d.state = 'active' and d.content_state = 'available'
-           and d.is_internal = 0
-         group by d.tier`,
-      )
-      .all() as { readonly count: number; readonly tier: string }[];
-    if (
-      tierCounts.some(
-        ({ tier }) =>
-          !['hourly', 'daily', 'weekly', 'long-term'].includes(tier),
-      ) ||
-      tierCounts.reduce((total, row) => total + row.count, 0) !==
-        expectedSearchable
-    ) {
-      return false;
-    }
+    if (!verifyContextIndexes(database)) return false;
     const inconsistentBackfillProgress =
       database
         .prepare(
@@ -147,6 +118,103 @@ export function verifyRestorableDatabase(
     return true;
   } catch {
     return false;
+  }
+}
+
+function verifyContextIndexes(database: Database.Database): boolean {
+  database.exec(`
+    drop table if exists temp.context_restore_actual_vocab;
+    drop table if exists temp.context_restore_expected_vocab;
+    drop table if exists temp.context_restore_expected_fts;
+    create virtual table temp.context_restore_expected_fts using fts5(
+      content, content='', contentless_delete=1
+    );
+    insert into temp.context_restore_expected_fts (rowid, content)
+      select id, summary from context_documents
+      where state = 'active' and content_state = 'available'
+        and is_internal = 0;
+    create virtual table temp.context_restore_actual_vocab using fts5vocab(
+      main, context_document_fts, instance
+    );
+    create virtual table temp.context_restore_expected_vocab using fts5vocab(
+      temp, context_restore_expected_fts, instance
+    );
+  `);
+  try {
+    const identityMismatch =
+      database
+        .prepare(
+          `with expected(id) as (
+             select id from context_documents
+             where state = 'active' and content_state = 'available'
+               and is_internal = 0
+           )
+           select
+             exists(
+               select id from expected
+               except select rowid from context_document_fts
+             ) or exists(
+               select rowid from context_document_fts
+               except select id from expected
+             ) or exists(
+               select id from expected
+               except select document_id from context_document_vectors
+             ) or exists(
+               select document_id from context_document_vectors
+               except select id from expected
+             )`,
+        )
+        .pluck()
+        .get() === 1;
+    if (identityMismatch) return false;
+    const lexicalMismatch =
+      database
+        .prepare(
+          `select
+             exists(
+               select term, doc, col, offset
+               from context_restore_expected_vocab
+               except
+               select term, doc, col, offset
+               from context_restore_actual_vocab
+             ) or exists(
+               select term, doc, col, offset
+               from context_restore_actual_vocab
+               except
+               select term, doc, col, offset
+               from context_restore_expected_vocab
+             )`,
+        )
+        .pluck()
+        .get() === 1;
+    if (lexicalMismatch) return false;
+    const tierRows = database
+      .prepare(
+        `with tiers(tier) as (
+           values ('hourly'), ('daily'), ('weekly'), ('long-term')
+         )
+         select t.tier, count(d.id) as count
+         from tiers t
+         left join context_documents d
+           on d.tier = t.tier and d.state = 'active'
+          and d.content_state = 'available' and d.is_internal = 0
+         left join context_document_fts f on f.rowid = d.id
+         left join context_document_vectors v on v.document_id = d.id
+         group by t.tier order by t.tier`,
+      )
+      .all() as { readonly count: number; readonly tier: string }[];
+    return (
+      tierRows.length === 4 &&
+      tierRows.every(({ tier }) =>
+        ['hourly', 'daily', 'weekly', 'long-term'].includes(tier),
+      )
+    );
+  } finally {
+    database.exec(`
+      drop table if exists temp.context_restore_actual_vocab;
+      drop table if exists temp.context_restore_expected_vocab;
+      drop table if exists temp.context_restore_expected_fts;
+    `);
   }
 }
 
