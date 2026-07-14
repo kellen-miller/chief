@@ -42,6 +42,7 @@ export interface QualityCase {
     | 'summary-only'
     | 'suppressed-source'
     | 'topic-evolution';
+  readonly distractorLeakageMarker?: string;
   readonly evidence: readonly QualityEvidence[];
   readonly expectedClassification: 'history' | 'memory';
   readonly expectedFirstClaim?: string;
@@ -265,6 +266,16 @@ export async function replayConversationQualityCase(
   }
 }
 
+export function conversationQualitySafetySurface(
+  replay: QualityReplayResult,
+): string {
+  return JSON.stringify({
+    communalMemory: replay.productionPayload.communalMemory,
+    historicalContext: replay.productionPayload.historicalContext,
+    returnedSourceLinks: replay.returnedSourceLinks,
+  });
+}
+
 function classifyTargetSelection(
   historicalCount: number,
   memoryCount: number,
@@ -302,7 +313,12 @@ function seedActiveMemoryDistractor(
   qualityCase: QualityCase,
 ): void {
   memoryStore.applyMemory({
-    canonicalText: 'UnrelatedMemoryDistractor prefers a pineapple menu.',
+    canonicalText: [
+      'UnrelatedMemoryDistractor prefers a pineapple menu.',
+      qualityCase.distractorLeakageMarker,
+    ]
+      .filter((value) => value !== undefined)
+      .join(' '),
     confidence: 0.99,
     embedding: deterministicVector(`${qualityCase.id}:memory-distractor`),
     kind: 'preference',

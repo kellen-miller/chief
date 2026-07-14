@@ -20,6 +20,7 @@ import { MemoryService } from '../../src/memory/memory-service.js';
 import { SqliteMemoryStore } from '../../src/memory/memory-store.js';
 import { UsageBudget } from '../../src/usage/usage-budget.js';
 import {
+  conversationQualitySafetySurface,
   loadConversationQualityFixture,
   type QualityCase,
   replayConversationQualityCase,
@@ -251,12 +252,13 @@ describe('conversation quality replay', () => {
       for (const claim of qualityCase.requiredClaims) {
         expect(deterministicAnswer, qualityCase.id).toContain(claim);
       }
+      const safetySurface = conversationQualitySafetySurface(result);
       metrics.forbiddenClaims += countNormalizedMatches(
-        deterministicAnswer,
+        safetySurface,
         qualityCase.forbiddenClaims,
       );
       metrics.suppressedSourceLeaks += countNormalizedMatches(
-        deterministicAnswer,
+        safetySurface,
         qualityCase.leakageMarkers ?? [],
       );
       for (const provenanceId of result.returnedProvenanceIds) {
@@ -371,6 +373,25 @@ describe('conversation quality replay', () => {
       requestedSourceLinkPasses: 4,
       suppressedSourceLeaks: 0,
     });
+  });
+
+  it('detects a leak returned only through a non-target distractor', async () => {
+    const fixture = await loadConversationQualityFixture();
+    const baseCase = fixture.cases[0];
+    if (baseCase === undefined) throw new Error('quality fixture is empty');
+    const qualityCase = {
+      ...baseCase,
+      distractorLeakageMarker: 'LeAk-OnLy-ToKeN',
+    } as QualityCase;
+
+    const result = await replayConversationQualityCase(qualityCase);
+
+    expect(result.selectedText.join(' ')).not.toMatch(/leak.only.token/iu);
+    expect(
+      countNormalizedMatches(conversationQualitySafetySurface(result), [
+        'leak only token',
+      ]),
+    ).toBe(1);
   });
 });
 
