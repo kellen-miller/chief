@@ -171,6 +171,7 @@ export interface ContextStatus {
     | 'forget-journal'
     | 'indexing-budget'
     | 'interactive-headroom'
+    | 'migration-accounting-ambiguous'
     | 'overall-budget'
     | 'provider'
     | 'run-budget'
@@ -686,6 +687,10 @@ export class ChannelContextService {
            where not_before <= ?
              and (status = 'pending'
                or (status = 'leased' and lease_expires_at <= ?))
+             and not exists(
+               select 1 from context_accounting_holds h
+               where h.job_id = context_jobs.id
+             )
              and (backfill_run_id is null or exists(
                select 1 from context_backfills b
                where b.id = context_jobs.backfill_run_id
@@ -713,6 +718,11 @@ export class ChannelContextService {
         .pluck()
         .get(),
     );
+    const accountingHeld =
+      this.#database
+        .prepare('select exists(select 1 from context_accounting_holds)')
+        .pluck()
+        .get() === 1;
     const lagMsByTier = Object.fromEntries(
       (['hourly', 'daily', 'weekly', 'long-term'] as const).map((tier) => {
         const deadline = this.#database
@@ -746,12 +756,18 @@ export class ChannelContextService {
         .get() === 1;
     const reason = journalPending
       ? 'forget-journal'
-      : contextLagReason(
-          overdue?.error,
-          this.#summarizer !== undefined && this.#embed !== undefined,
-        );
+      : accountingHeld
+        ? 'migration-accounting-ambiguous'
+        : contextLagReason(
+            overdue?.error,
+            this.#summarizer !== undefined && this.#embed !== undefined,
+          );
     return {
-      degraded: journalPending || overdue !== undefined || failedJobs > 0,
+      degraded:
+        journalPending ||
+        accountingHeld ||
+        overdue !== undefined ||
+        failedJobs > 0,
       failedJobs,
       lagMsByTier,
       pendingJobs,
@@ -1107,6 +1123,10 @@ export class ChannelContextService {
            where not_before <= ?
              and (status = 'pending'
                or (status = 'leased' and lease_expires_at <= ?))
+             and not exists(
+               select 1 from context_accounting_holds h
+               where h.job_id = context_jobs.id
+             )
              and (backfill_run_id is null or exists(
                select 1 from context_backfills b
                where b.id = context_jobs.backfill_run_id
@@ -2084,6 +2104,7 @@ function contextLagReason(
   switch (error) {
     case 'indexing-budget':
     case 'interactive-headroom':
+    case 'migration-accounting-ambiguous':
     case 'overall-budget':
     case 'provider':
     case 'run-budget':

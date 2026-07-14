@@ -95,6 +95,8 @@ describe('Chief database', () => {
       '0008_context_backfill_lifecycle',
       '0009_context_backfill_targeting',
       '0010_context_backfill_ownership',
+      '0011_usage_reservation_origin',
+      '0012_context_accounting_origin',
     ]);
     expect(verifyContextDatabaseSchema(database)).toBe(true);
     database.close();
@@ -190,7 +192,7 @@ describe('Chief database', () => {
       .run(now - 1);
 
     migrateChiefDatabase(database, CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_ID);
-    migrateChiefDatabase(database);
+    migrateChiefDatabase(database, '0011_usage_reservation_origin');
 
     expect(
       database
@@ -367,7 +369,7 @@ describe('Chief database', () => {
       .run(now + 1, now + 1, runId);
     migrateChiefDatabase(database, CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_ID);
 
-    migrateChiefDatabase(database);
+    migrateChiefDatabase(database, '0011_usage_reservation_origin');
 
     expect(
       database
@@ -511,7 +513,7 @@ describe('Chief database', () => {
 
     migrateChiefDatabase(database, CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_ID);
     migrateChiefDatabase(database, CONTEXT_BACKFILL_TARGETING_MIGRATION_ID);
-    migrateChiefDatabase(database);
+    migrateChiefDatabase(database, '0011_usage_reservation_origin');
 
     expect(
       database
@@ -675,7 +677,7 @@ describe('Chief database', () => {
     database.close();
   });
 
-  it('retains old-run accounting for a detached live conflict', async () => {
+  it('fails closed for an ambiguous detached reservation', async () => {
     const database = openChiefDatabase(':memory:');
     const now = 1_000;
     migrateChiefDatabase(database, CONTEXT_BACKFILL_TARGETING_MIGRATION_ID);
@@ -739,7 +741,337 @@ describe('Chief database', () => {
         .prepare(`select actual_usage_usd from context_backfills where id = ?`)
         .pluck()
         .get(runId),
+    ).toBe(0);
+    expect(
+      database
+        .prepare(
+          `select last_error_category as lastErrorCategory, status
+           from context_jobs where job_key = 'detached-live-hourly'`,
+        )
+        .get(),
+    ).toEqual({
+      lastErrorCategory: 'migration-accounting-ambiguous',
+      status: 'failed',
+    });
+    database.close();
+  });
+
+  it('returns an originally live stolen reservation to live accounting', async () => {
+    const database = openChiefDatabase(':memory:');
+    const now = 1_000;
+    migrateChiefDatabase(database, '0011_usage_reservation_origin');
+    const runId = insertMigrationBackfillRun(database, {
+      now,
+      runKey: 'stolen-live-origin',
+    });
+    const reservation = new UsageBudget({
+      ceilingUsd: 10,
+      indexingCeilingUsd: 3,
+      ledger: new SqliteUsageLedger(database),
+      now: () => now,
+      warningUsd: 5,
+    }).reserve('context-rollup', 0.02, {
+      priority: 'background',
+      workCategory: 'indexing',
+    });
+    if (!reservation.allowed) throw new Error('live reservation was denied');
+    database
+      .prepare(
+        `insert into context_jobs
+           (job_key, tier, period_start, period_end, timezone, topic_key,
+            completeness, source_revision_checksum, not_before,
+            freshness_deadline, usage_reservation_id, status,
+            lease_expires_at, backfill_run_id)
+         values ('stolen-live-hourly', 'hourly', 1000, 2000,
+                 'America/New_York', null, 'final', ?, 0, 50, ?, 'leased',
+                 ?, null)`,
+      )
+      .run(testDigest([]), reservation.id, now - 1);
+
+    // Reproduce 0008's mutable-owner theft after origin was recorded.
+    database
+      .prepare(
+        `update context_jobs set backfill_run_id = ?
+         where job_key = 'stolen-live-hourly'`,
+      )
+      .run(runId);
+    database
+      .prepare(`update usage_ledger set backfill_run_id = ? where id = ?`)
+      .run(runId, reservation.id);
+
+    migrateChiefDatabase(database);
+
+    expect(
+      database
+        .prepare(
+          `select backfill_run_id as backfillRunId,
+                  origin_backfill_run_id as originBackfillRunId,
+                  reservation_origin as reservationOrigin
+           from usage_ledger where id = ?`,
+        )
+        .get(reservation.id),
+    ).toEqual({
+      backfillRunId: null,
+      originBackfillRunId: null,
+      reservationOrigin: 'live',
+    });
+    expect(() =>
+      database
+        .prepare(
+          `update usage_ledger set reservation_origin = 'ambiguous'
+           where id = ?`,
+        )
+        .run(reservation.id),
+    ).toThrow('usage reservation origin is immutable');
+    expect(
+      database
+        .prepare(
+          `select backfill_run_id from context_jobs
+           where job_key = 'stolen-live-hourly'`,
+        )
+        .pluck()
+        .get(),
+    ).toBeNull();
+    const context = emptyMigrationContext(database, now);
+    await expect(context.runNext(now)).resolves.toEqual({ status: 'idle' });
+    expect(
+      database
+        .prepare(`select actual_usd from usage_ledger where id = ?`)
+        .pluck()
+        .get(reservation.id),
     ).toBe(0.02);
+    expect(
+      database
+        .prepare(`select actual_usage_usd from context_backfills where id = ?`)
+        .pluck()
+        .get(runId),
+    ).toBe(0);
+    database.close();
+  });
+
+  it('retains an originally backfill detached reservation owner', async () => {
+    const database = openChiefDatabase(':memory:');
+    const now = 1_000;
+    migrateChiefDatabase(database, '0011_usage_reservation_origin');
+    const runId = insertMigrationBackfillRun(database, {
+      now,
+      runKey: 'detached-backfill-origin',
+    });
+    const reservation = new UsageBudget({
+      ceilingUsd: 10,
+      indexingCeilingUsd: 3,
+      ledger: new SqliteUsageLedger(database),
+      now: () => now,
+      warningUsd: 5,
+    }).reserve('context-rollup', 0.02, {
+      backfillRunId: runId,
+      priority: 'background',
+      workCategory: 'indexing',
+    });
+    if (!reservation.allowed) {
+      throw new Error('backfill reservation was denied');
+    }
+    database
+      .prepare(
+        `insert into context_jobs
+           (job_key, tier, period_start, period_end, timezone, topic_key,
+            completeness, source_revision_checksum, not_before,
+            freshness_deadline, usage_reservation_id, status,
+            lease_expires_at, backfill_run_id)
+         values ('detached-backfill-hourly', 'hourly', 1000, 2000,
+                 'America/New_York', null, 'final', ?, 0, 50, ?, 'leased',
+                 ?, null)`,
+      )
+      .run(testDigest([]), reservation.id, now - 1);
+
+    migrateChiefDatabase(database);
+
+    expect(
+      database
+        .prepare(
+          `select backfill_run_id as backfillRunId,
+                  origin_backfill_run_id as originBackfillRunId,
+                  reservation_origin as reservationOrigin
+           from usage_ledger where id = ?`,
+        )
+        .get(reservation.id),
+    ).toEqual({
+      backfillRunId: runId,
+      originBackfillRunId: runId,
+      reservationOrigin: 'backfill',
+    });
+    expect(
+      database
+        .prepare(
+          `select backfill_run_id from context_jobs
+           where job_key = 'detached-backfill-hourly'`,
+        )
+        .pluck()
+        .get(),
+    ).toBeNull();
+    const backfill = new ContextBackfillService({
+      channelId: 'channel',
+      database,
+      guildId: 'guild',
+      now: () => now,
+      pricing: {
+        embeddingInputPerMillionUsd: 0,
+        summaryInputPerMillionUsd: 0,
+        summaryOutputPerMillionUsd: 0,
+      },
+    });
+    expect(backfill.status(runId)).toMatchObject({
+      pauseReason: 'migration-accounting-resume-required',
+      status: 'paused',
+    });
+    await expect(backfill.resume(runId)).resolves.toMatchObject({
+      pauseReason: null,
+      status: 'active',
+    });
+    await expect(backfill.runNext(now)).resolves.toEqual({ status: 'idle' });
+    const context = emptyMigrationContext(database, now);
+    await expect(context.runNext(now)).resolves.toEqual({ status: 'idle' });
+    expect(
+      database
+        .prepare(`select actual_usage_usd from context_backfills where id = ?`)
+        .pluck()
+        .get(runId),
+    ).toBe(0.02);
+    await expect(backfill.runNext(now)).resolves.toEqual({
+      runId,
+      status: 'completed',
+    });
+    database.close();
+  });
+
+  it('fails closed when reservation origin is truly ambiguous', async () => {
+    const database = openChiefDatabase(':memory:');
+    const now = 1_000;
+    migrateChiefDatabase(database, '0010_context_backfill_ownership');
+    const runId = insertMigrationBackfillRun(database, {
+      now,
+      runKey: 'ambiguous-accounting',
+    });
+    database
+      .prepare(
+        `insert into usage_ledger
+           (id, operation, work_category, priority, reservation_usd,
+            actual_usd, occurred_at, occurrence_month, backfill_run_id,
+            reconciled_at)
+         values ('ambiguous-reservation', 'context-rollup', 'indexing',
+                 'background', 0.02, null, ?, 0, ?, null)`,
+      )
+      .run(now, runId);
+    database
+      .prepare(
+        `insert into context_jobs
+           (job_key, tier, period_start, period_end, timezone, topic_key,
+            completeness, source_revision_checksum, not_before,
+            freshness_deadline, usage_reservation_id, status,
+            lease_expires_at, backfill_run_id)
+         values ('ambiguous-hourly', 'hourly', 1000, 2000,
+                 'America/New_York', null, 'final', ?, 0, 50,
+                 'ambiguous-reservation', 'leased', ?, ?)`,
+      )
+      .run(testDigest([]), now - 1, runId);
+
+    migrateChiefDatabase(database);
+
+    expect(
+      database
+        .prepare(
+          `select actual_usd as actualUsd,
+                  backfill_run_id as backfillRunId,
+                  reservation_origin as reservationOrigin
+           from usage_ledger where id = 'ambiguous-reservation'`,
+        )
+        .get(),
+    ).toEqual({
+      actualUsd: null,
+      backfillRunId: runId,
+      reservationOrigin: 'ambiguous',
+    });
+    expect(
+      database
+        .prepare(
+          `select last_error_category as lastErrorCategory, status
+           from context_jobs where job_key = 'ambiguous-hourly'`,
+        )
+        .get(),
+    ).toEqual({
+      lastErrorCategory: 'migration-accounting-ambiguous',
+      status: 'failed',
+    });
+    expect(
+      database
+        .prepare(
+          `select actual_usage_usd as actualUsageUsd,
+                  pause_reason as pauseReason, status
+           from context_backfills where id = ?`,
+        )
+        .get(runId),
+    ).toEqual({
+      actualUsageUsd: 0,
+      pauseReason: 'migration-accounting-rebuild-required',
+      status: 'failed',
+    });
+    expect(
+      database
+        .prepare(
+          `select reason, reservation_id as reservationId
+           from context_accounting_holds where job_id = (
+             select id from context_jobs where job_key = 'ambiguous-hourly'
+           )`,
+        )
+        .get(),
+    ).toEqual({
+      reason: 'migration-accounting-ambiguous',
+      reservationId: 'ambiguous-reservation',
+    });
+    const context = emptyMigrationContext(database, now);
+    expect(context.nextDeadline(now)).toBeNull();
+    expect(context.status(now)).toMatchObject({
+      degraded: true,
+      failedJobs: 1,
+      reason: 'migration-accounting-ambiguous',
+    });
+    await expect(context.runNext(now)).resolves.toEqual({ status: 'idle' });
+    const backfill = new ContextBackfillService({
+      channelId: 'channel',
+      database,
+      guildId: 'guild',
+      now: () => now,
+      pricing: {
+        embeddingInputPerMillionUsd: 0,
+        summaryInputPerMillionUsd: 0,
+        summaryOutputPerMillionUsd: 0,
+      },
+    });
+    await expect(backfill.resume(runId)).rejects.toThrow(
+      'backfill accounting is ambiguous; rebuild required before resume',
+    );
+    database
+      .prepare(
+        `update context_jobs
+         set status = 'pending', last_error_category = null
+         where job_key = 'ambiguous-hourly'`,
+      )
+      .run();
+    expect(context.nextDeadline(now)).toBeNull();
+    expect(context.status(now)).toMatchObject({
+      degraded: true,
+      reason: 'migration-accounting-ambiguous',
+    });
+    await expect(context.runNext(now)).resolves.toEqual({ status: 'idle' });
+    expect(
+      database
+        .prepare(
+          `select actual_usd from usage_ledger
+           where id = 'ambiguous-reservation'`,
+        )
+        .pluck()
+        .get(),
+    ).toBeNull();
     database.close();
   });
 
@@ -903,7 +1235,7 @@ describe('Chief database', () => {
     database.close();
   });
 
-  it('detaches stolen live work after the run pause reason changes', async () => {
+  it('freezes ambiguous stolen work after a pause reason change', async () => {
     const database = openChiefDatabase(':memory:');
     const now = 1_000;
     migrateChiefDatabase(database, CONTEXT_BACKFILL_MIGRATION_ID);
@@ -975,7 +1307,11 @@ describe('Chief database', () => {
         .get(),
     ).toBe(runId);
     const context = emptyMigrationContext(database, now);
-    expect(context.nextDeadline(now)).not.toBeNull();
+    expect(context.nextDeadline(now)).toBeNull();
+    expect(context.status(now)).toMatchObject({
+      degraded: true,
+      reason: 'migration-accounting-ambiguous',
+    });
     await expect(context.runNext(now)).resolves.toEqual({ status: 'idle' });
     expect(
       database
@@ -985,13 +1321,13 @@ describe('Chief database', () => {
         )
         .pluck()
         .get(),
-    ).toBe(0.02);
+    ).toBeNull();
     expect(
       database
         .prepare(`select actual_usage_usd from context_backfills where id = ?`)
         .pluck()
         .get(runId),
-    ).toBe(0.02);
+    ).toBe(0);
     database.close();
   });
 

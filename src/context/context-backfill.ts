@@ -513,6 +513,11 @@ export class ContextBackfillService {
     }
     const current = this.status(runId);
     if (current === null) throw new Error('backfill run was not found');
+    if (current.pauseReason === 'migration-accounting-rebuild-required') {
+      throw new Error(
+        'backfill accounting is ambiguous; rebuild required before resume',
+      );
+    }
     if (current.status === 'dry-run') {
       return this.#scanDryRun(runId, this.#requireHistory());
     }
@@ -1252,6 +1257,16 @@ export class ContextBackfillService {
         .get(runId),
     );
     if (outstanding > 0) return { status: 'idle' };
+    const outstandingReservations = Number(
+      this.#database
+        .prepare(
+          `select count(*) from usage_ledger
+           where backfill_run_id = ? and actual_usd is null`,
+        )
+        .pluck()
+        .get(runId),
+    );
+    if (outstandingReservations > 0) return { status: 'idle' };
     this.#database
       .prepare(
         `update context_backfills

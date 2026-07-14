@@ -579,6 +579,47 @@ export const CONTEXT_BACKFILL_OWNERSHIP_MIGRATION_ID =
   '0010_context_backfill_ownership';
 export const CONTEXT_BACKFILL_OWNERSHIP_MIGRATION_CHECKSUM = 'chief-0010-v1';
 
+const USAGE_RESERVATION_ORIGIN_MIGRATION = `
+alter table usage_ledger
+  add column reservation_origin text not null default 'ambiguous'
+    check (reservation_origin in ('live', 'backfill', 'ambiguous'));
+alter table usage_ledger
+  add column origin_backfill_run_id integer
+    references context_backfills(id) on delete restrict
+    check (
+      reservation_origin = 'ambiguous'
+      or (reservation_origin = 'live' and origin_backfill_run_id is null)
+      or (reservation_origin = 'backfill'
+          and origin_backfill_run_id is not null)
+    );
+create trigger usage_ledger_origin_immutable
+before update of reservation_origin, origin_backfill_run_id on usage_ledger
+when new.reservation_origin != old.reservation_origin
+  or new.origin_backfill_run_id is not old.origin_backfill_run_id
+begin
+  select raise(abort, 'usage reservation origin is immutable');
+end;
+create table context_accounting_holds (
+  reservation_id text primary key
+    references usage_ledger(id) on delete restrict,
+  job_id integer not null unique
+    references context_jobs(id) on delete restrict,
+  run_id integer references context_backfills(id) on delete restrict,
+  reason text not null check (reason = 'migration-accounting-ambiguous'),
+  created_at integer not null
+);
+`;
+
+export const USAGE_RESERVATION_ORIGIN_MIGRATION_ID =
+  '0011_usage_reservation_origin';
+export const USAGE_RESERVATION_ORIGIN_MIGRATION_CHECKSUM = 'chief-0011-v1';
+
+const CONTEXT_ACCOUNTING_ORIGIN_MIGRATION = `select 1;`;
+
+export const CONTEXT_ACCOUNTING_ORIGIN_MIGRATION_ID =
+  '0012_context_accounting_origin';
+export const CONTEXT_ACCOUNTING_ORIGIN_MIGRATION_CHECKSUM = 'chief-0012-v1';
+
 interface Migration {
   readonly checksum: string;
   readonly id: string;
@@ -645,6 +686,17 @@ const MIGRATIONS: readonly Migration[] = [
     id: CONTEXT_BACKFILL_OWNERSHIP_MIGRATION_ID,
     migrate: repairBackfillOwnership,
     sql: CONTEXT_BACKFILL_OWNERSHIP_MIGRATION,
+  },
+  {
+    checksum: USAGE_RESERVATION_ORIGIN_MIGRATION_CHECKSUM,
+    id: USAGE_RESERVATION_ORIGIN_MIGRATION_ID,
+    sql: USAGE_RESERVATION_ORIGIN_MIGRATION,
+  },
+  {
+    checksum: CONTEXT_ACCOUNTING_ORIGIN_MIGRATION_CHECKSUM,
+    id: CONTEXT_ACCOUNTING_ORIGIN_MIGRATION_ID,
+    migrate: repairReservationOriginOwnership,
+    sql: CONTEXT_ACCOUNTING_ORIGIN_MIGRATION,
   },
 ];
 
@@ -943,6 +995,14 @@ interface OwnershipContextJobRow {
   readonly usageReservationId: string | null;
 }
 
+interface ReservationOriginContextJobRow extends OwnershipContextJobRow {
+  readonly ledgerReservationId: string | null;
+  readonly originBackfillRunId: number | null;
+  readonly reservationActualUsd: number | null;
+  readonly reservationBackfillRunId: number | null;
+  readonly reservationOrigin: 'ambiguous' | 'backfill' | 'live' | null;
+}
+
 function repairBackfillOwnership(database: Database.Database): void {
   const jobs = database
     .prepare(
@@ -996,6 +1056,113 @@ function repairBackfillOwnership(database: Database.Database): void {
      )`,
   );
   for (const runId of recoveredRunIds) recover.run(now, runId);
+}
+
+function repairReservationOriginOwnership(database: Database.Database): void {
+  const jobs = database
+    .prepare(
+      `select j.id, j.tier, j.period_start as periodStart,
+              j.period_end as periodEnd,
+              j.source_revision_checksum as sourceRevisionChecksum,
+              j.source_document_ids_json as sourceDocumentIdsJson,
+              j.usage_reservation_id as usageReservationId,
+              j.backfill_run_id as backfillRunId,
+              l.id as ledgerReservationId,
+              l.actual_usd as reservationActualUsd,
+              l.backfill_run_id as reservationBackfillRunId,
+              l.reservation_origin as reservationOrigin,
+              l.origin_backfill_run_id as originBackfillRunId
+       from context_jobs j
+       left join usage_ledger l on l.id = j.usage_reservation_id
+       where j.status in ('pending', 'leased')`,
+    )
+    .all() as ReservationOriginContextJobRow[];
+  const recoveredRunIds = new Set<number>();
+  const ambiguousRunIds = new Set<number>();
+  const now = Date.now();
+  const assignJob = database.prepare(
+    'update context_jobs set backfill_run_id = ? where id = ?',
+  );
+  const assignReservation = database.prepare(
+    `update usage_ledger set backfill_run_id = ?
+     where id = ? and actual_usd is null`,
+  );
+  const failJob = database.prepare(
+    `update context_jobs
+     set status = 'failed', lease_expires_at = null,
+         last_error_category = 'migration-accounting-ambiguous'
+     where id = ?`,
+  );
+  const recordHold = database.prepare(
+    `insert into context_accounting_holds
+       (reservation_id, job_id, run_id, reason, created_at)
+     values (?, ?, ?, 'migration-accounting-ambiguous', ?)`,
+  );
+
+  for (const job of jobs) {
+    const provenRunIds = exactBackfillRunIds(database, job);
+    const targetRunId =
+      job.backfillRunId !== null && provenRunIds.includes(job.backfillRunId)
+        ? job.backfillRunId
+        : provenRunIds[0];
+    const hasOutstandingReservation =
+      job.ledgerReservationId !== null && job.reservationActualUsd === null;
+    if (hasOutstandingReservation && job.reservationOrigin === 'ambiguous') {
+      failJob.run(job.id);
+      recordHold.run(
+        job.ledgerReservationId,
+        job.id,
+        job.reservationBackfillRunId ??
+          job.backfillRunId ??
+          targetRunId ??
+          null,
+        now,
+      );
+      for (const runId of [
+        job.backfillRunId,
+        job.reservationBackfillRunId,
+        targetRunId ?? null,
+      ]) {
+        if (runId !== null) ambiguousRunIds.add(runId);
+      }
+      continue;
+    }
+
+    assignJob.run(targetRunId ?? null, job.id);
+    if (hasOutstandingReservation) {
+      const reservationOwner =
+        job.reservationOrigin === 'backfill' ? job.originBackfillRunId : null;
+      assignReservation.run(reservationOwner, job.ledgerReservationId);
+      if (reservationOwner !== null) recoveredRunIds.add(reservationOwner);
+    }
+    if (targetRunId !== undefined) recoveredRunIds.add(targetRunId);
+  }
+
+  const failRun = database.prepare(
+    `update context_backfills
+     set status = 'failed', completed_at = null,
+         pause_reason = 'migration-accounting-rebuild-required',
+         updated_at = ?
+     where id = ?`,
+  );
+  for (const runId of ambiguousRunIds) failRun.run(now, runId);
+
+  const recover = database.prepare(
+    `update context_backfills
+     set status = 'paused', completed_at = null,
+         pause_reason = 'migration-accounting-resume-required',
+         updated_at = ?
+     where id = ? and (
+       status in ('active', 'paused', 'completed')
+       or pause_reason in (
+         'migration-accounting-resume-required',
+         'migration-accounting-rebuild-required'
+       )
+     )`,
+  );
+  for (const runId of recoveredRunIds) {
+    if (!ambiguousRunIds.has(runId)) recover.run(now, runId);
+  }
 }
 
 function exactBackfillRunIds(
@@ -1248,6 +1415,24 @@ export function verifyContextDatabaseSchema(
     ) {
       return false;
     }
+    const reservationOriginChecksum = database
+      .prepare('select checksum from schema_migrations where id = ?')
+      .pluck()
+      .get(USAGE_RESERVATION_ORIGIN_MIGRATION_ID);
+    if (
+      reservationOriginChecksum !== USAGE_RESERVATION_ORIGIN_MIGRATION_CHECKSUM
+    ) {
+      return false;
+    }
+    const accountingOriginChecksum = database
+      .prepare('select checksum from schema_migrations where id = ?')
+      .pluck()
+      .get(CONTEXT_ACCOUNTING_ORIGIN_MIGRATION_ID);
+    if (
+      accountingOriginChecksum !== CONTEXT_ACCOUNTING_ORIGIN_MIGRATION_CHECKSUM
+    ) {
+      return false;
+    }
     for (const table of [
       'conversation_event_fts',
       'context_document_fts',
@@ -1255,6 +1440,7 @@ export function verifyContextDatabaseSchema(
       'context_backfill_pages',
       'context_backfill_segments',
       'context_backfill_source_identities',
+      'context_accounting_holds',
       'discord_reconciliation_state',
       'discord_reconciliation_seen',
     ]) {

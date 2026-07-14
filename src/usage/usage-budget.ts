@@ -19,12 +19,15 @@ export interface UsageLedgerEntry {
   readonly id: string;
   readonly occurredAt: number;
   readonly operation: string;
+  readonly originBackfillRunId: number | null;
   readonly priority: UsagePriority;
+  readonly reservationOrigin: UsageReservationOrigin;
   readonly reservationUsd: number;
   readonly workCategory: UsageWorkCategory;
 }
 
 export type UsagePriority = 'interactive' | 'background';
+export type UsageReservationOrigin = 'ambiguous' | 'backfill' | 'live';
 export type UsageWorkCategory = 'interaction' | 'memory' | 'indexing';
 
 export interface UsageWork {
@@ -177,7 +180,9 @@ export class UsageBudget {
       id,
       occurredAt: now,
       operation: kind,
+      originBackfillRunId: work.backfillRunId ?? null,
       ...work,
+      reservationOrigin: work.backfillRunId === undefined ? 'live' : 'backfill',
       reservationUsd: estimateUsd,
     });
     return { allowed: true, id, reservedUsd: estimateUsd };
@@ -231,7 +236,9 @@ export class UsageBudget {
       id: randomUUID(),
       occurredAt: now,
       operation: 'unreserved',
+      originBackfillRunId: null,
       priority: 'interactive',
+      reservationOrigin: 'live',
       reservationUsd: 0,
       workCategory: 'interaction',
     });

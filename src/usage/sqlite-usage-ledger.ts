@@ -42,6 +42,8 @@ export class SqliteUsageLedger implements UsageLedger {
       .prepare(
         `select id, operation, reservation_usd as reservationUsd,
                 backfill_run_id as backfillRunId,
+                origin_backfill_run_id as originBackfillRunId,
+                reservation_origin as reservationOrigin,
                 work_category as workCategory, priority,
                 actual_usd as actualUsd, occurred_at as occurredAt
          from usage_ledger where occurred_at >= ? and occurred_at < ?`,
@@ -55,6 +57,8 @@ export class SqliteUsageLedger implements UsageLedger {
       .prepare(
         `select id, operation, reservation_usd as reservationUsd,
                 backfill_run_id as backfillRunId,
+                origin_backfill_run_id as originBackfillRunId,
+                reservation_origin as reservationOrigin,
                 work_category as workCategory, priority,
                 actual_usd as actualUsd, occurred_at as occurredAt
          from usage_ledger where actual_usd is null`,
@@ -99,10 +103,11 @@ export class SqliteUsageLedger implements UsageLedger {
         `insert into usage_ledger
            (id, operation, work_category, priority, reservation_usd,
             actual_usd, occurred_at, occurrence_month, backfill_run_id,
-            reconciled_at)
+            reconciled_at, reservation_origin, origin_backfill_run_id)
          values (@id, @operation, @workCategory, @priority, @reservationUsd,
                  @actualUsd, @occurredAt, @occurrenceMonth, @backfillRunId,
-                 case when @actualUsd is null then null else @occurredAt end)`,
+                 case when @actualUsd is null then null else @occurredAt end,
+                 @reservationOrigin, @originBackfillRunId)`,
       )
       .run({
         ...entry,
@@ -124,7 +129,9 @@ function withOptionalRunId(row: UsageLedgerRow): UsageLedgerEntry {
     id: row.id,
     occurredAt: row.occurredAt,
     operation: row.operation,
+    originBackfillRunId: row.originBackfillRunId,
     priority: row.priority,
+    reservationOrigin: row.reservationOrigin,
     reservationUsd: row.reservationUsd,
     workCategory: row.workCategory,
   };

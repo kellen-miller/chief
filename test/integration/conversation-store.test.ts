@@ -79,6 +79,8 @@ describe('ConversationStore', () => {
       '0008_context_backfill_lifecycle',
       '0009_context_backfill_targeting',
       '0010_context_backfill_ownership',
+      '0011_usage_reservation_origin',
+      '0012_context_accounting_origin',
     ]);
     reopened.close();
   });
