@@ -256,6 +256,8 @@ describe('repository policy', () => {
     expect(app).toContain('days_since_noncurrent_time = 1');
     expect(app).toContain('age            = 60');
     expect(app).toContain('days_since_noncurrent_time = 60');
+    expect(app).toContain('soft_delete_policy');
+    expect(app).toContain('retention_duration_seconds = 0');
     expect(startup).toContain('chief-recovery-prune.timer');
     expect(startup).toContain('/var/lib/chief/backups');
     expect(startup).toContain('-mmin +43139 -delete');

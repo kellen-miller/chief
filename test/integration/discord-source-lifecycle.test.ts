@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { ChannelContextService } from '../../src/context/channel-context-service.js';
+import type { ContextForgetJournalEntry } from '../../src/context/context-deletion-store.js';
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import {
   buildDiscordHistoryPage,
@@ -249,9 +250,11 @@ describe('Discord source lifecycle', () => {
     database.close();
   });
 
-  it('awaits durable journal upload for an authoritative delete', async () => {
+  it('uploads a recovery journal before authoritative mutation', async () => {
     let releaseUpload: (() => void) | undefined;
-    const uploadForgetJournal = vi.fn(
+    const uploadForgetJournal = vi.fn<
+      (entry: ContextForgetJournalEntry) => Promise<void>
+    >(
       () =>
         new Promise<void>((resolve) => {
           releaseUpload = resolve;
@@ -277,10 +280,16 @@ describe('Discord source lifecycle', () => {
     expect(uploadForgetJournal).toHaveBeenCalledOnce();
     expect(
       database
-        .prepare('select upload_status from context_forget_journal')
+        .prepare('select content_state from conversation_events')
         .pluck()
         .get(),
-    ).toBe('pending');
+    ).toBe('available');
+    expect(
+      database
+        .prepare('select count(*) from context_forget_journal')
+        .pluck()
+        .get(),
+    ).toBe(0);
 
     releaseUpload?.();
     await expect(pending).resolves.toMatchObject({ status: 'suppressed' });
@@ -290,7 +299,20 @@ describe('Discord source lifecycle', () => {
         .pluck()
         .get(),
     ).toBe('uploaded');
+    const uploaded = uploadForgetJournal.mock.calls[0]?.[0];
+    if (uploaded === undefined) throw new Error('expected an uploaded journal');
     database.close();
+
+    const restored = createHarness();
+    restored.context.apply(source());
+    restored.context.replayForgetJournal(uploaded, 2_000);
+    expect(
+      restored.database
+        .prepare('select content_state from conversation_events')
+        .pluck()
+        .get(),
+    ).toBe('scrubbed');
+    restored.database.close();
   });
 
   it('rejects an authoritative delete when journal upload fails', async () => {
@@ -309,19 +331,16 @@ describe('Discord source lifecycle', () => {
     ).rejects.toThrow('GCS unavailable');
     expect(
       database
-        .prepare(
-          `select content_state as contentState,
-                  content_state_reason as reason
-           from conversation_events`,
-        )
-        .get(),
-    ).toEqual({ contentState: 'scrubbed', reason: 'discord-deleted' });
-    expect(
-      database
-        .prepare('select upload_status from context_forget_journal')
+        .prepare('select content_state from conversation_events')
         .pluck()
         .get(),
-    ).toBe('failed');
+    ).toBe('available');
+    expect(
+      database
+        .prepare('select count(*) from context_forget_journal')
+        .pluck()
+        .get(),
+    ).toBe(0);
     database.close();
   });
 

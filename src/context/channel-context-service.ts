@@ -367,21 +367,20 @@ export class ChannelContextService {
       memory: this.#memory,
       timeZone: this.#timeZone,
     });
-    const result = this.#database.transaction(() =>
-      this.#suppress(change, deletion),
-    )();
-    if (!result.journalUploaded) {
-      try {
-        if (this.#uploadForgetJournal === undefined) {
-          throw new Error('forget journal uploader is unavailable');
-        }
-        await this.#uploadForgetJournal(result.journal);
-        deletion.markJournalUploaded(result.journalId, change.deletedAt);
-      } catch (error) {
-        deletion.markJournalFailed(result.journalId, change.deletedAt);
-        throw error;
+    const prepared = deletion.prepareAuthoritativeSourceJournal({
+      now: change.deletedAt,
+      reason: change.reason,
+      sourceScopeId: this.#sourceScopeId(change.messageId),
+    });
+    if (!prepared.uploaded) {
+      if (this.#uploadForgetJournal === undefined) {
+        throw new Error('forget journal uploader is unavailable');
       }
+      await this.#uploadForgetJournal(prepared.entry);
     }
+    const result = this.#database.transaction(() =>
+      this.#suppress(change, deletion, prepared.entry),
+    )();
     return { eventId: result.eventId, status: 'suppressed' };
   }
 
@@ -1757,6 +1756,7 @@ export class ChannelContextService {
   #suppress(
     change: ContextSourceSuppression,
     deletion: ContextDeletionStore,
+    preuploadedJournal?: ContextForgetJournalEntry,
   ): ReturnType<ContextDeletionStore['suppressSource']> {
     const reason = change.reason;
     if (
@@ -1767,6 +1767,7 @@ export class ChannelContextService {
     }
     return deletion.suppressSource({
       now: change.deletedAt,
+      ...(preuploadedJournal === undefined ? {} : { preuploadedJournal }),
       reason,
       sourceScopeId: this.#sourceScopeId(change.messageId),
     });

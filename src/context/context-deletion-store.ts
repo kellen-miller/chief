@@ -51,6 +51,11 @@ export interface ContextAuthoritativeDeletionResult {
   readonly journalUploaded: boolean;
 }
 
+export interface ContextPreparedForgetJournal {
+  readonly entry: ContextForgetJournalEntry;
+  readonly uploaded: boolean;
+}
+
 export interface PendingContextForgetJournal {
   readonly entry: ContextForgetJournalEntry;
   readonly id: number;
@@ -467,6 +472,7 @@ export class ContextDeletionStore {
 
   public suppressSource(input: {
     readonly now: number;
+    readonly preuploadedJournal?: ContextForgetJournalEntry;
     readonly reason: 'discord-deleted' | 'locally-forgotten';
     readonly sourceScopeId: string;
   }): ContextAuthoritativeDeletionResult {
@@ -481,32 +487,61 @@ export class ContextDeletionStore {
         tombstoneDocuments: false,
         tombstoneMissingSources: true,
       });
-      const journalKey = `forget:${input.sourceScopeId}`;
-      const checksum = digest({
-        journalKey,
-        occurredAt: input.now,
-        payload,
+      const journal =
+        input.preuploadedJournal ??
+        this.#sourceForgetJournal({
+          now: input.now,
+          payload,
+          reason: input.reason,
+          sourceScopeId: input.sourceScopeId,
+        });
+      this.#validateSourceForgetJournal(journal, {
+        reason: input.reason,
+        sourceScopeId: input.sourceScopeId,
       });
-      const primaryTombstone = payload.tombstoneKeys[0];
+      const primaryTombstone = journal.payload.tombstoneKeys[0];
       if (primaryTombstone === undefined) {
         throw new Error('source suppression requires a source tombstone');
       }
-      this.#database
-        .prepare(
-          `insert into context_forget_journal
-             (journal_key, scope_id, tombstone_key, occurred_at, checksum,
-              payload_json)
-           values (?, ?, ?, ?, ?, ?)
-           on conflict(journal_key) do nothing`,
-        )
-        .run(
-          journalKey,
-          input.sourceScopeId,
-          primaryTombstone,
-          input.now,
-          checksum,
-          JSON.stringify(payload),
-        );
+      if (input.preuploadedJournal === undefined) {
+        this.#database
+          .prepare(
+            `insert into context_forget_journal
+               (journal_key, scope_id, tombstone_key, occurred_at, checksum,
+                payload_json)
+             values (?, ?, ?, ?, ?, ?)
+             on conflict(journal_key) do nothing`,
+          )
+          .run(
+            journal.journalKey,
+            input.sourceScopeId,
+            primaryTombstone,
+            journal.occurredAt,
+            journal.checksum,
+            JSON.stringify(journal.payload),
+          );
+      } else {
+        this.#database
+          .prepare(
+            `insert into context_forget_journal
+               (journal_key, scope_id, tombstone_key, occurred_at, checksum,
+                payload_json, upload_status, uploaded_at)
+             values (?, ?, ?, ?, ?, ?, 'uploaded', ?)
+             on conflict(journal_key) do update set
+               upload_status = 'uploaded', uploaded_at = excluded.uploaded_at,
+               next_attempt_at = null, last_error_category = null
+             where checksum = excluded.checksum`,
+          )
+          .run(
+            journal.journalKey,
+            input.sourceScopeId,
+            primaryTombstone,
+            journal.occurredAt,
+            journal.checksum,
+            JSON.stringify(journal.payload),
+            input.now,
+          );
+      }
       const journalRow = this.#database
         .prepare(
           `select id, journal_key as journalKey, occurred_at as occurredAt,
@@ -514,7 +549,7 @@ export class ContextDeletionStore {
                   upload_status as uploadStatus
            from context_forget_journal where journal_key = ?`,
         )
-        .get(journalKey) as {
+        .get(journal.journalKey) as {
         readonly checksum: string;
         readonly id: number;
         readonly journalKey: string;
@@ -522,7 +557,7 @@ export class ContextDeletionStore {
         readonly payloadJson: string;
         readonly uploadStatus: string;
       };
-      const journal = {
+      const storedJournal = {
         checksum: journalRow.checksum,
         journalKey: journalRow.journalKey,
         occurredAt: journalRow.occurredAt,
@@ -530,20 +565,73 @@ export class ContextDeletionStore {
       };
       if (
         digest({
-          journalKey: journal.journalKey,
-          occurredAt: journal.occurredAt,
-          payload: journal.payload,
-        }) !== journal.checksum
+          journalKey: storedJournal.journalKey,
+          occurredAt: storedJournal.occurredAt,
+          payload: storedJournal.payload,
+        }) !== storedJournal.checksum
       ) {
         throw new Error('context forget journal checksum mismatch');
       }
+      if (
+        input.preuploadedJournal !== undefined &&
+        storedJournal.checksum !== input.preuploadedJournal.checksum
+      ) {
+        throw new Error('context forget journal conflicts with uploaded entry');
+      }
       return {
         eventId: sources[0]?.id ?? null,
-        journal,
+        journal: storedJournal,
         journalId: journalRow.id,
         journalUploaded: journalRow.uploadStatus === 'uploaded',
       };
     })();
+  }
+
+  public prepareAuthoritativeSourceJournal(input: {
+    readonly now: number;
+    readonly reason: 'discord-deleted' | 'locally-forgotten';
+    readonly sourceScopeId: string;
+  }): ContextPreparedForgetJournal {
+    const journalKey = `forget:${input.sourceScopeId}`;
+    const row = this.#database
+      .prepare(
+        `select journal_key as journalKey, occurred_at as occurredAt,
+                checksum, payload_json as payloadJson,
+                upload_status as uploadStatus
+         from context_forget_journal where journal_key = ?`,
+      )
+      .get(journalKey) as
+      | {
+          readonly checksum: string;
+          readonly journalKey: string;
+          readonly occurredAt: number;
+          readonly payloadJson: string;
+          readonly uploadStatus: string;
+        }
+      | undefined;
+    const entry =
+      row === undefined
+        ? this.#sourceForgetJournal({
+            now: input.now,
+            payload: {
+              documentIds: [],
+              documentKeys: [],
+              memoryIds: [],
+              reason: input.reason,
+              sourceScopeIds: [input.sourceScopeId],
+              tombstoneKeys: [`source:${input.sourceScopeId}`],
+            },
+            reason: input.reason,
+            sourceScopeId: input.sourceScopeId,
+          })
+        : {
+            checksum: row.checksum,
+            journalKey: row.journalKey,
+            occurredAt: row.occurredAt,
+            payload: parseJournalPayload(row.payloadJson),
+          };
+    this.#validateSourceForgetJournal(entry, input);
+    return { entry, uploaded: row?.uploadStatus === 'uploaded' };
   }
 
   public markJournalUploaded(journalId: number, now: number): void {
@@ -735,6 +823,54 @@ export class ContextDeletionStore {
           now,
         );
     })();
+  }
+
+  #sourceForgetJournal(input: {
+    readonly now: number;
+    readonly payload: ContextForgetJournalEntry['payload'];
+    readonly reason: 'discord-deleted' | 'locally-forgotten';
+    readonly sourceScopeId: string;
+  }): ContextForgetJournalEntry {
+    const journalKey = `forget:${input.sourceScopeId}`;
+    const entry = {
+      checksum: digest({
+        journalKey,
+        occurredAt: input.now,
+        payload: input.payload,
+      }),
+      journalKey,
+      occurredAt: input.now,
+      payload: input.payload,
+    };
+    this.#validateSourceForgetJournal(entry, input);
+    return entry;
+  }
+
+  #validateSourceForgetJournal(
+    entry: ContextForgetJournalEntry,
+    expected: {
+      readonly reason: 'discord-deleted' | 'locally-forgotten';
+      readonly sourceScopeId: string;
+    },
+  ): void {
+    if (
+      entry.journalKey !== `forget:${expected.sourceScopeId}` ||
+      entry.payload.reason !== expected.reason ||
+      entry.payload.sourceScopeIds.length !== 1 ||
+      entry.payload.sourceScopeIds[0] !== expected.sourceScopeId ||
+      !entry.payload.tombstoneKeys.includes(`source:${expected.sourceScopeId}`)
+    ) {
+      throw new Error('context forget journal does not match source');
+    }
+    if (
+      digest({
+        journalKey: entry.journalKey,
+        occurredAt: entry.occurredAt,
+        payload: entry.payload,
+      }) !== entry.checksum
+    ) {
+      throw new Error('context forget journal checksum mismatch');
+    }
   }
 
   #mutateSuppression(input: {
