@@ -326,6 +326,10 @@ export class MemoryService {
     }
   }
 
+  public nextDeadline(now: number): number | null {
+    return this.#options.store.nextJobDeadline(now);
+  }
+
   async #prepareMutations(
     proposals: readonly MemoryProposal[],
     source: Pick<

@@ -12,6 +12,7 @@ import { generateOpenAiVoiceSuffix } from './agent/openai-voice.js';
 import { ConversationOrchestrator } from './app/conversation-orchestrator.js';
 import type { ChiefConfig } from './config/config.js';
 import { ChannelContextService } from './context/channel-context-service.js';
+import { createOpenAiContextSummarizer } from './context/openai-context.js';
 import { ConversationStore } from './conversation/conversation-store.js';
 import { DiscordReconciliationService } from './discord/discord-reconciliation-service.js';
 import { DiscordGateway } from './discord/gateway.js';
@@ -28,6 +29,8 @@ import {
   createOpenAiMemoryExtractor,
 } from './memory/openai-memory.js';
 import { SqliteUsageLedger } from './usage/sqlite-usage-ledger.js';
+import { BackgroundScheduler } from './usage/background-scheduler.js';
+import { PaidWorkQueue } from './usage/paid-work-queue.js';
 import { UsageBudget } from './usage/usage-budget.js';
 import { DiscordVoiceController } from './voice/discord-voice-controller.js';
 import { realtimePcmToDiscord } from './voice/pcm.js';
@@ -57,16 +60,15 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
   migrateChiefDatabase(database);
   const memory = new SqliteMemoryStore(database);
   const conversation = new ConversationStore(database);
-  const context = new ChannelContextService({
-    channelId: config.discord.textChannelId,
-    conversation,
-    database,
-    guildId: config.discord.guildId,
-    memory,
-    timeZone: 'America/New_York',
-  });
+  const queue = new PaidWorkQueue();
+  const reservations = calculateConservativeReservations(config.pricing);
   const budget = new UsageBudget({
     ...config.usage,
+    backgroundHeadroomUsd: Math.max(
+      reservations.textUsd,
+      reservations.transcriptionUsd,
+      reservations.voiceUsd,
+    ),
     ledger: new SqliteUsageLedger(database),
     onThreshold: (event) => {
       logger.warn(
@@ -78,6 +80,25 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     apiKey: config.openAiApiKey,
     model: config.models.embedding,
     pricing: { inputPerMillionUsd: config.pricing.embeddingInput },
+  });
+  const context = new ChannelContextService({
+    budget,
+    channelId: config.discord.textChannelId,
+    conversation,
+    database,
+    embed,
+    estimateUsd: 0.05,
+    guildId: config.discord.guildId,
+    memory,
+    summarizer: createOpenAiContextSummarizer({
+      apiKey: config.openAiApiKey,
+      model: config.models.memory,
+      pricing: {
+        inputPerMillionUsd: config.pricing.memoryInput,
+        outputPerMillionUsd: config.pricing.memoryOutput,
+      },
+    }),
+    timeZone: 'America/New_York',
   });
   const memoryService = new MemoryService({
     budget,
@@ -125,18 +146,20 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     context,
     conversation,
     memory: memoryService,
-    reservations: calculateConservativeReservations(config.pricing),
+    queue,
+    reservations,
     telemetry: (event) => {
       logger.info(event, 'chief_conversation');
     },
   });
   let fallbackSuffixPcm = await readOptionalFile(config.voiceSuffixPath);
   if (fallbackSuffixPcm === undefined) {
-    const reservation = budget.reserve('voice-suffix-generation', 0.05, {
-      priority: 'background',
-      workCategory: 'interaction',
-    });
-    if (reservation.allowed) {
+    await queue.background(async () => {
+      const reservation = budget.reserve('voice-suffix-generation', 0.05, {
+        priority: 'background',
+        workCategory: 'interaction',
+      });
+      if (!reservation.allowed) return;
       try {
         const generated = await generateOpenAiVoiceSuffix({
           apiKey: config.openAiApiKey,
@@ -162,7 +185,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
         budget.reconcile(reservation.id, 0.05);
         logger.error({ err: error }, 'chief_voice_suffix_generation_failed');
       }
-    }
+    });
   }
   if (fallbackSuffixPcm === undefined) {
     logger.warn('chief_voice_suffix_fallback_missing');
@@ -238,13 +261,24 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     port: config.healthPort,
   });
   let workerRunning = false;
+  const background = new BackgroundScheduler({
+    context: {
+      nextDeadline: (now) => context.nextDeadline(now),
+      runOne: (now) => context.runNext(now),
+    },
+    memory: {
+      nextDeadline: (now) => memoryService.nextDeadline(now),
+      runOne: (now) => memoryService.runAutomaticOne(now),
+    },
+    queue,
+  });
   const workerTimer = setInterval(() => {
     if (workerRunning) return;
     workerRunning = true;
-    void memoryService
-      .runAutomaticOne(Date.now())
+    void background
+      .runBackgroundOne(Date.now())
       .catch((error: unknown) => {
-        logger.error({ err: error }, 'memory_worker_failed');
+        logger.error({ err: error }, 'background_worker_failed');
       })
       .finally(() => {
         workerRunning = false;
@@ -300,6 +334,9 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     clearInterval(workerTimer);
     clearInterval(maintenanceTimer);
     clearInterval(reconciliationTimer);
+    const queueDrained = queue.shutdown();
+    await orchestrator.shutdown();
+    await queueDrained;
     await health.stop();
     database.close();
     throw error;
@@ -311,7 +348,10 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
       clearInterval(workerTimer);
       clearInterval(maintenanceTimer);
       clearInterval(reconciliationTimer);
+      const queueDrained = queue.shutdown();
       await gateway.stop();
+      await orchestrator.shutdown();
+      await queueDrained;
       await health.stop();
       database.close();
     },

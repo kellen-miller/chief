@@ -33,7 +33,7 @@ describe('loadConfig', () => {
         textInput: 1,
         textOutput: 6,
       },
-      usage: { ceilingUsd: 10, warningUsd: 5 },
+      usage: { ceilingUsd: 10, indexingCeilingUsd: 3, warningUsd: 5 },
     });
   });
 
@@ -50,5 +50,16 @@ describe('loadConfig', () => {
     expect(() =>
       loadConfig({ ...validEnvironment, DISCORD_GUILD_ID: 'invalid' }),
     ).toThrow(expect.not.stringContaining('discord-secret'));
+  });
+
+  it('rejects an indexing ceiling above the overall ceiling', () => {
+    expect(() =>
+      loadConfig({
+        ...validEnvironment,
+        CHIEF_USAGE_CEILING_USD: '4',
+        CHIEF_USAGE_INDEXING_CEILING_USD: '5',
+        CHIEF_USAGE_WARNING_USD: '2',
+      }),
+    ).toThrow(/CHIEF_USAGE_INDEXING_CEILING_USD/u);
   });
 });

@@ -42,6 +42,7 @@ const environmentSchema = z.object({
   CHIEF_PRICE_VOICE_TEXT_INPUT: z.coerce.number().nonnegative().default(0.6),
   CHIEF_PRICE_VOICE_TEXT_OUTPUT: z.coerce.number().nonnegative().default(2.4),
   CHIEF_USAGE_CEILING_USD: z.coerce.number().positive().default(10),
+  CHIEF_USAGE_INDEXING_CEILING_USD: z.coerce.number().positive().default(3),
   CHIEF_USAGE_WARNING_USD: z.coerce.number().nonnegative().default(5),
   CHIEF_VOICE_NAME: z.string().min(1).default('cedar'),
   CHIEF_VOICE_SUFFIX_PATH: z
@@ -93,6 +94,7 @@ export interface ChiefConfig {
   };
   readonly usage: {
     readonly ceilingUsd: number;
+    readonly indexingCeilingUsd: number;
     readonly warningUsd: number;
   };
   readonly voiceName: string;
@@ -113,6 +115,11 @@ export function loadConfig(
   if (value.CHIEF_USAGE_WARNING_USD >= value.CHIEF_USAGE_CEILING_USD) {
     throw new Error(
       'invalid Chief configuration: CHIEF_USAGE_WARNING_USD must be below CHIEF_USAGE_CEILING_USD',
+    );
+  }
+  if (value.CHIEF_USAGE_INDEXING_CEILING_USD > value.CHIEF_USAGE_CEILING_USD) {
+    throw new Error(
+      'invalid Chief configuration: CHIEF_USAGE_INDEXING_CEILING_USD must not exceed CHIEF_USAGE_CEILING_USD',
     );
   }
   return {
@@ -153,6 +160,7 @@ export function loadConfig(
     },
     usage: {
       ceilingUsd: value.CHIEF_USAGE_CEILING_USD,
+      indexingCeilingUsd: value.CHIEF_USAGE_INDEXING_CEILING_USD,
       warningUsd: value.CHIEF_USAGE_WARNING_USD,
     },
     voiceName: value.CHIEF_VOICE_NAME,

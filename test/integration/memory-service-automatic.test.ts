@@ -11,6 +11,31 @@ import { UsageBudget } from '../../src/usage/usage-budget.js';
 const vector = new Float32Array(1_536).fill(0.4);
 
 describe('MemoryService automatic extraction', () => {
+  it('exposes only due automatic work to the shared scheduler', () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const store = new SqliteMemoryStore(database);
+    const worker = new MemoryService({
+      budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
+      embed: vi.fn(),
+      estimateUsd: 0.1,
+      extract: vi.fn(),
+      store,
+    });
+    store.observe({
+      content: 'Remember this later',
+      medium: 'text',
+      occurredAt: 10,
+      platformSourceId: 'scheduled-memory',
+      retentionDeadline: 100,
+      speakerId: 'president-1',
+    });
+
+    expect(worker.nextDeadline(9)).toBeNull();
+    expect(worker.nextDeadline(10)).toBe(10);
+    database.close();
+  });
+
   it('extracts and embeds an accepted durable memory', async () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);

@@ -418,6 +418,25 @@ update memory_jobs set revision_checksum = coalesce(
   ''
 );
 
+alter table usage_ledger
+  add column occurrence_month integer not null default 0;
+alter table usage_ledger
+  add column backfill_run_id integer references context_backfills(id)
+    on delete restrict;
+update usage_ledger set occurrence_month =
+  cast(strftime('%s', occurred_at / 1000, 'unixepoch', 'start of month')
+       as integer) * 1000;
+alter table context_jobs
+  add column freshness_deadline integer not null default 0;
+alter table context_jobs add column usage_reservation_id text;
+alter table context_jobs add column topic_label text;
+alter table context_jobs
+  add column source_document_ids_json text not null default '[]';
+alter table context_documents
+  add column is_internal integer not null default 0
+    check (is_internal in (0, 1));
+alter table context_documents add column topic_label text;
+
 create table discord_reconciliation_state (
   scope_id text primary key,
   high_water_message_id text,
@@ -444,7 +463,7 @@ create table discord_reconciliation_seen (
 
 export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID =
   '0004_discord_source_lifecycle';
-export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_CHECKSUM = 'chief-0004-v3';
+export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_CHECKSUM = 'chief-0004-v7';
 
 interface Migration {
   readonly checksum: string;

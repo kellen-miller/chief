@@ -12,6 +12,7 @@ export interface ContextDocumentRevisionInput {
   readonly generationInputTokens: number;
   readonly generationOutputTokens: number;
   readonly generationUsageUsd: number;
+  readonly isInternal?: boolean;
   readonly parentDocumentIds: readonly number[];
   readonly periodEnd: number | null;
   readonly periodStart: number;
@@ -22,6 +23,7 @@ export interface ContextDocumentRevisionInput {
   readonly tier: ContextTier;
   readonly timeZone: string;
   readonly topicKey: string | null;
+  readonly topicLabel?: string | null;
 }
 
 export class ContextStore {
@@ -62,19 +64,23 @@ export class ContextStore {
       const result = this.#database
         .prepare(
           `insert into context_documents
-             (document_key, tier, period_start, period_end, timezone,
-              topic_key, revision, completeness, state, content_state,
+              (document_key, tier, period_start, period_end, timezone,
+              topic_key, topic_label, revision, completeness, state, content_state,
               content_state_reason, summary, confidence, retention_deadline,
               created_at, updated_at, generation_input_tokens,
-              generation_output_tokens, generation_usage_usd)
+              generation_output_tokens, generation_usage_usd, is_internal)
            values
              (@documentKey, @tier, @periodStart, @periodEnd, @timeZone,
-              @topicKey, @revision, @completeness, 'active', 'available',
+              @topicKey, @topicLabel, @revision, @completeness, 'active', 'available',
               'retained', @summary, @confidence, @retentionDeadline,
               @createdAt, @createdAt, @generationInputTokens,
-              @generationOutputTokens, @generationUsageUsd)`,
+              @generationOutputTokens, @generationUsageUsd, @isInternal)`,
         )
-        .run(input);
+        .run({
+          ...input,
+          isInternal: input.isInternal === true ? 1 : 0,
+          topicLabel: input.topicLabel ?? null,
+        });
       const documentId = Number(result.lastInsertRowid);
       const insertEvent = this.#database.prepare(
         `insert into context_document_events (document_id, event_id)
@@ -91,17 +97,19 @@ export class ContextStore {
       for (const parentId of input.parentDocumentIds) {
         insertParent.run(documentId, parentId);
       }
-      this.#database
-        .prepare(
-          'insert into context_document_fts (rowid, content) values (?, ?)',
-        )
-        .run(documentId, input.summary);
-      this.#database
-        .prepare(
-          `insert into context_document_vectors (document_id, embedding)
-           values (?, ?)`,
-        )
-        .run(BigInt(documentId), JSON.stringify(Array.from(input.embedding)));
+      if (input.isInternal !== true) {
+        this.#database
+          .prepare(
+            'insert into context_document_fts (rowid, content) values (?, ?)',
+          )
+          .run(documentId, input.summary);
+        this.#database
+          .prepare(
+            `insert into context_document_vectors (document_id, embedding)
+             values (?, ?)`,
+          )
+          .run(BigInt(documentId), JSON.stringify(Array.from(input.embedding)));
+      }
       return documentId;
     })();
   }

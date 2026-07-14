@@ -18,6 +18,7 @@ import {
 } from '../memory/memory-service.js';
 import type { SourceObservation } from '../memory/memory-store.js';
 import { ensureTextSuffix } from '../replies/suffix.js';
+import { PaidWorkQueue } from '../usage/paid-work-queue.js';
 import type { UsageBudget } from '../usage/usage-budget.js';
 import type { HumanVoiceObservation } from '../voice/voice-session-manager.js';
 
@@ -97,6 +98,7 @@ export interface ConversationOrchestratorOptions {
   readonly conversation: ConversationStore;
   readonly memory: MemoryService;
   readonly now?: () => number;
+  readonly queue?: PaidWorkQueue;
   readonly reservations?: ConversationReservationEstimates;
   readonly telemetry?: (event: ConversationTelemetry) => void;
 }
@@ -124,9 +126,9 @@ export class ConversationOrchestrator {
   readonly #conversation: ConversationStore;
   readonly #memory: MemoryService;
   readonly #now: () => number;
+  readonly #queue: PaidWorkQueue;
   readonly #reservations: ConversationReservationEstimates;
   readonly #telemetry: ((event: ConversationTelemetry) => void) | undefined;
-  #queueTail: Promise<void> = Promise.resolve();
   #voiceIdleTimer: ReturnType<typeof setTimeout> | undefined;
   #voiceSession: ChiefVoiceSession | undefined;
   #voiceSpeakerId: string | undefined;
@@ -138,6 +140,7 @@ export class ConversationOrchestrator {
     this.#conversation = options.conversation;
     this.#memory = options.memory;
     this.#now = options.now ?? Date.now;
+    this.#queue = options.queue ?? new PaidWorkQueue();
     this.#reservations = options.reservations ?? {
       textUsd: 0.25,
       transcriptionUsd: 0.05,
@@ -246,18 +249,17 @@ export class ConversationOrchestrator {
     turn: NormalizedTextTurn & { readonly kind: 'request' },
     eventId: number,
   ): Promise<ConversationResult> {
-    const reservation = this.#budget.reserve(
-      'text-response',
-      this.#reservations.textUsd,
-    );
-    if (!reservation.allowed) {
-      return this.#recordLocalReply(
-        'AI usage is paused until the next UTC month, Mr. President',
-        'budget-paused',
-      );
-    }
-
     return this.#enqueue(async () => {
+      const reservation = this.#budget.reserve(
+        'text-response',
+        this.#reservations.textUsd,
+      );
+      if (!reservation.allowed) {
+        return this.#recordLocalReply(
+          'AI usage is paused until the next UTC month, Mr. President',
+          'budget-paused',
+        );
+      }
       let recent: {
         readonly approximateTokens: number;
         readonly messages: ChiefConversationMessage[];
@@ -401,12 +403,12 @@ export class ConversationOrchestrator {
   }
 
   public async transcribeVoice(pcm: ArrayBuffer): Promise<string | null> {
-    const reservation = this.#budget.reserve(
-      'voice-transcription',
-      this.#reservations.transcriptionUsd,
-    );
-    if (!reservation.allowed) return null;
     return this.#enqueue(async () => {
+      const reservation = this.#budget.reserve(
+        'voice-transcription',
+        this.#reservations.transcriptionUsd,
+      );
+      if (!reservation.allowed) return null;
       try {
         const transcript = await withDeadline(
           this.#agent.transcribe({
@@ -462,19 +464,19 @@ export class ConversationOrchestrator {
     turn: VoiceTurn,
     sink: VoiceSink,
   ): Promise<VoiceConversationResult> {
-    const reservation = this.#budget.reserve(
-      'voice-response',
-      this.#reservations.voiceUsd,
-    );
-    if (!reservation.allowed) {
-      return {
-        citations: [],
-        inputTranscript: '',
-        status: 'budget-paused',
-        transcript: '',
-      };
-    }
     return this.#enqueue(async () => {
+      const reservation = this.#budget.reserve(
+        'voice-response',
+        this.#reservations.voiceUsd,
+      );
+      if (!reservation.allowed) {
+        return {
+          citations: [],
+          inputTranscript: '',
+          status: 'budget-paused',
+          transcript: '',
+        };
+      }
       let reconciled = false;
       const reconcile = (actualUsd: number): void => {
         if (reconciled) return;
@@ -685,17 +687,7 @@ export class ConversationOrchestrator {
   }
 
   async #enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const predecessor = this.#queueTail;
-    let release = (): void => undefined;
-    this.#queueTail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await predecessor;
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
+    return this.#queue.interactive(operation);
   }
 
   async #closeVoiceSession(): Promise<void> {

@@ -47,6 +47,55 @@ describe('UsageBudget', () => {
     });
   });
 
+  it('enforces indexing capacity without charging memory to it', () => {
+    const budget = new UsageBudget({
+      ceilingUsd: 10,
+      indexingCeilingUsd: 3,
+      warningUsd: 5,
+    });
+
+    expect(
+      budget.reserve('context-summary', 2.75, {
+        priority: 'background',
+        workCategory: 'indexing',
+      }),
+    ).toMatchObject({ allowed: true });
+    expect(
+      budget.reserve('context-embedding', 0.26, {
+        priority: 'background',
+        workCategory: 'indexing',
+      }),
+    ).toEqual({ allowed: false, reason: 'indexing-ceiling' });
+    expect(
+      budget.reserve('memory-extraction', 0.26, {
+        priority: 'background',
+        workCategory: 'memory',
+      }),
+    ).toMatchObject({ allowed: true });
+  });
+
+  it('protects one interactive reservation from background work', () => {
+    const budget = new UsageBudget({
+      backgroundHeadroomUsd: 2,
+      ceilingUsd: 10,
+      warningUsd: 5,
+    });
+    budget.recordActual(7.5);
+
+    expect(
+      budget.reserve('memory-extraction', 0.6, {
+        priority: 'background',
+        workCategory: 'memory',
+      }),
+    ).toEqual({ allowed: false, reason: 'interactive-headroom' });
+    expect(
+      budget.reserve('text-response', 0.6, {
+        priority: 'interactive',
+        workCategory: 'interaction',
+      }),
+    ).toMatchObject({ allowed: true });
+  });
+
   it('reconciles a conservative reservation to actual usage', () => {
     const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
     const reservation = budget.reserve('hosted-search', 0.1);
@@ -119,6 +168,103 @@ describe('UsageBudget', () => {
       warningRaised: false,
     });
     expect(budget.reserve('text', 10)).toMatchObject({ allowed: true });
+    database.close();
+  });
+
+  it('reconciles a crossing call to its occurrence month', () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const ledger = new SqliteUsageLedger(database);
+    let current = Date.UTC(2026, 6, 31, 23, 59);
+    const budget = new UsageBudget({
+      ceilingUsd: 10,
+      ledger,
+      now: () => current,
+      warningUsd: 5,
+    });
+    const reservation = budget.reserve('context-summary', 0.5, {
+      priority: 'background',
+      workCategory: 'indexing',
+    });
+    if (!reservation.allowed) throw new Error('reservation should be allowed');
+
+    current = Date.UTC(2026, 7, 1, 0, 1);
+    expect(budget.snapshot().reservedUsd).toBe(0);
+    budget.reconcile(reservation.id, 0.2);
+
+    expect(
+      database
+        .prepare(
+          `select occurrence_month as occurrenceMonth, actual_usd as actualUsd,
+                  reconciled_at as reconciledAt
+           from usage_ledger where id = ?`,
+        )
+        .get(reservation.id),
+    ).toEqual({
+      actualUsd: 0.2,
+      occurrenceMonth: Date.UTC(2026, 6, 1),
+      reconciledAt: current,
+    });
+    database.close();
+  });
+
+  it('keeps backfill spend monotonic across a UTC-month reset', () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    database
+      .prepare(
+        `insert into context_backfills
+           (id, run_key, scope_id, status, maximum_usage_usd,
+            actual_usage_usd, created_at, updated_at)
+         values (1, 'run-1', 'guild/channel', 'active', 1, 0.75, 1, 1)`,
+      )
+      .run();
+    let current = Date.UTC(2026, 6, 31, 23, 59);
+    const ledger = new SqliteUsageLedger(database);
+    const budget = new UsageBudget({
+      ceilingUsd: 10,
+      indexingCeilingUsd: 3,
+      ledger,
+      now: () => current,
+      warningUsd: 5,
+    });
+
+    expect(
+      budget.reserve('context-backfill', 0.26, {
+        backfillRunId: 1,
+        priority: 'background',
+        workCategory: 'indexing',
+      }),
+    ).toEqual({ allowed: false, reason: 'run-ceiling' });
+    const reservation = budget.reserve('context-backfill', 0.2, {
+      backfillRunId: 1,
+      priority: 'background',
+      workCategory: 'indexing',
+    });
+    if (!reservation.allowed) throw new Error('reservation should be allowed');
+
+    current = Date.UTC(2026, 7, 1, 0, 1);
+    budget.reconcile(reservation.id, 0.15);
+    const restarted = new UsageBudget({
+      ceilingUsd: 10,
+      indexingCeilingUsd: 3,
+      ledger,
+      now: () => current,
+      warningUsd: 5,
+    });
+    expect(
+      restarted.reserve('context-backfill', 0.11, {
+        backfillRunId: 1,
+        priority: 'background',
+        workCategory: 'indexing',
+      }),
+    ).toEqual({ allowed: false, reason: 'run-ceiling' });
+    expect(
+      database
+        .prepare('select actual_usage_usd from context_backfills where id = 1')
+        .pluck()
+        .get(),
+    ).toBe(0.9);
     database.close();
   });
 

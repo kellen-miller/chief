@@ -19,6 +19,7 @@ import {
 } from '../../src/memory/database.js';
 import { MemoryService } from '../../src/memory/memory-service.js';
 import { SqliteMemoryStore } from '../../src/memory/memory-store.js';
+import { PaidWorkQueue } from '../../src/usage/paid-work-queue.js';
 import { UsageBudget } from '../../src/usage/usage-budget.js';
 import type { HumanVoiceObservation } from '../../src/voice/voice-session-manager.js';
 
@@ -65,6 +66,7 @@ function createOrchestrator(
   budget: UsageBudget,
   memories: readonly string[] = [],
   reservations?: ConversationReservationEstimates,
+  queue?: PaidWorkQueue,
 ): ConversationOrchestrator {
   const database = openChiefDatabase(':memory:');
   migrateChiefDatabase(database);
@@ -95,6 +97,7 @@ function createOrchestrator(
       store,
     }),
     now: () => occurredAt,
+    ...(queue === undefined ? {} : { queue }),
     ...(reservations === undefined ? {} : { reservations }),
   });
 }
@@ -460,6 +463,141 @@ describe('ConversationOrchestrator', () => {
       expect.objectContaining({ content: 'second Mr. President' }),
     ]);
     expect(maximumActive).toBe(1);
+  });
+
+  it('reserves an interaction only after its shared queue slot starts', async () => {
+    const queue = new PaidWorkQueue();
+    let releaseBackground = (): void => undefined;
+    const activeBackground = queue.background(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseBackground = resolve;
+        }),
+    );
+    await Promise.resolve();
+    const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+    const answerText = vi.fn<ChiefAgent['answerText']>(() =>
+      Promise.resolve({ citations: [], content: 'answer', usageUsd: 0.01 }),
+    );
+    const orchestrator = createOrchestrator(
+      {
+        answerText,
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe: vi.fn(),
+      },
+      budget,
+      [],
+      undefined,
+      queue,
+    );
+
+    const interaction = orchestrator.handleText(
+      textTurn({ prompt: 'next', requestId: 'queued-interaction' }),
+    );
+    await Promise.resolve();
+    expect(answerText).not.toHaveBeenCalled();
+    expect(budget.snapshot().reservedUsd).toBe(0);
+
+    releaseBackground();
+    await expect(Promise.all([activeBackground, interaction])).resolves.toEqual(
+      [undefined, expect.objectContaining({ status: 'completed' })],
+    );
+    expect(answerText).toHaveBeenCalledOnce();
+  });
+
+  it('reserves transcription only after its shared queue slot starts', async () => {
+    const queue = new PaidWorkQueue();
+    let releaseBackground = (): void => undefined;
+    const activeBackground = queue.background(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseBackground = resolve;
+        }),
+    );
+    await Promise.resolve();
+    const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+    const transcribe = vi.fn<ChiefAgent['transcribe']>(() =>
+      Promise.resolve({ text: 'hello', usageUsd: 0.01 }),
+    );
+    const orchestrator = createOrchestrator(
+      {
+        answerText: vi.fn(),
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe,
+      },
+      budget,
+      [],
+      undefined,
+      queue,
+    );
+
+    const transcription = orchestrator.transcribeVoice(new ArrayBuffer(2));
+    await Promise.resolve();
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(budget.snapshot().reservedUsd).toBe(0);
+
+    releaseBackground();
+    await expect(
+      Promise.all([activeBackground, transcription]),
+    ).resolves.toEqual([undefined, 'hello']);
+  });
+
+  it('reserves realtime voice only after its shared queue slot starts', async () => {
+    const queue = new PaidWorkQueue();
+    let releaseBackground = (): void => undefined;
+    const activeBackground = queue.background(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseBackground = resolve;
+        }),
+    );
+    await Promise.resolve();
+    let listener: ((event: ChiefVoiceEvent) => void) | undefined;
+    const sendAudio = vi.fn(() => {
+      queueMicrotask(() => listener?.({ type: 'interrupted' }));
+    });
+    const openVoice = vi.fn<ChiefAgent['openVoice']>(() =>
+      Promise.resolve({
+        close: () => Promise.resolve(),
+        interrupt: vi.fn(),
+        onEvent: (next) => {
+          listener = next;
+          return () => {
+            listener = undefined;
+          };
+        },
+        sendAudio,
+      }),
+    );
+    const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+    const orchestrator = createOrchestrator(
+      {
+        answerText: vi.fn(),
+        interruptVoice: vi.fn(),
+        openVoice,
+        transcribe: vi.fn(),
+      },
+      budget,
+      [],
+      undefined,
+      queue,
+    );
+
+    const voice = orchestrator.handleVoice(
+      voiceTurn({ pcm: new ArrayBuffer(2), requestId: 'queued-voice' }),
+      { audio: vi.fn(), transcript: vi.fn() },
+    );
+    await Promise.resolve();
+    expect(openVoice).not.toHaveBeenCalled();
+    expect(budget.snapshot().reservedUsd).toBe(0);
+
+    releaseBackground();
+    await expect(Promise.all([activeBackground, voice])).resolves.toEqual([
+      undefined,
+      expect.objectContaining({ status: 'interrupted' }),
+    ]);
   });
 
   it('interrupts voice out of band while text generation is active', async () => {

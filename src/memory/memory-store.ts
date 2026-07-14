@@ -199,6 +199,20 @@ export class SqliteMemoryStore {
     })();
   }
 
+  public nextJobDeadline(now: number): number | null {
+    return (
+      (this.#database
+        .prepare(
+          `select min(not_before) from memory_jobs
+           where not_before <= ?
+             and (status = 'pending'
+               or (status = 'leased' and lease_expires_at <= ?))`,
+        )
+        .pluck()
+        .get(now, now) as number | null) ?? null
+    );
+  }
+
   public deferForBudget(jobId: number, nextMonth: number): void {
     this.#database
       .prepare(
