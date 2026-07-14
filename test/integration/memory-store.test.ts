@@ -243,7 +243,7 @@ describe('SqliteMemoryStore', () => {
     database.close();
   });
 
-  it('builds bounded conversational context from hybrid retrieval', async () => {
+  it('retrieves bounded durable memory from a prepared query', async () => {
     const { database, store } = await createStore();
     store.applyMemory({
       canonicalText: 'The trip is in October',
@@ -264,9 +264,14 @@ describe('SqliteMemoryStore', () => {
       store,
     });
 
-    await expect(context.recall('trip October')).resolves.toEqual({
+    expect(
+      context.recallPrepared({
+        embedding: embedding(0.5),
+        now: 2,
+        prompt: 'trip October',
+      }),
+    ).toEqual({
       memories: ['The trip is in October'],
-      usageUsd: 0.001,
     });
     database.close();
   });

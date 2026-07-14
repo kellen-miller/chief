@@ -8,10 +8,12 @@ import {
   type ContextApplyResult,
   type DeliveredReplyInput,
 } from '../context/channel-context-service.js';
+import type { ContextAssembler } from '../context/context-assembler.js';
+import { ContextPersistenceError } from '../context/context-errors.js';
+import type { ContextTier, PreparedContext } from '../context/context-types.js';
 import { ConversationStore } from '../conversation/conversation-store.js';
 import {
   detectExplicitMemoryIntent,
-  MemoryPersistenceError,
   type ExplicitMemoryIntent,
   MemoryService,
   type MemoryMutationReceipt,
@@ -93,6 +95,7 @@ export interface ConversationReservationEstimates {
 
 export interface ConversationOrchestratorOptions {
   readonly agent: ChiefAgent;
+  readonly assembler: Pick<ContextAssembler, 'assemble'>;
   readonly budget: UsageBudget;
   readonly context: ChannelContextService;
   readonly conversation: ConversationStore;
@@ -106,7 +109,11 @@ export interface ConversationOrchestratorOptions {
 export type ConversationTelemetry =
   | {
       readonly approximateContextTokens: number;
+      readonly degraded: boolean;
       readonly durableMemoryCount: number;
+      readonly historicalCounts: Readonly<
+        Record<ContextTier | 'source', number>
+      >;
       readonly recentMessageCount: number;
       readonly type: 'context-prepared';
     }
@@ -121,6 +128,7 @@ const SOURCE_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export class ConversationOrchestrator {
   readonly #agent: ChiefAgent;
+  readonly #assembler: Pick<ContextAssembler, 'assemble'>;
   readonly #budget: UsageBudget;
   readonly #context: ChannelContextService;
   readonly #conversation: ConversationStore;
@@ -135,6 +143,7 @@ export class ConversationOrchestrator {
 
   public constructor(options: ConversationOrchestratorOptions) {
     this.#agent = options.agent;
+    this.#assembler = options.assembler;
     this.#budget = options.budget;
     this.#context = options.context;
     this.#conversation = options.conversation;
@@ -260,22 +269,16 @@ export class ConversationOrchestrator {
           'budget-paused',
         );
       }
-      let recent: {
-        readonly approximateTokens: number;
-        readonly messages: ChiefConversationMessage[];
-      };
+      let context: PreparedContext;
       try {
-        recent = this.#recentConversation(eventId);
-      } catch {
-        this.#budget.reconcile(reservation.id, this.#reservations.textUsd);
-        return this.#lostThread();
-      }
-      let context: Awaited<ReturnType<MemoryService['recall']>>;
-      try {
-        context = await this.#memory.recall(turn.prompt);
+        context = await this.#assembler.assemble({
+          beforeEventId: eventId,
+          now: this.#now(),
+          prompt: turn.prompt,
+        });
       } catch (error) {
         this.#budget.reconcile(reservation.id, this.#reservations.textUsd);
-        return error instanceof MemoryPersistenceError
+        return error instanceof ContextPersistenceError
           ? this.#lostThread()
           : {
               citations: [],
@@ -285,15 +288,18 @@ export class ConversationOrchestrator {
       }
       try {
         this.#telemetry?.({
-          approximateContextTokens: recent.approximateTokens,
+          approximateContextTokens: context.approximateTokens,
+          degraded: context.degraded,
           durableMemoryCount: context.memories.length,
-          recentMessageCount: recent.messages.length,
+          historicalCounts: countHistoricalContext(context),
+          recentMessageCount: context.recentConversation.length,
           type: 'context-prepared',
         });
         const answer = await this.#agent.answerText({
+          historicalContext: context.historicalContext,
           memories: context.memories,
           prompt: turn.prompt,
-          recentConversation: recent.messages,
+          recentConversation: context.recentConversation,
           requestId: turn.requestId,
         });
         this.#budget.reconcile(
@@ -587,7 +593,12 @@ export class ConversationOrchestrator {
               }
             });
             try {
-              session.sendAudio(turn.pcm, { commit: true });
+              session.sendAudio(turn.pcm, {
+                ...(turn.humanObservation === undefined
+                  ? {}
+                  : { beforeEventId: turn.humanObservation.eventId }),
+                commit: true,
+              });
             } catch (error) {
               fail(error);
             }
@@ -728,6 +739,22 @@ function explicitReceiptContent(receipt: MemoryMutationReceipt): string {
     case 'failed':
       return 'The memory update failed, so I did not save that';
   }
+}
+
+function countHistoricalContext(
+  context: PreparedContext,
+): Record<ContextTier | 'source', number> {
+  const counts: Record<ContextTier | 'source', number> = {
+    daily: 0,
+    hourly: 0,
+    'long-term': 0,
+    source: 0,
+    weekly: 0,
+  };
+  for (const item of context.historicalContext) {
+    counts[item.evidenceForm === 'source' ? 'source' : item.tier] += 1;
+  }
+  return counts;
 }
 
 async function withDeadline<T>(

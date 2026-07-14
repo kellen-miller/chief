@@ -11,6 +11,7 @@ import {
   type NormalizedTextTurn,
 } from '../../src/app/conversation-orchestrator.js';
 import { ChannelContextService } from '../../src/context/channel-context-service.js';
+import { ContextAssembler } from '../../src/context/context-assembler.js';
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import { qualifyTextMessage } from '../../src/discord/invocation-policy.js';
 import {
@@ -42,6 +43,7 @@ describe('conversation quality replay', () => {
     const requests: ChiefTextRequest[] = [];
     const answerText = vi.fn((request: ChiefTextRequest) => {
       requests.push(request);
+      expect(request.historicalContext).toEqual([]);
       if (request.prompt.includes('Give Teddy')) {
         return Promise.resolve({
           citations: [],
@@ -112,6 +114,15 @@ describe('conversation quality replay', () => {
     const conversation = new ConversationStore(database);
     const orchestrator = new ConversationOrchestrator({
       agent,
+      assembler: new ContextAssembler({
+        channelId: 'main-text',
+        conversation,
+        database,
+        embed: () => Promise.resolve({ embedding: vector, usageUsd: 0.001 }),
+        guildId: 'presidents',
+        memory,
+        timeZone: 'America/New_York',
+      }),
       budget,
       context: new ChannelContextService({
         channelId: 'main-text',

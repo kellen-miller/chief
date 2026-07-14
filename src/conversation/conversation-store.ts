@@ -61,6 +61,15 @@ export interface RecentConversation {
   readonly events: readonly ConversationEvent[];
 }
 
+export interface ConversationSourceGroup {
+  readonly content: string;
+  readonly ids: readonly number[];
+  readonly logicalResponseId: string | null;
+  readonly messageIds: readonly string[];
+  readonly occurredAt: number;
+  readonly speakerName: string | null;
+}
+
 interface ConversationRow {
   readonly attachmentMetadataJson: string;
   readonly channelId: string;
@@ -82,6 +91,17 @@ interface ConversationRow {
   readonly retentionDeadline: number;
   readonly role: ConversationRole;
   readonly speakerId: string | null;
+  readonly speakerName: string | null;
+}
+
+interface ConversationSourceRow {
+  readonly content: string;
+  readonly discordMessageId: string;
+  readonly id: number;
+  readonly logicalResponseId: string | null;
+  readonly occurredAt: number;
+  readonly responseChunkIndex: number | null;
+  readonly role: ConversationRole;
   readonly speakerName: string | null;
 }
 
@@ -272,6 +292,103 @@ export class ConversationStore {
     }
     selected.reverse();
     return { approximateTokens, events: selected };
+  }
+
+  public searchTextSourceGroups(input: {
+    readonly beforeEventId?: number;
+    readonly channelId: string;
+    readonly excludeEventIds?: readonly number[];
+    readonly excludeLogicalResponseIds?: readonly string[];
+    readonly guildId: string;
+    readonly lexicalQuery: string;
+    readonly limit: number;
+  }): readonly ConversationSourceGroup[] {
+    const excludedEventIds = input.excludeEventIds ?? [];
+    const excludedResponseIds = input.excludeLogicalResponseIds ?? [];
+    const eventExclusion =
+      excludedEventIds.length === 0
+        ? ''
+        : `and e.id not in (${excludedEventIds.map(() => '?').join(', ')})`;
+    const responseExclusion =
+      excludedResponseIds.length === 0
+        ? ''
+        : `and (e.logical_response_id is null or
+                   e.logical_response_id not in (${excludedResponseIds
+                     .map(() => '?')
+                     .join(', ')}))`;
+    const matches = this.#database
+      .prepare(
+        `select e.id, e.content,
+                e.discord_message_id as discordMessageId,
+                e.logical_response_id as logicalResponseId,
+                e.occurred_at as occurredAt,
+                e.response_chunk_index as responseChunkIndex,
+                e.role, e.speaker_name as speakerName
+         from conversation_event_fts f
+         join conversation_events e on e.id = f.rowid
+         where conversation_event_fts match ?
+           and e.guild_id = ? and e.channel_id = ? and e.medium = 'text'
+           and e.content_state = 'available'
+           and (? is null or e.id < ?)
+           ${eventExclusion}
+           ${responseExclusion}
+         order by bm25(conversation_event_fts), e.occurred_at desc
+         limit ?`,
+      )
+      .all(
+        input.lexicalQuery,
+        input.guildId,
+        input.channelId,
+        input.beforeEventId ?? null,
+        input.beforeEventId ?? null,
+        ...excludedEventIds,
+        ...excludedResponseIds,
+        input.limit,
+      ) as ConversationSourceRow[];
+    const groups: ConversationSourceGroup[] = [];
+    const seen = new Set<string>();
+    for (const match of matches) {
+      const key =
+        match.role === 'chief' && match.logicalResponseId !== null
+          ? `response:${match.logicalResponseId}`
+          : `event:${String(match.id)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const rows =
+        match.role === 'chief' && match.logicalResponseId !== null
+          ? (this.#database
+              .prepare(
+                `select id, content,
+                        discord_message_id as discordMessageId,
+                        logical_response_id as logicalResponseId,
+                        occurred_at as occurredAt,
+                        response_chunk_index as responseChunkIndex,
+                        role, speaker_name as speakerName
+                 from conversation_events
+                 where guild_id = ? and channel_id = ?
+                   and logical_response_id = ? and role = 'chief'
+                   and content_state = 'available'
+                   and (? is null or id < ?)
+                 order by coalesce(response_chunk_index, 2147483647), id`,
+              )
+              .all(
+                input.guildId,
+                input.channelId,
+                match.logicalResponseId,
+                input.beforeEventId ?? null,
+                input.beforeEventId ?? null,
+              ) as ConversationSourceRow[])
+          : [match];
+      groups.push({
+        content: rows.map(({ content }) => content).join(''),
+        ids: rows.map(({ id }) => id),
+        logicalResponseId: match.logicalResponseId,
+        messageIds: rows.map(({ discordMessageId }) => discordMessageId),
+        occurredAt: Math.min(...rows.map(({ occurredAt }) => occurredAt)),
+        speakerName: match.speakerName,
+      });
+    }
+    return groups;
   }
 
   public maintain(now: number): { readonly deletedEvents: number } {

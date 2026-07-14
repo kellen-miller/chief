@@ -12,6 +12,7 @@ import { generateOpenAiVoiceSuffix } from './agent/openai-voice.js';
 import { ConversationOrchestrator } from './app/conversation-orchestrator.js';
 import type { ChiefConfig } from './config/config.js';
 import { ChannelContextService } from './context/channel-context-service.js';
+import { ContextAssembler } from './context/context-assembler.js';
 import { createOpenAiContextSummarizer } from './context/openai-context.js';
 import { ConversationStore } from './conversation/conversation-store.js';
 import { DiscordReconciliationService } from './discord/discord-reconciliation-service.js';
@@ -114,8 +115,18 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     }),
     store: memory,
   });
+  const assembler = new ContextAssembler({
+    channelId: config.discord.textChannelId,
+    conversation,
+    database,
+    embed,
+    guildId: config.discord.guildId,
+    memory: memoryService,
+    timeZone: 'America/New_York',
+  });
   const agent = new OpenAiChiefAgent({
     apiKey: config.openAiApiKey,
+    context: assembler,
     memory: memoryService,
     model: config.models.text,
     pricing: {
@@ -142,6 +153,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
   });
   const orchestrator = new ConversationOrchestrator({
     agent,
+    assembler,
     budget,
     context,
     conversation,

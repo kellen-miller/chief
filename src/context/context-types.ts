@@ -12,7 +12,10 @@ export interface HistoricalSourceContext {
   readonly confidence: number;
   readonly evidenceForm: 'source';
   readonly occurredAt: number;
+  readonly provenanceQuality: 'source-backed';
+  readonly speakerName: string | null;
   readonly sourceLinks: readonly string[];
+  readonly temporalLabel: string;
   readonly text: string;
 }
 
@@ -21,8 +24,10 @@ export interface HistoricalRollupContext {
   readonly evidenceForm: 'rollup';
   readonly periodEnd: number | null;
   readonly periodStart: number;
+  readonly provenanceQuality: 'source-backed' | 'summary-only';
   readonly sourceLinks: readonly string[];
   readonly summary: string;
+  readonly temporalLabel: string;
   readonly tier: ContextTier;
   readonly topicLabel?: string;
 }
@@ -32,6 +37,7 @@ export type HistoricalContext =
 
 export interface PreparedContext {
   readonly approximateTokens: number;
+  readonly degraded: boolean;
   readonly historicalContext: readonly HistoricalContext[];
   readonly memories: readonly string[];
   readonly recentConversation: readonly ChiefConversationMessage[];

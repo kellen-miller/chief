@@ -12,6 +12,7 @@ import {
   type VoiceTurn,
 } from '../../src/app/conversation-orchestrator.js';
 import { ChannelContextService } from '../../src/context/channel-context-service.js';
+import { ContextAssembler } from '../../src/context/context-assembler.js';
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import {
   migrateChiefDatabase,
@@ -84,18 +85,20 @@ function createOrchestrator(
     });
   }
   const conversation = new ConversationStore(database);
+  const memory = new MemoryService({
+    budget,
+    embed: () => Promise.resolve({ embedding: vector, usageUsd: 0.001 }),
+    estimateUsd: 0.1,
+    extract: () => Promise.resolve({ proposals: [], usageUsd: 0 }),
+    store,
+  });
   return new ConversationOrchestrator({
     agent,
+    assembler: createAssembler(database, conversation, memory),
     budget,
     context: createContext(database, conversation, () => occurredAt),
     conversation,
-    memory: new MemoryService({
-      budget,
-      embed: () => Promise.resolve({ embedding: vector, usageUsd: 0.001 }),
-      estimateUsd: 0.1,
-      extract: () => Promise.resolve({ proposals: [], usageUsd: 0 }),
-      store,
-    }),
+    memory,
     now: () => occurredAt,
     ...(queue === undefined ? {} : { queue }),
     ...(reservations === undefined ? {} : { reservations }),
@@ -113,6 +116,32 @@ function createContext(
     database,
     guildId: 'presidents',
     now,
+    timeZone: 'America/New_York',
+  });
+}
+
+function createAssembler(
+  database: ReturnType<typeof openChiefDatabase>,
+  conversation: ConversationStore,
+  memory?: MemoryService,
+): ContextAssembler {
+  const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+  const vector = new Float32Array(1_536).fill(0.4);
+  return new ContextAssembler({
+    channelId: 'main-text',
+    conversation,
+    database,
+    embed: () => Promise.resolve({ embedding: vector, usageUsd: 0.001 }),
+    guildId: 'presidents',
+    memory:
+      memory ??
+      new MemoryService({
+        budget,
+        embed: vi.fn(),
+        estimateUsd: 0.1,
+        extract: vi.fn(),
+        store: new SqliteMemoryStore(database),
+      }),
     timeZone: 'America/New_York',
   });
 }
@@ -143,6 +172,7 @@ function createTextHarness() {
       openVoice: vi.fn(),
       transcribe: vi.fn(),
     },
+    assembler: createAssembler(database, conversation, memory),
     budget,
     context,
     conversation,
@@ -190,6 +220,7 @@ describe('ConversationOrchestrator', () => {
         openVoice: vi.fn(),
         transcribe: vi.fn(),
       },
+      assembler: createAssembler(database, new ConversationStore(database)),
       budget,
       context: createContext(database, undefined, () => 1_000),
       conversation: new ConversationStore(database),
@@ -678,6 +709,7 @@ describe('ConversationOrchestrator', () => {
     );
 
     expect(answerText).toHaveBeenCalledWith({
+      historicalContext: [],
       memories: ['The annual trip is in October.'],
       prompt: 'When is the trip?',
       recentConversation: [],
@@ -743,6 +775,18 @@ describe('ConversationOrchestrator', () => {
     });
     const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
     const answerText = vi.fn<ChiefAgent['answerText']>();
+    const conversation = new ConversationStore(database);
+    const memory = new MemoryService({
+      budget,
+      embed: () =>
+        Promise.resolve({
+          embedding: new Float32Array(1_536).fill(0.4),
+          usageUsd: 0.001,
+        }),
+      estimateUsd: 0.1,
+      extract: () => Promise.resolve({ proposals: [], usageUsd: 0 }),
+      store,
+    });
     const orchestrator = new ConversationOrchestrator({
       agent: {
         answerText,
@@ -750,20 +794,11 @@ describe('ConversationOrchestrator', () => {
         openVoice: vi.fn(),
         transcribe: vi.fn(),
       },
+      assembler: createAssembler(database, conversation, memory),
       budget,
       context: createContext(database),
-      conversation: new ConversationStore(database),
-      memory: new MemoryService({
-        budget,
-        embed: () =>
-          Promise.resolve({
-            embedding: new Float32Array(1_536).fill(0.4),
-            usageUsd: 0.001,
-          }),
-        estimateUsd: 0.1,
-        extract: () => Promise.resolve({ proposals: [], usageUsd: 0 }),
-        store,
-      }),
+      conversation,
+      memory,
     });
 
     await expect(
@@ -823,6 +858,7 @@ describe('ConversationOrchestrator', () => {
       };
       const orchestrator = new ConversationOrchestrator({
         agent,
+        assembler: createAssembler(database, new ConversationStore(database)),
         budget,
         context: createContext(database),
         conversation: new ConversationStore(database),
@@ -906,6 +942,7 @@ describe('ConversationOrchestrator', () => {
         openVoice: vi.fn(),
         transcribe: vi.fn(),
       },
+      assembler: createAssembler(database, new ConversationStore(database)),
       budget,
       context: createContext(database),
       conversation: new ConversationStore(database),
@@ -1085,6 +1122,7 @@ describe('ConversationOrchestrator', () => {
 
   it('does not seed an observed group request twice', async () => {
     let listener: ((event: ChiefVoiceEvent) => void) | undefined;
+    const sendAudio = vi.fn();
     const openVoice = vi.fn<ChiefAgent['openVoice']>(() =>
       Promise.resolve({
         close: () => Promise.resolve(),
@@ -1095,7 +1133,7 @@ describe('ConversationOrchestrator', () => {
             listener = undefined;
           };
         },
-        sendAudio: vi.fn(),
+        sendAudio,
       }),
     );
     const orchestrator = createOrchestrator(
@@ -1149,6 +1187,10 @@ describe('ConversationOrchestrator', () => {
         ],
       }),
     );
+    expect(sendAudio).toHaveBeenCalledWith(expect.any(ArrayBuffer), {
+      beforeEventId: humanEventId,
+      commit: true,
+    });
     listener?.({
       inputTranscript: 'Chief, when does the cabinet meet?',
       transcript: 'At noon, Mr. President',
@@ -1174,6 +1216,7 @@ describe('ConversationOrchestrator', () => {
         openVoice,
         transcribe: vi.fn(),
       },
+      assembler: createAssembler(database, conversation),
       budget,
       context: createContext(database, conversation),
       conversation,
@@ -1220,6 +1263,7 @@ describe('ConversationOrchestrator', () => {
           }),
         transcribe: vi.fn(),
       },
+      assembler: createAssembler(database, conversation),
       budget,
       context: createContext(database, conversation),
       conversation,

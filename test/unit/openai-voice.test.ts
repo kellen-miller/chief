@@ -7,12 +7,14 @@ import {
   calculateRealtimeCost,
   calculateTranscriptionCost,
   createRealtimeHistory,
-  createRealtimeMemoryTools,
+  createRealtimeContextTools,
   createRealtimeResearchTool,
   createRealtimeSessionOptions,
   NormalizedRealtimeSession,
 } from '../../src/agent/openai-voice.js';
 import type { ChiefVoiceEvent } from '../../src/agent/chief-agent.js';
+import { ContextAssembler } from '../../src/context/context-assembler.js';
+import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import {
   migrateChiefDatabase,
   openChiefDatabase,
@@ -115,7 +117,9 @@ describe('NormalizedRealtimeSession', () => {
     const session = new FakeRealtimeSession();
     const research = {
       citations: new Set(['https://example.com/source']),
+      committedUtterance: 0,
       persistenceFailed: false,
+      successfulRecallUtterance: null,
       usageUsd: 0.01,
     };
     const normalized = new NormalizedRealtimeSession(
@@ -192,7 +196,9 @@ describe('NormalizedRealtimeSession', () => {
       const session = new FakeRealtimeSession();
       const state = {
         citations: new Set<string>(),
+        committedUtterance: 0,
         persistenceFailed: true,
+        successfulRecallUtterance: null,
         usageUsd: 0.001,
       };
       const normalized = new NormalizedRealtimeSession(
@@ -243,7 +249,13 @@ describe('NormalizedRealtimeSession', () => {
         textInputPerMillionUsd: 1,
         textOutputPerMillionUsd: 1,
       },
-      { citations: new Set(), persistenceFailed: false, usageUsd: 0 },
+      {
+        citations: new Set(),
+        committedUtterance: 0,
+        persistenceFailed: false,
+        successfulRecallUtterance: null,
+        usageUsd: 0,
+      },
     );
 
     normalized.sendAudio(new ArrayBuffer(130_000), { commit: true });
@@ -273,7 +285,13 @@ describe('NormalizedRealtimeSession', () => {
         textInputPerMillionUsd: 1,
         textOutputPerMillionUsd: 1,
       },
-      { citations: new Set(), persistenceFailed: false, usageUsd: 0 },
+      {
+        citations: new Set(),
+        committedUtterance: 0,
+        persistenceFailed: false,
+        successfulRecallUtterance: null,
+        usageUsd: 0,
+      },
     );
 
     normalized.sendAudio(new ArrayBuffer(0), { commit: true });
@@ -293,7 +311,13 @@ describe('NormalizedRealtimeSession', () => {
         textInputPerMillionUsd: 1,
         textOutputPerMillionUsd: 1,
       },
-      { citations: new Set(), persistenceFailed: false, usageUsd: 0 },
+      {
+        citations: new Set(),
+        committedUtterance: 0,
+        persistenceFailed: false,
+        successfulRecallUtterance: null,
+        usageUsd: 0,
+      },
     );
     const events: ChiefVoiceEvent[] = [];
     normalized.onEvent((event) => events.push(event));
@@ -331,7 +355,13 @@ describe('NormalizedRealtimeSession', () => {
         textInputPerMillionUsd: 1,
         textOutputPerMillionUsd: 1,
       },
-      { citations: new Set(), persistenceFailed: false, usageUsd: 0 },
+      {
+        citations: new Set(),
+        committedUtterance: 0,
+        persistenceFailed: false,
+        successfulRecallUtterance: null,
+        usageUsd: 0,
+      },
     );
     const events: ChiefVoiceEvent[] = [];
     normalized.onEvent((event) => events.push(event));
@@ -473,7 +503,9 @@ describe('Realtime provider boundaries', () => {
     });
     const state = {
       citations: new Set<string>(),
+      committedUtterance: 0,
       persistenceFailed: false,
+      successfulRecallUtterance: null,
       usageUsd: 0,
     };
     const researchTool = createRealtimeResearchTool(
@@ -555,10 +587,25 @@ describe('Realtime provider boundaries', () => {
     });
     const state = {
       citations: new Set<string>(),
+      committedUtterance: 1,
       persistenceFailed: false,
+      successfulRecallUtterance: null,
       usageUsd: 0,
     };
-    const tools = createRealtimeMemoryTools(
+    const tools = createRealtimeContextTools(
+      new ContextAssembler({
+        channelId: 'main-text',
+        conversation: new ConversationStore(database),
+        database,
+        embed: () =>
+          Promise.resolve({
+            embedding: new Float32Array(1_536).fill(0.4),
+            usageUsd: 0.001,
+          }),
+        guildId: 'presidents',
+        memory,
+        timeZone: 'America/New_York',
+      }),
       memory,
       {
         recentConversation: [],
@@ -585,7 +632,7 @@ describe('Realtime provider boundaries', () => {
       receipt: { status: 'created' },
     });
     const recall = tools.find(
-      (candidate) => candidate.name === 'recall_communal_memory',
+      (candidate) => candidate.name === 'recall_context',
     );
     if (recall === undefined) throw new Error('memory recall tool missing');
     await expect(
@@ -598,6 +645,7 @@ describe('Realtime provider boundaries', () => {
     vi.spyOn(store, 'retrieve').mockImplementation(() => {
       throw new Error('database unavailable');
     });
+    state.committedUtterance += 1;
     await expect(
       recall.invoke(
         {} as never,

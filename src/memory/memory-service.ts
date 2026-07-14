@@ -1,4 +1,5 @@
 import type { UsageBudget } from '../usage/usage-budget.js';
+import { ContextPersistenceError } from '../context/context-errors.js';
 import {
   type MemoryInput,
   type PreparedMemoryMutation,
@@ -67,9 +68,9 @@ export interface MemoryServiceOptions {
   readonly store: SqliteMemoryStore;
 }
 
-export class MemoryPersistenceError extends Error {
+export class MemoryPersistenceError extends ContextPersistenceError {
   public constructor(cause: unknown) {
-    super('durable memory persistence failed', { cause });
+    super('durable memory persistence failed', cause);
     this.name = 'MemoryPersistenceError';
   }
 }
@@ -89,25 +90,24 @@ export class MemoryService {
     return this.#options.store.observeExplicit(source);
   }
 
-  public async recall(prompt: string): Promise<{
-    readonly memories: readonly string[];
-    readonly usageUsd: number;
-  }> {
-    const embedded = await this.#options.embed(prompt);
+  public recallPrepared(input: {
+    readonly embedding: Float32Array;
+    readonly now: number;
+    readonly prompt: string;
+  }): { readonly memories: readonly string[] } {
     let memories;
     try {
       memories = this.#options.store.retrieve({
-        embedding: embedded.embedding,
+        embedding: input.embedding,
         limit: this.#options.limit ?? 6,
-        now: Date.now(),
-        text: prompt,
+        now: input.now,
+        text: input.prompt,
       });
     } catch (error) {
       throw new MemoryPersistenceError(error);
     }
     return {
       memories: memories.map((memory) => memory.canonicalText),
-      usageUsd: embedded.usageUsd,
     };
   }
 
