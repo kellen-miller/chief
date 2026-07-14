@@ -33,6 +33,13 @@ The optional `pnpm eval:conversation` command uses the configured OpenAI key and
 is paid. It checks both text conversation quality and memory acceptance/rejection
 on their configured models. It reports only aggregate case names, pass/fail,
 model, reasoning, latency, and token counts; it is never part of pull-request CI.
+Before production activation, an owner can explicitly grade the full pinned
+corpus with `pnpm eval:conversation -- --grade-pinned-corpus`. That mode makes
+additional paid answer and evaluator calls, records the text/evaluator models
+and timestamp, and reports rollup faithfulness, supported-claim precision,
+cross-tier retrieval relevance, classification accuracy, suppressed-source
+leakage, and returned provenance-ID validity. `CHIEF_MODEL_EVALUATOR` selects
+the grader model and defaults to `CHIEF_MODEL_TEXT`.
 
 ## Cost controls
 

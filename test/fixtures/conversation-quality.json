@@ -1,26 +1,1023 @@
-[
-  {
-    "content": "The presidential debate focused on education and foreign policy.",
-    "id": "turn-0"
-  },
-  {
-    "content": "<@chief> Give Teddy five college teams: Oregon, New Mexico, Air Force, Navy, and Syracuse.",
-    "id": "turn-1"
-  },
-  {
-    "content": "No military academies for the final pick.",
-    "id": "turn-2"
-  },
-  {
-    "content": "<@chief> What were those outcomes?",
-    "id": "turn-3"
-  },
-  {
-    "content": "This list <@chief> remember no military academy",
-    "id": "turn-4"
-  },
-  {
-    "content": "<@chief> Pick one from the list for Polk.",
-    "id": "turn-5"
-  }
-]
+{
+  "replay": [
+    {
+      "content": "The presidential debate focused on education and foreign policy.",
+      "id": "turn-0"
+    },
+    {
+      "content": "<@chief> Give Teddy five college teams: Oregon, New Mexico, Air Force, Navy, and Syracuse.",
+      "id": "turn-1"
+    },
+    {
+      "content": "No military academies for the final pick.",
+      "id": "turn-2"
+    },
+    {
+      "content": "<@chief> What were those outcomes?",
+      "id": "turn-3"
+    },
+    {
+      "content": "This list <@chief> remember no military academy",
+      "id": "turn-4"
+    },
+    {
+      "content": "<@chief> Pick one from the list for Polk.",
+      "id": "turn-5"
+    }
+  ],
+  "cases": [
+    {
+      "id": "joke-juniper",
+      "category": "joke",
+      "prompt": "What was the JuniperJoke?",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235001",
+          "text": "JuniperJoke was that the deploy finished before the coffee brewed."
+        }
+      ],
+      "requiredClaims": ["deploy finished before the coffee brewed"],
+      "forbiddenClaims": ["The deployment breached its deadline"],
+      "allowedProvenanceIds": ["62345678901235001"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "joke-cobalt",
+      "category": "joke",
+      "prompt": "Recall the CobaltJoke.",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235002",
+          "text": "CobaltJoke called the flaky test our most reliable teammate."
+        }
+      ],
+      "requiredClaims": ["flaky test our most reliable teammate"],
+      "forbiddenClaims": ["The flaky test is reliable"],
+      "allowedProvenanceIds": ["62345678901235002"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "joke-maple",
+      "category": "joke",
+      "prompt": "Find the MapleJoke.",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235003",
+          "text": "MapleJoke said the backlog had applied for permanent residency."
+        }
+      ],
+      "requiredClaims": ["backlog had applied for permanent residency"],
+      "forbiddenClaims": ["The backlog is a resident"],
+      "allowedProvenanceIds": ["62345678901235003"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "joke-orbit",
+      "category": "joke",
+      "prompt": "What did OrbitJoke say?",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235004",
+          "text": "OrbitJoke claimed the status page needed its own status page."
+        }
+      ],
+      "requiredClaims": ["status page needed its own status page"],
+      "forbiddenClaims": ["A second status page was approved"],
+      "allowedProvenanceIds": ["62345678901235004"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "speculation-amber",
+      "category": "speculation",
+      "prompt": "What was the AmberTheory?",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235005",
+          "text": "AmberTheory was speculation that Tuesday traffic might double."
+        }
+      ],
+      "requiredClaims": ["speculation that Tuesday traffic might double"],
+      "forbiddenClaims": ["Tuesday traffic will double"],
+      "allowedProvenanceIds": ["62345678901235005"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "speculation-birch",
+      "category": "speculation",
+      "prompt": "Recall BirchTheory.",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235006",
+          "text": "BirchTheory guessed the vendor could ship the patch in May."
+        }
+      ],
+      "requiredClaims": ["guessed the vendor could ship the patch in May"],
+      "forbiddenClaims": ["The vendor committed to May"],
+      "allowedProvenanceIds": ["62345678901235006"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "speculation-comet",
+      "category": "speculation",
+      "prompt": "Find CometTheory.",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235007",
+          "text": "CometTheory wondered whether caching might remove the latency spike."
+        }
+      ],
+      "requiredClaims": [
+        "wondered whether caching might remove the latency spike"
+      ],
+      "forbiddenClaims": ["Caching removed the latency spike"],
+      "allowedProvenanceIds": ["62345678901235007"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "speculation-delta",
+      "category": "speculation",
+      "prompt": "What was DeltaTheory?",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235008",
+          "text": "DeltaTheory proposed that the queue could be the bottleneck, pending traces."
+        }
+      ],
+      "requiredClaims": ["could be the bottleneck, pending traces"],
+      "forbiddenClaims": ["The queue is the bottleneck"],
+      "allowedProvenanceIds": ["62345678901235008"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "conflict-ember",
+      "category": "conflicting-speakers",
+      "prompt": "What did people say about EmberConflict?",
+      "evidence": [
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235009",
+          "speakerName": "Avery",
+          "lineageText": "Avery discussed EmberConflict.",
+          "text": "Avery said EmberConflict should launch Monday."
+        },
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235010",
+          "speakerName": "Blake",
+          "lineageText": "Blake discussed EmberConflict.",
+          "text": "Blake said EmberConflict should remain Friday."
+        }
+      ],
+      "requiredClaims": ["launch Monday", "remain Friday"],
+      "forbiddenClaims": ["Everyone agreed"],
+      "allowedProvenanceIds": ["62345678901235009", "62345678901235010"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "weekly",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "conflict-fjord",
+      "category": "conflicting-speakers",
+      "prompt": "Summarize FjordConflict.",
+      "evidence": [
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235011",
+          "speakerName": "Casey",
+          "lineageText": "Casey discussed FjordConflict.",
+          "text": "Casey estimated FjordConflict at three days."
+        },
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235012",
+          "speakerName": "Drew",
+          "lineageText": "Drew discussed FjordConflict.",
+          "text": "Drew estimated FjordConflict at six days."
+        }
+      ],
+      "requiredClaims": ["three days", "six days"],
+      "forbiddenClaims": ["The estimate was settled"],
+      "allowedProvenanceIds": ["62345678901235011", "62345678901235012"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "weekly",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "conflict-garnet",
+      "category": "conflicting-speakers",
+      "prompt": "Recall GarnetConflict.",
+      "evidence": [
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235013",
+          "speakerName": "Evan",
+          "lineageText": "Evan discussed GarnetConflict.",
+          "text": "Evan preferred GarnetConflict in blue."
+        },
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235014",
+          "speakerName": "Fran",
+          "lineageText": "Fran discussed GarnetConflict.",
+          "text": "Fran preferred GarnetConflict in green."
+        }
+      ],
+      "requiredClaims": ["in blue", "in green"],
+      "forbiddenClaims": ["The color was unanimous"],
+      "allowedProvenanceIds": ["62345678901235013", "62345678901235014"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "weekly",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "conflict-harbor",
+      "category": "conflicting-speakers",
+      "prompt": "What was HarborConflict?",
+      "evidence": [
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235015",
+          "speakerName": "Gray",
+          "lineageText": "Gray discussed HarborConflict.",
+          "text": "Gray wanted HarborConflict enabled by default."
+        },
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235016",
+          "speakerName": "Hayden",
+          "lineageText": "Hayden discussed HarborConflict.",
+          "text": "Hayden wanted HarborConflict opt-in."
+        }
+      ],
+      "requiredClaims": ["enabled by default", "opt-in"],
+      "forbiddenClaims": ["The rollout mode was agreed"],
+      "allowedProvenanceIds": ["62345678901235015", "62345678901235016"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "weekly",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "correction-iris",
+      "category": "correction",
+      "prompt": "What is the corrected IrisPlan?",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235017",
+          "text": "IrisPlan is corrected to launch Wednesday."
+        },
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235018",
+          "contentState": "discord-deleted",
+          "text": "IrisPlan launches Monday."
+        }
+      ],
+      "requiredClaims": ["corrected to launch Wednesday"],
+      "forbiddenClaims": ["IrisPlan launches Monday"],
+      "allowedProvenanceIds": ["62345678901235017"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "correction-kite",
+      "category": "correction",
+      "prompt": "What is the latest KitePlan?",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235019",
+          "text": "KitePlan now uses port 8443."
+        },
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235020",
+          "contentState": "locally-forgotten",
+          "text": "KitePlan uses port 8080."
+        }
+      ],
+      "requiredClaims": ["now uses port 8443"],
+      "forbiddenClaims": ["uses port 8080"],
+      "allowedProvenanceIds": ["62345678901235019"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "correction-lumen",
+      "category": "correction",
+      "prompt": "Recall the corrected LumenPlan.",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235021",
+          "text": "LumenPlan owner changed to Morgan."
+        },
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235022",
+          "contentState": "discord-deleted",
+          "text": "LumenPlan owner is Riley."
+        }
+      ],
+      "requiredClaims": ["owner changed to Morgan"],
+      "forbiddenClaims": ["owner is Riley"],
+      "allowedProvenanceIds": ["62345678901235021"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "correction-mesa",
+      "category": "correction",
+      "prompt": "What is the final MesaPlan?",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235023",
+          "text": "MesaPlan final region is us-east4."
+        },
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235024",
+          "contentState": "locally-forgotten",
+          "text": "MesaPlan region is us-west1."
+        }
+      ],
+      "requiredClaims": ["final region is us-east4"],
+      "forbiddenClaims": ["region is us-west1"],
+      "allowedProvenanceIds": ["62345678901235023"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "evolution-nova",
+      "category": "topic-evolution",
+      "prompt": "How did NovaTopic evolve?",
+      "evidence": [
+        {
+          "tier": "hourly",
+          "provenanceId": "62345678901235025",
+          "lineageText": "NovaTopic planning notes.",
+          "text": "NovaTopic evolved from a spike into a scoped prototype."
+        }
+      ],
+      "requiredClaims": ["from a spike into a scoped prototype"],
+      "forbiddenClaims": ["NovaTopic shipped"],
+      "allowedProvenanceIds": ["62345678901235025"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "hourly",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "evolution-oak",
+      "category": "topic-evolution",
+      "prompt": "How did OakTopic evolve?",
+      "evidence": [
+        {
+          "tier": "daily",
+          "provenanceId": "62345678901235026",
+          "lineageText": "OakTopic planning notes.",
+          "text": "OakTopic evolved from batch processing toward streaming."
+        }
+      ],
+      "requiredClaims": ["from batch processing toward streaming"],
+      "forbiddenClaims": ["OakTopic completed streaming migration"],
+      "allowedProvenanceIds": ["62345678901235026"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "daily",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "evolution-pine",
+      "category": "topic-evolution",
+      "prompt": "How did PineTopic evolve?",
+      "evidence": [
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235027",
+          "lineageText": "PineTopic planning notes.",
+          "text": "PineTopic evolved from one tenant to a staged multi-tenant trial."
+        }
+      ],
+      "requiredClaims": ["to a staged multi-tenant trial"],
+      "forbiddenClaims": ["PineTopic became generally available"],
+      "allowedProvenanceIds": ["62345678901235027"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "weekly",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "evolution-quartz",
+      "category": "topic-evolution",
+      "prompt": "How did QuartzTopic evolve?",
+      "evidence": [
+        {
+          "tier": "long-term",
+          "provenanceId": "62345678901235028",
+          "lineageText": "QuartzTopic planning notes.",
+          "text": "QuartzTopic evolved from a dashboard into an incident workflow."
+        }
+      ],
+      "requiredClaims": ["from a dashboard into an incident workflow"],
+      "forbiddenClaims": ["QuartzTopic replaced incident response"],
+      "allowedProvenanceIds": ["62345678901235028"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "long-term",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "repeated-river",
+      "category": "repeated-across-tiers",
+      "prompt": "What was RiverRepeat?",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235029",
+          "text": "RiverRepeat ships Friday."
+        },
+        {
+          "tier": "hourly",
+          "provenanceId": "62345678901235029",
+          "lineageProvenanceId": "62345678901235029",
+          "text": "RiverRepeat ships Friday."
+        },
+        {
+          "tier": "daily",
+          "provenanceId": "62345678901235029",
+          "lineageProvenanceId": "62345678901235029",
+          "text": "RiverRepeat ships Friday."
+        }
+      ],
+      "requiredClaims": ["RiverRepeat ships Friday"],
+      "forbiddenClaims": [
+        "RiverRepeat ships Friday.\nRiverRepeat ships Friday"
+      ],
+      "allowedProvenanceIds": ["62345678901235029"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "repeated-slate",
+      "category": "repeated-across-tiers",
+      "prompt": "Recall SlateRepeat.",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235030",
+          "text": "SlateRepeat budget is twelve dollars."
+        },
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235030",
+          "lineageProvenanceId": "62345678901235030",
+          "text": "SlateRepeat budget is twelve dollars."
+        },
+        {
+          "tier": "long-term",
+          "provenanceId": "62345678901235030",
+          "lineageProvenanceId": "62345678901235030",
+          "text": "SlateRepeat budget is twelve dollars."
+        }
+      ],
+      "requiredClaims": ["budget is twelve dollars"],
+      "forbiddenClaims": [
+        "budget is twelve dollars.\nbudget is twelve dollars"
+      ],
+      "allowedProvenanceIds": ["62345678901235030"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "repeated-tango",
+      "category": "repeated-across-tiers",
+      "prompt": "Find TangoRepeat.",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235031",
+          "text": "TangoRepeat owner is Jules."
+        },
+        {
+          "tier": "hourly",
+          "provenanceId": "62345678901235031",
+          "lineageProvenanceId": "62345678901235031",
+          "text": "TangoRepeat owner is Jules."
+        },
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235031",
+          "lineageProvenanceId": "62345678901235031",
+          "text": "TangoRepeat owner is Jules."
+        }
+      ],
+      "requiredClaims": ["owner is Jules"],
+      "forbiddenClaims": ["owner is Jules.\nowner is Jules"],
+      "allowedProvenanceIds": ["62345678901235031"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "repeated-ultra",
+      "category": "repeated-across-tiers",
+      "prompt": "What was UltraRepeat?",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235032",
+          "text": "UltraRepeat uses the canary lane."
+        },
+        {
+          "tier": "daily",
+          "provenanceId": "62345678901235032",
+          "lineageProvenanceId": "62345678901235032",
+          "text": "UltraRepeat uses the canary lane."
+        },
+        {
+          "tier": "long-term",
+          "provenanceId": "62345678901235032",
+          "lineageProvenanceId": "62345678901235032",
+          "text": "UltraRepeat uses the canary lane."
+        }
+      ],
+      "requiredClaims": ["uses the canary lane"],
+      "forbiddenClaims": ["uses the canary lane.\nuses the canary lane"],
+      "allowedProvenanceIds": ["62345678901235032"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "expired-violet",
+      "category": "expired-source",
+      "prompt": "What remains about VioletArchive?",
+      "evidence": [
+        {
+          "tier": "daily",
+          "provenanceId": "62345678901235033",
+          "contentState": "retention-expired",
+          "lineageText": "VioletArchive raw token was hidden-violet.",
+          "text": "VioletArchive retained the decision to stage rollout."
+        }
+      ],
+      "requiredClaims": ["retained the decision to stage rollout"],
+      "forbiddenClaims": ["hidden-violet"],
+      "allowedProvenanceIds": ["62345678901235033"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "daily",
+      "expectedProvenanceQuality": "summary-only",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "expired-willow",
+      "category": "expired-source",
+      "prompt": "What remains about WillowArchive?",
+      "evidence": [
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235034",
+          "contentState": "retention-expired",
+          "lineageText": "WillowArchive raw token was hidden-willow.",
+          "text": "WillowArchive retained the unresolved capacity concern."
+        }
+      ],
+      "requiredClaims": ["retained the unresolved capacity concern"],
+      "forbiddenClaims": ["hidden-willow"],
+      "allowedProvenanceIds": ["62345678901235034"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "weekly",
+      "expectedProvenanceQuality": "summary-only",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "expired-xenon",
+      "category": "expired-source",
+      "prompt": "What remains about XenonArchive?",
+      "evidence": [
+        {
+          "tier": "long-term",
+          "provenanceId": "62345678901235035",
+          "contentState": "retention-expired",
+          "lineageText": "XenonArchive raw token was hidden-xenon.",
+          "text": "XenonArchive retained a preference for reversible changes."
+        }
+      ],
+      "requiredClaims": ["preference for reversible changes"],
+      "forbiddenClaims": ["hidden-xenon"],
+      "allowedProvenanceIds": ["62345678901235035"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "long-term",
+      "expectedProvenanceQuality": "summary-only",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "expired-yarrow",
+      "category": "expired-source",
+      "prompt": "What remains about YarrowArchive?",
+      "evidence": [
+        {
+          "tier": "hourly",
+          "provenanceId": "62345678901235036",
+          "contentState": "retention-expired",
+          "lineageText": "YarrowArchive raw token was hidden-yarrow.",
+          "text": "YarrowArchive retained the short-term retry decision."
+        }
+      ],
+      "requiredClaims": ["retained the short-term retry decision"],
+      "forbiddenClaims": ["hidden-yarrow"],
+      "allowedProvenanceIds": ["62345678901235036"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "hourly",
+      "expectedProvenanceQuality": "summary-only",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "summary-zinc",
+      "category": "summary-only",
+      "prompt": "Recall ZincSummary.",
+      "evidence": [
+        {
+          "tier": "daily",
+          "provenanceId": "62345678901235037",
+          "contentState": "retention-expired",
+          "lineageText": "ZincSummary private raw detail hidden-zinc.",
+          "text": "ZincSummary records that the team deferred the migration."
+        }
+      ],
+      "requiredClaims": ["team deferred the migration"],
+      "forbiddenClaims": ["hidden-zinc"],
+      "allowedProvenanceIds": ["62345678901235037"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "daily",
+      "expectedProvenanceQuality": "summary-only",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "summary-apollo",
+      "category": "summary-only",
+      "prompt": "Recall ApolloSummary.",
+      "evidence": [
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235038",
+          "contentState": "retention-expired",
+          "lineageText": "ApolloSummary private raw detail hidden-apollo.",
+          "text": "ApolloSummary records that reliability outranked speed."
+        }
+      ],
+      "requiredClaims": ["reliability outranked speed"],
+      "forbiddenClaims": ["hidden-apollo"],
+      "allowedProvenanceIds": ["62345678901235038"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "weekly",
+      "expectedProvenanceQuality": "summary-only",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "summary-boreal",
+      "category": "summary-only",
+      "prompt": "Recall BorealSummary.",
+      "evidence": [
+        {
+          "tier": "long-term",
+          "provenanceId": "62345678901235039",
+          "contentState": "retention-expired",
+          "lineageText": "BorealSummary private raw detail hidden-boreal.",
+          "text": "BorealSummary records a recurring preference for small releases."
+        }
+      ],
+      "requiredClaims": ["recurring preference for small releases"],
+      "forbiddenClaims": ["hidden-boreal"],
+      "allowedProvenanceIds": ["62345678901235039"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "long-term",
+      "expectedProvenanceQuality": "summary-only",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "summary-cinder",
+      "category": "summary-only",
+      "prompt": "Recall CinderSummary.",
+      "evidence": [
+        {
+          "tier": "hourly",
+          "provenanceId": "62345678901235040",
+          "contentState": "retention-expired",
+          "lineageText": "CinderSummary private raw detail hidden-cinder.",
+          "text": "CinderSummary records that the incident was still under review."
+        }
+      ],
+      "requiredClaims": ["incident was still under review"],
+      "forbiddenClaims": ["hidden-cinder"],
+      "allowedProvenanceIds": ["62345678901235040"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "hourly",
+      "expectedProvenanceQuality": "summary-only",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "link-drift",
+      "category": "requested-source-link",
+      "prompt": "Show the source for DriftLink.",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235041",
+          "text": "DriftLink selected the north cluster."
+        }
+      ],
+      "requiredClaims": ["selected the north cluster"],
+      "forbiddenClaims": ["selected the south cluster"],
+      "allowedProvenanceIds": ["62345678901235041"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": true
+    },
+    {
+      "id": "link-echo",
+      "category": "requested-source-link",
+      "prompt": "Give the source for EchoLink.",
+      "evidence": [
+        {
+          "tier": "daily",
+          "provenanceId": "62345678901235042",
+          "lineageText": "EchoLink source discussion.",
+          "text": "EchoLink summarized the choice of a two-stage rollout."
+        }
+      ],
+      "requiredClaims": ["choice of a two-stage rollout"],
+      "forbiddenClaims": ["choice of a one-stage rollout"],
+      "allowedProvenanceIds": ["62345678901235042"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "daily",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": true
+    },
+    {
+      "id": "link-flint",
+      "category": "requested-source-link",
+      "prompt": "Where is the source for FlintLink?",
+      "evidence": [
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235043",
+          "lineageText": "FlintLink source discussion.",
+          "text": "FlintLink summarized an open question about ownership."
+        }
+      ],
+      "requiredClaims": ["open question about ownership"],
+      "forbiddenClaims": ["ownership was assigned"],
+      "allowedProvenanceIds": ["62345678901235043"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "weekly",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": true
+    },
+    {
+      "id": "link-grove",
+      "category": "requested-source-link",
+      "prompt": "Show a source for GroveLink.",
+      "evidence": [
+        {
+          "tier": "long-term",
+          "provenanceId": "62345678901235044",
+          "lineageText": "GroveLink source discussion.",
+          "text": "GroveLink summarized the long-running audit theme."
+        }
+      ],
+      "requiredClaims": ["long-running audit theme"],
+      "forbiddenClaims": ["audit was completed"],
+      "allowedProvenanceIds": ["62345678901235044"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "long-term",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": true
+    },
+    {
+      "id": "memory-hazel",
+      "category": "topic-evolution",
+      "prompt": "What is HazelMemory preference?",
+      "evidence": [
+        {
+          "tier": "memory",
+          "provenanceId": "memory-hazel-1",
+          "text": "HazelMemory preference is to use reversible migrations."
+        }
+      ],
+      "requiredClaims": ["use reversible migrations"],
+      "forbiddenClaims": ["HazelMemory prefers destructive migrations"],
+      "allowedProvenanceIds": ["memory-hazel-1"],
+      "expectedClassification": "memory",
+      "expectedRetrievalTier": "memory",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "memory-indigo",
+      "category": "topic-evolution",
+      "prompt": "What is IndigoMemory convention?",
+      "evidence": [
+        {
+          "tier": "memory",
+          "provenanceId": "memory-indigo-1",
+          "text": "IndigoMemory convention is to name branches with a codex prefix."
+        }
+      ],
+      "requiredClaims": ["name branches with a codex prefix"],
+      "forbiddenClaims": ["IndigoMemory uses unprefixed branches"],
+      "allowedProvenanceIds": ["memory-indigo-1"],
+      "expectedClassification": "memory",
+      "expectedRetrievalTier": "memory",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "memory-jade",
+      "category": "topic-evolution",
+      "prompt": "What does JadeMemory require?",
+      "evidence": [
+        {
+          "tier": "memory",
+          "provenanceId": "memory-jade-1",
+          "text": "JadeMemory requires exact failing evidence before a fix."
+        }
+      ],
+      "requiredClaims": ["exact failing evidence before a fix"],
+      "forbiddenClaims": ["JadeMemory skips diagnosis"],
+      "allowedProvenanceIds": ["memory-jade-1"],
+      "expectedClassification": "memory",
+      "expectedRetrievalTier": "memory",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "memory-kepler",
+      "category": "topic-evolution",
+      "prompt": "What is KeplerMemory policy?",
+      "evidence": [
+        {
+          "tier": "memory",
+          "provenanceId": "memory-kepler-1",
+          "text": "KeplerMemory policy is to keep production rollout owner-approved."
+        }
+      ],
+      "requiredClaims": ["production rollout owner-approved"],
+      "forbiddenClaims": ["KeplerMemory permits automatic production rollout"],
+      "allowedProvenanceIds": ["memory-kepler-1"],
+      "expectedClassification": "memory",
+      "expectedRetrievalTier": "memory",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "suppressed-lilac",
+      "category": "suppressed-source",
+      "prompt": "What is the retained LilacSuppression decision?",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235045",
+          "text": "LilacSuppression retained the public retry limit of four."
+        },
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235046",
+          "contentState": "discord-deleted",
+          "text": "LilacSuppression deleted secret phrase lilac-hidden."
+        }
+      ],
+      "requiredClaims": ["public retry limit of four"],
+      "forbiddenClaims": ["lilac-hidden"],
+      "allowedProvenanceIds": ["62345678901235045"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "suppressed-mica",
+      "category": "suppressed-source",
+      "prompt": "What is the retained MicaSuppression decision?",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235047",
+          "text": "MicaSuppression retained the public region us-central1."
+        },
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235048",
+          "contentState": "locally-forgotten",
+          "text": "MicaSuppression forgotten secret phrase mica-hidden."
+        }
+      ],
+      "requiredClaims": ["public region us-central1"],
+      "forbiddenClaims": ["mica-hidden"],
+      "allowedProvenanceIds": ["62345678901235047"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "suppressed-nimbus",
+      "category": "suppressed-source",
+      "prompt": "What is the retained NimbusSuppression decision?",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235049",
+          "text": "NimbusSuppression retained the public owner Taylor."
+        },
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235050",
+          "contentState": "discord-deleted",
+          "text": "NimbusSuppression deleted secret phrase nimbus-hidden."
+        }
+      ],
+      "requiredClaims": ["public owner Taylor"],
+      "forbiddenClaims": ["nimbus-hidden"],
+      "allowedProvenanceIds": ["62345678901235049"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    },
+    {
+      "id": "suppressed-onyx",
+      "category": "suppressed-source",
+      "prompt": "What is the retained OnyxSuppression decision?",
+      "evidence": [
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235051",
+          "text": "OnyxSuppression retained the public deadline Thursday."
+        },
+        {
+          "tier": "source",
+          "provenanceId": "62345678901235052",
+          "contentState": "locally-forgotten",
+          "text": "OnyxSuppression forgotten secret phrase onyx-hidden."
+        }
+      ],
+      "requiredClaims": ["public deadline Thursday"],
+      "forbiddenClaims": ["onyx-hidden"],
+      "allowedProvenanceIds": ["62345678901235051"],
+      "expectedClassification": "history",
+      "expectedRetrievalTier": "source",
+      "expectedProvenanceQuality": "source-backed",
+      "requestSourceLinks": false
+    }
+  ]
+}
