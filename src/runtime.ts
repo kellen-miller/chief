@@ -257,6 +257,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
       disk: await checkDisk(config.dataDirectory),
       maintenance: Date.now() - maintenanceAt < 26 * 60 * 60 * 1_000,
     }),
+    diagnostics: () => Promise.resolve({ context: context.status(Date.now()) }),
     host: '0.0.0.0',
     port: config.healthPort,
   });
@@ -270,6 +271,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
       nextDeadline: (now) => memoryService.nextDeadline(now),
       runOne: (now) => memoryService.runAutomaticOne(now),
     },
+    now: Date.now,
     queue,
   });
   const workerTimer = setInterval(() => {

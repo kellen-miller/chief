@@ -217,13 +217,17 @@ describe('ChannelContextService', () => {
     const firstNow = occurredAt + 1_000;
     const { database, service, setNow } = createHarness(firstNow);
     service.apply(source(occurredAt));
-    const firstDue = database
+    const firstSchedule = database
       .prepare(
-        `select not_before from context_jobs
+        `select not_before as notBefore,
+                freshness_deadline as freshnessDeadline
+         from context_jobs
          where completeness = 'provisional'`,
       )
-      .pluck()
-      .get() as number;
+      .get() as {
+      readonly freshnessDeadline: number;
+      readonly notBefore: number;
+    };
 
     setNow(firstNow + 4 * 60 * 1_000);
     service.apply(
@@ -237,13 +241,17 @@ describe('ChannelContextService', () => {
     expect(
       database
         .prepare(
-          `select not_before from context_jobs
+          `select not_before as notBefore,
+                  freshness_deadline as freshnessDeadline
+           from context_jobs
            where completeness = 'provisional'`,
         )
-        .pluck()
         .get(),
-    ).toBe(firstDue);
-    expect(firstDue).toBe(firstNow + 5 * 60 * 1_000);
+    ).toEqual(firstSchedule);
+    expect(firstSchedule).toEqual({
+      freshnessDeadline: firstNow + 5 * 60 * 1_000,
+      notBefore: firstNow + 4 * 60 * 1_000,
+    });
     expect(
       database
         .prepare(

@@ -257,7 +257,10 @@ export class MemoryService {
       { priority: 'background', workCategory: 'memory' },
     );
     if (!reservation.allowed) {
-      const notBefore = nextUtcMonth(now);
+      const notBefore =
+        reservation.reason === 'interactive-headroom'
+          ? now + 5_000
+          : nextUtcMonth(now);
       this.#options.store.deferForBudget(job.id, notBefore);
       return { notBefore, status: 'budget-deferred' };
     }

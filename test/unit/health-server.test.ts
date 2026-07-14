@@ -40,6 +40,34 @@ describe('HealthServer', () => {
     await server.stop();
   });
 
+  it('exposes degraded context diagnostics without failing readiness', async () => {
+    const context = {
+      degraded: true,
+      failedJobs: 0,
+      lagMsByTier: { daily: 0, hourly: 10_000, 'long-term': 0, weekly: 0 },
+      pendingJobs: 1,
+      reason: 'indexing-budget',
+    } as const;
+    const server = new HealthServer({
+      check: () => Promise.resolve({ database: true, discord: true }),
+      diagnostics: () => Promise.resolve({ context }),
+      port: 0,
+    });
+    await server.start();
+
+    const response = await fetch(
+      `http://127.0.0.1:${server.port.toString()}/healthz`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      checks: { database: true, discord: true },
+      diagnostics: { context },
+      ready: true,
+    });
+    await server.stop();
+  });
+
   it('maps a failed check to a redacted unavailable response', async () => {
     const server = new HealthServer({
       check: () => Promise.reject(new Error('secret provider detail')),

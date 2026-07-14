@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http';
 
 export interface HealthServerOptions {
   readonly check: () => Promise<Readonly<Record<string, boolean>>>;
+  readonly diagnostics?: () => Promise<Readonly<Record<string, unknown>>>;
   readonly host?: string;
   readonly port: number;
 }
@@ -60,10 +61,17 @@ export class HealthServer {
     }
     try {
       const checks = await this.#options.check();
+      const diagnostics = await this.#options.diagnostics?.();
       const ready = Object.values(checks).every(Boolean);
       response
         .writeHead(ready ? 200 : 503, { 'content-type': 'application/json' })
-        .end(JSON.stringify({ checks, ready }));
+        .end(
+          JSON.stringify({
+            checks,
+            ...(diagnostics === undefined ? {} : { diagnostics }),
+            ready,
+          }),
+        );
     } catch {
       response
         .writeHead(503, { 'content-type': 'application/json' })

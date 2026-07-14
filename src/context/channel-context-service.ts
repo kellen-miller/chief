@@ -24,7 +24,8 @@ import type {
 
 const RECENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const RAW_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
-const PROVISIONAL_DELAY_MS = 5 * 60 * 1_000;
+const PROVISIONAL_ELIGIBILITY_DELAY_MS = 4 * 60 * 1_000;
+const PROVISIONAL_DEADLINE_MS = 5 * 60 * 1_000;
 const FINAL_HOURLY_DEADLINE_MS = 10 * 60 * 1_000;
 const FINAL_DAILY_DEADLINE_MS = 30 * 60 * 1_000;
 const FINAL_WEEKLY_DEADLINE_MS = 2 * 60 * 60 * 1_000;
@@ -175,6 +176,7 @@ interface ContextSummarySegment {
 interface ContextSummaryPlan {
   readonly finalResult: ContextSummaryResult;
   readonly segments: readonly ContextSummarySegment[];
+  readonly suppliedSourceIds: readonly string[];
   readonly visibleInputTokens: number;
   readonly visibleOutputTokens: number;
   readonly visibleUsageUsd: number;
@@ -421,7 +423,7 @@ export class ChannelContextService {
     const embed = this.#embed;
     if (budget !== undefined && job.usageReservationId !== null) {
       try {
-        budget.reconcile(job.usageReservationId, this.#estimateUsd);
+        budget.reconcileConservatively(job.usageReservationId);
       } catch (error) {
         if (
           !(error instanceof Error) ||
@@ -436,12 +438,16 @@ export class ChannelContextService {
         )
         .run(job.id);
     }
+    if (this.#provisionalObsolete(job, now)) {
+      this.#completeEmptyJob(job.id);
+      return { status: 'idle' };
+    }
     if (
       budget === undefined ||
       summarizer === undefined ||
       embed === undefined
     ) {
-      this.#retryJob(job.id, now + retryDelay(job.attemptCount), 'provider');
+      this.#retryJob(job, now + retryDelay(job.attemptCount), 'provider');
       return job.attemptCount >= DEFAULT_MAX_ATTEMPTS
         ? { status: 'failed' }
         : { notBefore: now + retryDelay(job.attemptCount), status: 'retry' };
@@ -488,6 +494,7 @@ export class ChannelContextService {
         embedded.usageUsd;
       let documentId = 0;
       this.#database.transaction(() => {
+        this.#assertCurrentLease(job, reservation.id, this.#now());
         const documentKey = job.jobKey.replace(/:(?:final|provisional)$/u, '');
         const revision =
           ((this.#database
@@ -545,7 +552,7 @@ export class ChannelContextService {
             topicLabel: job.topicLabel,
           });
         });
-        const directLineage = parseSourceLineage(plan.finalResult.sourceIds);
+        const directLineage = parseSourceLineage(plan.suppliedSourceIds);
         documentId = store.activateDocumentRevision({
           completeness: job.completeness,
           confidence: plan.finalResult.confidence,
@@ -587,8 +594,8 @@ export class ChannelContextService {
             now,
           );
         }
+        budget.reconcile(reservation.id, usageUsd);
       })();
-      budget.reconcile(reservation.id, usageUsd);
       return {
         completeness: job.completeness,
         documentId,
@@ -596,9 +603,15 @@ export class ChannelContextService {
         tier: job.tier,
       };
     } catch {
-      budget.reconcile(reservation.id, this.#estimateUsd);
+      budget.reconcileConservatively(reservation.id);
+      this.#database
+        .prepare(
+          `update context_jobs set usage_reservation_id = null
+           where id = ? and usage_reservation_id = ?`,
+        )
+        .run(job.id, reservation.id);
       const notBefore = now + retryDelay(job.attemptCount);
-      const status = this.#retryJob(job.id, notBefore, 'provider');
+      const status = this.#retryJob(job, notBefore, 'provider');
       return status === 'failed' ? { status } : { notBefore, status: 'retry' };
     }
   }
@@ -617,6 +630,9 @@ export class ChannelContextService {
       return {
         finalResult,
         segments: [],
+        suppliedSourceIds: [
+          ...new Set(sourceGroups[0]?.map(({ id }) => sourceBaseId(id)) ?? []),
+        ],
         visibleInputTokens: finalResult.inputTokens,
         visibleOutputTokens: finalResult.outputTokens,
         visibleUsageUsd: finalResult.usageUsd,
@@ -627,7 +643,9 @@ export class ChannelContextService {
     let nodes: SummaryNode[] = [];
     for (const group of sourceGroups) {
       const result = await summarizeStrict(summarizer, job, group);
-      const originalSourceIds = originalIdsForResult(result.sourceIds, group);
+      const originalSourceIds = [
+        ...new Set(group.map(({ id }) => sourceBaseId(id))),
+      ];
       const leafIndex = segments.length;
       segments.push({ originalSourceIds, result });
       nodes.push({ leafIndexes: [leafIndex], result });
@@ -666,6 +684,13 @@ export class ChannelContextService {
         return {
           finalResult: nextNodes[0]?.result ?? failSummaryPlan(),
           segments,
+          suppliedSourceIds: [
+            ...new Set(
+              sourceGroups.flatMap((group) =>
+                group.map(({ id }) => sourceBaseId(id)),
+              ),
+            ),
+          ],
           visibleInputTokens,
           visibleOutputTokens,
           visibleUsageUsd,
@@ -782,6 +807,24 @@ export class ChannelContextService {
       .run(jobId);
   }
 
+  #provisionalObsolete(job: ContextJobRow, now: number): boolean {
+    if (job.completeness !== 'provisional') return false;
+    if (job.periodEnd !== null && now >= job.periodEnd) return true;
+    const documentKey = job.jobKey.replace(/:(?:final|provisional)$/u, '');
+    return (
+      this.#database
+        .prepare(
+          `select exists(
+             select 1 from context_documents
+             where document_key = ? and completeness = 'final'
+               and state = 'active' and is_internal = 0
+           )`,
+        )
+        .pluck()
+        .get(documentKey) === 1
+    );
+  }
+
   #deferJob(jobId: number, notBefore: number, reason: string): void {
     this.#database
       .prepare(
@@ -796,24 +839,55 @@ export class ChannelContextService {
   }
 
   #retryJob(
-    jobId: number,
+    job: ContextJobRow,
     notBefore: number,
     errorCategory: string,
   ): 'failed' | 'pending' {
-    const attemptCount = this.#database
-      .prepare('select attempt_count from context_jobs where id = ?')
-      .pluck()
-      .get(jobId) as number;
-    const status = attemptCount >= DEFAULT_MAX_ATTEMPTS ? 'failed' : 'pending';
-    this.#database
+    const status =
+      job.attemptCount >= DEFAULT_MAX_ATTEMPTS ? 'failed' : 'pending';
+    const result = this.#database
       .prepare(
         `update context_jobs
          set status = ?, not_before = ?, lease_expires_at = null,
              usage_reservation_id = null, last_error_category = ?
-         where id = ?`,
+         where id = ? and status = 'leased'
+           and source_revision_checksum = ? and attempt_count = ?`,
       )
-      .run(status, notBefore, errorCategory, jobId);
-    return status;
+      .run(
+        status,
+        notBefore,
+        errorCategory,
+        job.id,
+        job.sourceRevisionChecksum,
+        job.attemptCount,
+      );
+    return result.changes === 1 ? status : 'failed';
+  }
+
+  #assertCurrentLease(
+    job: ContextJobRow,
+    reservationId: string,
+    now: number,
+  ): void {
+    const current = this.#database
+      .prepare(
+        `select exists(
+           select 1 from context_jobs
+           where id = ? and status = 'leased' and lease_expires_at > ?
+             and attempt_count = ? and source_revision_checksum = ?
+             and usage_reservation_id = ?
+         )`,
+      )
+      .pluck()
+      .get(
+        job.id,
+        now,
+        job.attemptCount,
+        job.sourceRevisionChecksum,
+        reservationId,
+      );
+    if (current !== 1)
+      throw new Error('context job lease is no longer current');
   }
 
   #scheduleDownstream(
@@ -1198,13 +1272,15 @@ export class ChannelContextService {
     });
     const checksum = this.#sourceRevisionChecksum(period);
     const now = this.#now();
-    this.#upsertJob(
-      period,
-      'provisional',
-      checksum,
-      now + PROVISIONAL_DELAY_MS,
-      now + PROVISIONAL_DELAY_MS,
-    );
+    if (now < period.end) {
+      this.#upsertJob(
+        period,
+        'provisional',
+        checksum,
+        now + PROVISIONAL_ELIGIBILITY_DELAY_MS,
+        now + PROVISIONAL_DEADLINE_MS,
+      );
+    }
     this.#upsertJob(
       period,
       'final',
@@ -1532,20 +1608,6 @@ function segmentSources(
 
 function sourceBaseId(sourceId: string): string {
   return sourceId.replace(/#part:\d+$/u, '');
-}
-
-function originalIdsForResult(
-  sourceIds: readonly string[],
-  sources: readonly ContextSummarySource[],
-): string[] {
-  const supplied = new Map(sources.map(({ id }) => [id, sourceBaseId(id)]));
-  return [
-    ...new Set(
-      sourceIds.map(
-        (sourceId) => supplied.get(sourceId) ?? sourceBaseId(sourceId),
-      ),
-    ),
-  ];
 }
 
 function parseSourceLineage(sourceIds: readonly string[]): {

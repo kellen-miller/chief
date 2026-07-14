@@ -11,6 +11,7 @@ export interface BackgroundSchedulerOptions {
   readonly backfill?: BackgroundWorkSource;
   readonly context: BackgroundWorkSource;
   readonly memory: BackgroundWorkSource;
+  readonly now?: () => number;
   readonly queue: PaidWorkQueue;
 }
 
@@ -30,12 +31,13 @@ export class BackgroundScheduler {
   }
 
   public runBackgroundOne(now: number): Promise<BackgroundSchedulerResult> {
-    const selected =
-      this.#selectLive(now) ??
-      this.#selectBackfill(this.#options.backfill, now);
-    if (selected === null) return Promise.resolve({ status: 'idle' });
     return this.#options.queue.background(async () => {
-      await selected.source.runOne(now);
+      const current = this.#options.now?.() ?? now;
+      const selected =
+        this.#selectLive(current) ??
+        this.#selectBackfill(this.#options.backfill, current);
+      if (selected === null) return { status: 'idle' };
+      await selected.source.runOne(current);
       return { kind: selected.kind, status: 'completed' };
     });
   }

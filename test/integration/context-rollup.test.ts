@@ -68,6 +68,18 @@ describe('ChannelContextService rollups', () => {
       type: 'upsert',
     });
     if (applied.eventId === null) throw new Error('expected source event');
+    expect(
+      database
+        .prepare(
+          `select not_before as notBefore,
+                  freshness_deadline as freshnessDeadline
+           from context_jobs where completeness = 'provisional'`,
+        )
+        .get(),
+    ).toEqual({
+      freshnessDeadline: occurredAt + 1_000 + 5 * 60 * 1_000,
+      notBefore: occurredAt + 1_000 + 4 * 60 * 1_000,
+    });
     current += 5 * 60 * 1_000;
 
     await expect(service.runNext(current)).resolves.toMatchObject({
@@ -429,6 +441,176 @@ describe('ChannelContextService rollups', () => {
     database.close();
   });
 
+  it('persists complete supplied lineage when the model cites a subset', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    let current = occurredAt + 1_000;
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      budget: new UsageBudget({
+        ceilingUsd: 10,
+        indexingCeilingUsd: 3,
+        ledger: new SqliteUsageLedger(database),
+        now: () => current,
+        warningUsd: 5,
+      }),
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      embed: () =>
+        Promise.resolve({
+          embedding: new Float32Array(1_536).fill(0.25),
+          usageUsd: 0.001,
+        }),
+      guildId,
+      now: () => current,
+      summarizer: {
+        summarize: (input) =>
+          Promise.resolve({
+            confidence: 0.9,
+            inputTokens: 20,
+            outputTokens: 8,
+            sourceIds: [input.sources[0]?.id ?? 'missing'],
+            summary: 'Subset citation summary.',
+            topicProposals: [],
+            usageUsd: 0.02,
+          }),
+      },
+      timeZone,
+    });
+    const eventIds = [
+      ['52345678901234567', 'First supplied source'],
+      ['52345678901234568', 'Second supplied source'],
+    ].map(([messageId, content], index) => {
+      const result = service.apply({
+        content: content ?? '',
+        messageId: messageId ?? '',
+        occurredAt: occurredAt + index,
+        requestId: `request-lineage-${String(index)}`,
+        role: 'human',
+        speakerId: '42345678901234567',
+        speakerName: 'President Test',
+        type: 'upsert',
+      });
+      if (result.eventId === null) throw new Error('expected source event');
+      return result.eventId;
+    });
+    current += 5 * 60 * 1_000;
+
+    await expect(service.runNext(current)).resolves.toMatchObject({
+      status: 'completed',
+    });
+
+    expect(
+      database
+        .prepare(
+          'select event_id from context_document_events order by event_id',
+        )
+        .pluck()
+        .all(),
+    ).toEqual(eventIds);
+    database.close();
+  });
+
+  it('rejects an in-flight result when an omitted input is deleted', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    let current = occurredAt + 1_000;
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    let releaseSummary = (): void => undefined;
+    const summaryGate = new Promise<void>((resolve) => {
+      releaseSummary = resolve;
+    });
+    let announceSummary = (): void => undefined;
+    const summaryStarted = new Promise<void>((resolve) => {
+      announceSummary = resolve;
+    });
+    const service = new ChannelContextService({
+      budget: new UsageBudget({
+        ceilingUsd: 10,
+        indexingCeilingUsd: 3,
+        ledger: new SqliteUsageLedger(database),
+        now: () => current,
+        warningUsd: 5,
+      }),
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      embed: () =>
+        Promise.resolve({
+          embedding: new Float32Array(1_536).fill(0.25),
+          usageUsd: 0.001,
+        }),
+      guildId,
+      now: () => current,
+      summarizer: {
+        summarize: async (input) => {
+          announceSummary();
+          await summaryGate;
+          return {
+            confidence: 0.9,
+            inputTokens: 20,
+            outputTokens: 8,
+            sourceIds: [input.sources[0]?.id ?? 'missing'],
+            summary: 'Raced subset summary.',
+            topicProposals: [],
+            usageUsd: 0.02,
+          };
+        },
+      },
+      timeZone,
+    });
+    for (const [index, messageId] of [
+      '52345678901234567',
+      '52345678901234568',
+    ].entries()) {
+      service.apply({
+        content: `Source ${String(index)}`,
+        messageId,
+        occurredAt: occurredAt + index,
+        requestId: `request-race-${String(index)}`,
+        role: 'human',
+        speakerId: '42345678901234567',
+        speakerName: 'President Test',
+        type: 'upsert',
+      });
+    }
+    current += 5 * 60 * 1_000;
+    const running = service.runNext(current);
+    await summaryStarted;
+    service.apply({
+      deletedAt: current,
+      messageId: '52345678901234568',
+      reason: 'discord-deleted',
+      type: 'delete',
+    });
+    releaseSummary();
+
+    await expect(running).resolves.toEqual({ status: 'failed' });
+    expect(
+      database.prepare('select count(*) from context_documents').pluck().get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare('select count(*) from context_document_fts')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare('select count(*) from context_document_vectors')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare("select count(*) from context_jobs where tier != 'hourly'")
+        .pluck()
+        .get(),
+    ).toBe(0);
+    database.close();
+  });
+
   it('fails invalid structured output after five retryable attempts', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
@@ -529,6 +711,7 @@ describe('ChannelContextService rollups', () => {
         }),
       estimateUsd: 0.05,
       guildId,
+      maxSourceTokens: 8,
       now: () => current,
       summarizer: {
         summarize: (input: {
@@ -539,7 +722,7 @@ describe('ChannelContextService rollups', () => {
             inputTokens: 20,
             outputTokens: 8,
             sourceIds: input.sources.map(({ id }) => id),
-            summary: 'Recovered summary.',
+            summary: 'S',
             topicProposals: [],
             usageUsd: 0.02,
           }),
@@ -551,7 +734,8 @@ describe('ChannelContextService rollups', () => {
       budget: firstBudget,
     });
     firstService.apply({
-      content: 'Recover this source.',
+      content:
+        'Recover this segmented source across several bounded provider calls.',
       messageId: '52345678901234567',
       occurredAt,
       requestId: '52345678901234567',
@@ -561,7 +745,7 @@ describe('ChannelContextService rollups', () => {
       type: 'upsert',
     });
     current += 5 * 60 * 1_000;
-    const stale = firstBudget.reserve('context-rollup', 0.05, {
+    const stale = firstBudget.reserve('context-rollup', 0.35, {
       priority: 'background',
       workCategory: 'indexing',
     });
@@ -598,6 +782,12 @@ describe('ChannelContextService rollups', () => {
     ).toBe(0);
     expect(
       database
+        .prepare('select actual_usd from usage_ledger where id = ?')
+        .pluck()
+        .get(stale.id),
+    ).toBe(0.35);
+    expect(
+      database
         .prepare(
           `select attempt_count as attemptCount, status
            from context_jobs where completeness = 'provisional'`,
@@ -605,8 +795,113 @@ describe('ChannelContextService rollups', () => {
         .get(),
     ).toEqual({ attemptCount: 2, status: 'completed' });
     expect(
-      database.prepare('select count(*) from context_documents').pluck().get(),
+      database
+        .prepare(
+          `select count(*) from context_documents
+           where is_internal = 0 and state = 'active'`,
+        )
+        .pluck()
+        .get(),
     ).toBe(1);
+    expect(
+      database
+        .prepare('select count(*) from context_documents where is_internal = 1')
+        .pluck()
+        .get(),
+    ).toBeGreaterThan(1);
+    database.close();
+  });
+
+  it('rolls back document success when usage reconciliation fails', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    let current = occurredAt + 1_000;
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      budget: new UsageBudget({
+        ceilingUsd: 10,
+        indexingCeilingUsd: 3,
+        ledger: new SqliteUsageLedger(database),
+        now: () => current,
+        warningUsd: 5,
+      }),
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      embed: () =>
+        Promise.resolve({
+          embedding: new Float32Array(1_536).fill(0.25),
+          usageUsd: 0.001,
+        }),
+      guildId,
+      now: () => current,
+      summarizer: {
+        summarize: (input) =>
+          Promise.resolve({
+            confidence: 0.9,
+            inputTokens: 20,
+            outputTokens: 8,
+            sourceIds: input.sources.map(({ id }) => id),
+            summary: 'Atomic reconciliation summary.',
+            topicProposals: [],
+            usageUsd: 0.02,
+          }),
+      },
+      timeZone,
+    });
+    service.apply({
+      content: 'Atomic reconciliation source.',
+      messageId: '52345678901234567',
+      occurredAt,
+      requestId: 'request-atomic-usage',
+      role: 'human',
+      speakerId: '42345678901234567',
+      speakerName: 'President Test',
+      type: 'upsert',
+    });
+    database.exec(`
+      create trigger fail_context_reconciliation
+      before update of actual_usd on usage_ledger
+      when new.actual_usd is not null
+      begin
+        select raise(abort, 'injected reconciliation crash');
+      end;
+    `);
+    current += 5 * 60 * 1_000;
+
+    await expect(service.runNext(current)).rejects.toThrow(
+      'injected reconciliation crash',
+    );
+
+    expect(
+      database.prepare('select count(*) from context_documents').pluck().get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare('select count(*) from context_document_fts')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare('select count(*) from context_document_vectors')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    const interruptedJob = database
+      .prepare(
+        `select status, usage_reservation_id as usageReservationId
+         from context_jobs where completeness = 'provisional'`,
+      )
+      .get() as {
+      readonly status: string;
+      readonly usageReservationId: string;
+    };
+    expect(interruptedJob.status).toBe('leased');
+    expect(interruptedJob.usageReservationId).not.toBe('');
+    expect(
+      database.prepare('select actual_usd from usage_ledger').pluck().get(),
+    ).toBeNull();
     database.close();
   });
 
@@ -977,6 +1272,29 @@ describe('ChannelContextService rollups', () => {
         .pluck()
         .get(),
     ).toBe(0);
+    current += 5 * 60 * 1_000;
+    for (let index = 0; index < 10; index += 1) {
+      const result = await service.runNext(current);
+      if (result.status === 'idle') break;
+    }
+    expect(
+      database
+        .prepare(
+          `select completeness from context_documents
+           where tier = 'hourly' and state = 'active' and is_internal = 0`,
+        )
+        .pluck()
+        .get(),
+    ).toBe('final');
+    expect(
+      database
+        .prepare(
+          `select status from context_jobs
+           where tier = 'daily' order by id desc limit 1`,
+        )
+        .pluck()
+        .get(),
+    ).toBe('completed');
     database.close();
   });
 });

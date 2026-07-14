@@ -199,6 +199,14 @@ export class UsageBudget {
     }
   }
 
+  public reconcileConservatively(reservationId: string): void {
+    const reservation = this.#reservations.get(reservationId);
+    if (reservation === undefined) {
+      throw new Error('unknown usage reservation');
+    }
+    this.reconcile(reservationId, reservation.amountUsd);
+  }
+
   public cancel(reservationId: string): void {
     if (!this.#reservations.delete(reservationId)) {
       throw new Error('unknown usage reservation');

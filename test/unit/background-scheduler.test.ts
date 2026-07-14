@@ -104,4 +104,43 @@ describe('BackgroundScheduler', () => {
 
     expect(order).toEqual(['memory', 'backfill']);
   });
+
+  it('rechecks live precedence after waiting behind an interaction', async () => {
+    let current = 0;
+    const queue = new PaidWorkQueue();
+    let releaseInteraction = (): void => undefined;
+    const interaction = queue.interactive(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseInteraction = resolve;
+        }),
+    );
+    await Promise.resolve();
+    const contextRun = vi.fn(() => Promise.resolve());
+    const backfillRun = vi.fn(() => Promise.resolve());
+    const scheduler = new BackgroundScheduler({
+      backfill: {
+        nextDeadline: () => 0,
+        runOne: backfillRun,
+      },
+      context: {
+        nextDeadline: (now) => (now >= 5 ? 5 : null),
+        runOne: contextRun,
+      },
+      memory: { nextDeadline: () => null, runOne: vi.fn() },
+      now: () => current,
+      queue,
+    });
+    const scheduled = scheduler.runBackgroundOne(current);
+    current = 10;
+    releaseInteraction();
+
+    await interaction;
+    await expect(scheduled).resolves.toEqual({
+      kind: 'context',
+      status: 'completed',
+    });
+    expect(contextRun).toHaveBeenCalledWith(10);
+    expect(backfillRun).not.toHaveBeenCalled();
+  });
 });

@@ -182,6 +182,49 @@ describe('MemoryService automatic extraction', () => {
     database.close();
   });
 
+  it('briefly defers temporary interactive-headroom pressure', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const store = new SqliteMemoryStore(database);
+    store.observe({
+      content: 'Remember this after the interaction',
+      medium: 'text',
+      occurredAt: 100,
+      platformSourceId: 'message-headroom',
+      retentionDeadline: 1_000,
+      speakerId: 'president-1',
+    });
+    const budget = new UsageBudget({
+      backgroundHeadroomUsd: 2,
+      ceilingUsd: 10,
+      warningUsd: 5,
+    });
+    budget.recordActual(8);
+    const extract = vi.fn();
+    const worker = new MemoryService({
+      budget,
+      embed: vi.fn(),
+      estimateUsd: 0.1,
+      extract,
+      store,
+    });
+
+    await expect(worker.runAutomaticOne(110)).resolves.toEqual({
+      notBefore: 5_110,
+      status: 'budget-deferred',
+    });
+    expect(extract).not.toHaveBeenCalled();
+    expect(
+      database
+        .prepare(
+          `select attempt_count as attemptCount, not_before as notBefore
+           from memory_jobs`,
+        )
+        .get(),
+    ).toEqual({ attemptCount: 0, notBefore: 5_110 });
+    database.close();
+  });
+
   it('reports idle and terminates a repeatedly failing job', async () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
