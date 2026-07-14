@@ -20,7 +20,7 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 - [x] (2026-07-14 05:08Z) Task 1 created migration 0003, DST-safe context periods, canonical source/FTS writes, hourly job records, retention separation, delivered-snowflake identity, and transactional document invariants; 233 tests and `pnpm verify` passed, and the task review approved the five-commit range with no findings.
 - [x] (2026-07-14 06:41Z) Task 2 normalized live Discord creates, edits, partials, single/bulk deletes, and delivered Chief chunks; synchronized edit/delete effects across source, memory, and context state; added resumable gap and weekly identity reconciliation with persisted coverage proof; and passed 267 tests plus a clean final review after three correction loops.
 - [x] (2026-07-14 08:05Z) Task 3 added one protected paid-work queue, fair deadline-ordered background scheduling, categorized/month-safe budget accounting, provisional/final hourly plus daily/weekly/topic rollups, strict bounded summarization and segmentation, tiered retention, non-readiness lag diagnostics, and graceful draining; 300 tests and final review passed after two correction loops.
-- [ ] Milestone 4: assemble cross-tier context with one embedding per retrieval query.
+- [x] (2026-07-14 09:39Z) Task 4 assembled one bounded text/Realtime context with one embedding per query, per-tier source and rollup retrieval, recent/history budgeting, provenance links, deterministic replay, privacy/as-of boundaries, and utterance-safe voice recall; 331 tests and final review passed after three correction loops.
 - [ ] Milestone 5: implement authorized correction, confirmation, forgetting, and lineage rebuild.
 - [ ] Milestone 6: add dry-run and resumable full-history backfill.
 - [ ] Milestone 7: expose degraded health, document operations, and validate rollback.
@@ -70,6 +70,14 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
   Evidence: Task 3 review reproduced final-to-provisional regression from late activity and a second race where provider work crossed the period boundary; closed hours now reject provisional activation at commit time.
 - Observation: job success and usage reconciliation share one crash-consistency boundary.
   Evidence: Task 3 trigger injection rolled back document, lineage, search, vector, downstream, job, and ledger state together; expired segmented leases conservatively reconcile their full stored reservation.
+- Observation: global vector top-k and chunk-level FTS limits can starve otherwise relevant tiers or logical Chief responses before policy sees them.
+  Evidence: Task 4 changed vector retrieval to bounded per-tier searches and source retrieval to group logical responses before the public result limit, with explicit internal scan ceilings.
+- Observation: scope, as-of, and exclusion filters must run before candidate limits; applying them afterward can return too few eligible results or leak future/cross-channel evidence into ranking.
+  Evidence: Task 4 regressions cover recursive guild/channel lineage, current-turn exclusion, source exclusions, and rollup `beforeEventId` boundaries before rank and limit.
+- Observation: lexical relevance needs an absolute query-local anchor, not only normalized FTS rank or a growing generic-word blacklist.
+  Evidence: Task 4 paired distant-vector tests preserve named/selective evidence for capitalized and lowercase queries while rejecting modifier-only source and rollup matches.
+- Observation: every Realtime context side effect must remain bound to the committed utterance across concurrent tool calls.
+  Evidence: Task 4 coalesces concurrent recall, rejects greeting/noise queries, permits one successful call, and prevents stale cross-utterance completion from consuming the next utterance's allowance.
 
 ## Decision Log
 
