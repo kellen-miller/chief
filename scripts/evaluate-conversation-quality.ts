@@ -3,6 +3,17 @@ import { performance } from 'node:perf_hooks';
 import { createExecution } from '../src/agent/openai-chief-agent.js';
 import { DEFAULT_TEXT_MODEL } from '../src/config/config.js';
 import { createOpenAiMemoryExtractor } from '../src/memory/openai-memory.js';
+import {
+  countNormalizedMatches,
+  createConversationQualityGrader,
+  extractDiscordProvenanceIds,
+  passesPinnedCorpus,
+  summarizePinnedCorpus,
+} from './conversation-quality-grades.js';
+import {
+  loadConversationQualityFixture,
+  replayConversationQualityCase,
+} from './conversation-quality-corpus.js';
 
 const apiKey = process.env.OPENAI_API_KEY;
 if (apiKey === undefined || apiKey.length === 0) {
@@ -11,6 +22,8 @@ if (apiKey === undefined || apiKey.length === 0) {
 
 const textModel = process.env.CHIEF_MODEL_TEXT ?? DEFAULT_TEXT_MODEL;
 const memoryModel = process.env.CHIEF_MODEL_MEMORY ?? 'gpt-5.4-nano';
+const evaluatorModel = process.env.CHIEF_MODEL_EVALUATOR ?? textModel;
+const gradePinnedCorpus = process.argv.includes('--grade-pinned-corpus');
 const execute = createExecution(apiKey, textModel);
 const cases = [
   {
@@ -154,4 +167,141 @@ for (const evaluation of memoryCases) {
   }
 }
 
+if (gradePinnedCorpus) {
+  const pinnedCorpusFailed = await evaluatePinnedCorpus({
+    apiKey,
+    evaluatorModel,
+    textModel,
+  });
+  failed ||= pinnedCorpusFailed;
+}
+
 if (failed) process.exitCode = 1;
+
+async function evaluatePinnedCorpus(options: {
+  readonly apiKey: string;
+  readonly evaluatorModel: string;
+  readonly textModel: string;
+}): Promise<boolean> {
+  const fixture = await loadConversationQualityFixture();
+  if (fixture.cases.length < 40) {
+    throw new Error('pinned conversation quality corpus requires 40 cases');
+  }
+  const answer = createExecution(options.apiKey, options.textModel);
+  const grade = createConversationQualityGrader({
+    apiKey: options.apiKey,
+    model: options.evaluatorModel,
+  });
+  const evaluatedAt = new Date().toISOString();
+  const totals = {
+    crossTierRetrievalRelevance: 0,
+    forbiddenClaimHits: 0,
+    historyClassification: 0,
+    historyClassificationCases: 0,
+    invalidProvenanceIds: 0,
+    memoryClassification: 0,
+    memoryClassificationCases: 0,
+    returnedProvenanceIds: 0,
+    requestedSourceLinkCases: 0,
+    requestedSourceLinkPasses: 0,
+    rollupFaithfulness: 0,
+    supportedClaimPrecision: 0,
+    suppressedSourceLeaks: 0,
+  };
+  process.stdout.write(
+    `${JSON.stringify({
+      cases: fixture.cases.length,
+      evaluatedAt,
+      evaluatorModel: options.evaluatorModel,
+      event: 'pinned-corpus-start',
+      textModel: options.textModel,
+    })}\n`,
+  );
+
+  for (const qualityCase of fixture.cases) {
+    const replay = await replayConversationQualityCase(qualityCase);
+    if (replay.classification !== qualityCase.expectedClassification) {
+      throw new Error(`pinned case ${qualityCase.id} classification mismatch`);
+    }
+    const answerResult = await answer(JSON.stringify(replay.productionPayload));
+    const output = answerResult.output?.trim() ?? '';
+    const gradingResult = await grade({
+      candidateAnswer: output,
+      expectedClassification: replay.classification,
+      expectedRetrievalTier: qualityCase.expectedRetrievalTier,
+      forbiddenClaims: qualityCase.forbiddenClaims,
+      requiredClaims: qualityCase.requiredClaims,
+      suppliedContext: {
+        communalMemory: replay.productionPayload.communalMemory,
+        historicalContext: replay.productionPayload.historicalContext,
+      },
+    });
+    const numericGrades = {
+      classification: gradingResult.grades.classification,
+      crossTierRetrievalRelevance:
+        gradingResult.grades.crossTierRetrievalRelevance,
+      rollupFaithfulness: gradingResult.grades.rollupFaithfulness,
+      supportedClaimPrecision: gradingResult.grades.supportedClaimPrecision,
+    };
+    if (replay.classification === 'history') {
+      totals.historyClassification += gradingResult.grades.classification;
+      totals.historyClassificationCases += 1;
+    } else {
+      totals.memoryClassification += gradingResult.grades.classification;
+      totals.memoryClassificationCases += 1;
+    }
+    totals.crossTierRetrievalRelevance +=
+      gradingResult.grades.crossTierRetrievalRelevance;
+    totals.rollupFaithfulness += gradingResult.grades.rollupFaithfulness;
+    totals.supportedClaimPrecision +=
+      gradingResult.grades.supportedClaimPrecision;
+    totals.forbiddenClaimHits += countNormalizedMatches(
+      output,
+      qualityCase.forbiddenClaims,
+    );
+    totals.suppressedSourceLeaks += countNormalizedMatches(
+      output,
+      qualityCase.leakageMarkers ?? [],
+    );
+    const returnedProvenanceIds = extractDiscordProvenanceIds(output);
+    totals.returnedProvenanceIds += returnedProvenanceIds.length;
+    totals.invalidProvenanceIds += returnedProvenanceIds.filter(
+      (provenanceId) =>
+        !qualityCase.allowedProvenanceIds.includes(provenanceId),
+    ).length;
+    if (qualityCase.requestSourceLinks) {
+      totals.requestedSourceLinkCases += 1;
+      if (
+        replay.returnedSourceLinks.length > 0 &&
+        replay.returnedSourceLinks.every((link) => output.includes(link))
+      ) {
+        totals.requestedSourceLinkPasses += 1;
+      }
+    }
+    process.stdout.write(
+      `${JSON.stringify({
+        case: qualityCase.id,
+        evaluatedAt,
+        evaluatorModel: options.evaluatorModel,
+        grades: numericGrades,
+        inputTokens: answerResult.inputTokens + gradingResult.inputTokens,
+        outputTokens: answerResult.outputTokens + gradingResult.outputTokens,
+        returnedProvenanceCount: returnedProvenanceIds.length,
+        textModel: options.textModel,
+      })}\n`,
+    );
+  }
+
+  const summary = summarizePinnedCorpus({
+    count: fixture.cases.length,
+    evaluatedAt,
+    evaluatorModel: options.evaluatorModel,
+    textModel: options.textModel,
+    totals,
+  });
+  const passed = passesPinnedCorpus(summary);
+  process.stdout.write(
+    `${JSON.stringify({ event: 'pinned-corpus-summary', passed, ...summary })}\n`,
+  );
+  return !passed;
+}

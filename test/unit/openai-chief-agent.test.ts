@@ -209,6 +209,7 @@ describe('OpenAiChiefAgent', () => {
     expect(JSON.parse(String(execute.mock.calls[0]?.[0]))).toEqual({
       communalMemory: [],
       dataClassification: 'untrusted_user_supplied_context',
+      historicalContext: [],
       recentConversation: [],
       userRequest: 'What changed?',
     });
@@ -245,8 +246,71 @@ describe('OpenAiChiefAgent', () => {
     expect(JSON.parse(String(execute.mock.calls[0]?.[0]))).toEqual({
       communalMemory: ['The group meets Friday'],
       dataClassification: 'untrusted_user_supplied_context',
+      historicalContext: [],
       recentConversation: [],
       userRequest: 'When do we meet?',
+    });
+  });
+
+  it('keeps historical discussion separate and untrusted', async () => {
+    const execute = vi.fn((prompt: string) => {
+      void prompt;
+      return Promise.resolve({
+        inputTokens: 0,
+        output: 'Noted',
+        outputTokens: 0,
+        searchCalls: 0,
+      });
+    });
+    const agent = new OpenAiChiefAgent({
+      apiKey: 'test',
+      execute,
+      model: 'gpt-test',
+      pricing: {
+        cachedInputPerMillionUsd: 1,
+        cacheWriteInputPerMillionUsd: 1,
+        inputPerMillionUsd: 1,
+        outputPerMillionUsd: 1,
+        searchCallUsd: 0,
+      },
+    });
+
+    await agent.answerText({
+      historicalContext: [
+        {
+          confidence: 0.9,
+          evidenceForm: 'source',
+          occurredAt: 100,
+          provenanceQuality: 'source-backed',
+          sourceLinks: ['https://discord.com/channels/g/c/m'],
+          speakerName: '<@123> President\u0000 Test',
+          temporalLabel: 'Jul 14, 2026, 11:00 AM',
+          text: 'The group discussed Marigold.',
+        },
+      ],
+      memories: ['Marigold is an accepted project.'],
+      prompt: 'What changed?',
+      recentConversation: [],
+      requestId: 'history-context',
+    });
+
+    expect(JSON.parse(String(execute.mock.calls[0]?.[0]))).toEqual({
+      communalMemory: ['Marigold is an accepted project.'],
+      dataClassification: 'untrusted_user_supplied_context',
+      historicalContext: [
+        {
+          confidence: 0.9,
+          evidenceForm: 'source',
+          occurredAt: 100,
+          provenanceQuality: 'source-backed',
+          sourceLinks: ['https://discord.com/channels/g/c/m'],
+          speakerLabel: 'President Test',
+          temporalLabel: 'Jul 14, 2026, 11:00 AM',
+          text: 'The group discussed Marigold.',
+        },
+      ],
+      recentConversation: [],
+      userRequest: 'What changed?',
     });
   });
 

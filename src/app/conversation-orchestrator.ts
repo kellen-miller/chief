@@ -3,25 +3,53 @@ import type {
   ChiefConversationMessage,
   ChiefVoiceSession,
 } from '../agent/chief-agent.js';
+import {
+  ChannelContextService,
+  type ContextApplyResult,
+  type ContextForgetReceipt,
+  type DeliveredReplyInput,
+} from '../context/channel-context-service.js';
+import type { ContextAssembler } from '../context/context-assembler.js';
+import { ContextPersistenceError } from '../context/context-errors.js';
+import type { ContextTier, PreparedContext } from '../context/context-types.js';
 import { ConversationStore } from '../conversation/conversation-store.js';
 import {
   detectExplicitMemoryIntent,
-  MemoryPersistenceError,
   type ExplicitMemoryIntent,
   MemoryService,
   type MemoryMutationReceipt,
 } from '../memory/memory-service.js';
 import type { SourceObservation } from '../memory/memory-store.js';
 import { ensureTextSuffix } from '../replies/suffix.js';
+import { PaidWorkQueue } from '../usage/paid-work-queue.js';
 import type { UsageBudget } from '../usage/usage-budget.js';
 import type { HumanVoiceObservation } from '../voice/voice-session-manager.js';
 
 interface TextTurnBase {
+  readonly attachmentMetadataJson?: string;
+  readonly canModerateContext?: boolean;
   readonly content: string;
+  readonly editedAt?: number | null;
   readonly occurredAt: number;
   readonly platformSourceId: string;
+  readonly replyToMessageId?: string | null;
   readonly requestId: string;
+  readonly revisionChecksum?: string;
   readonly speakerId: string;
+  readonly speakerName: string;
+}
+
+export interface NormalizedTextSource {
+  readonly attachmentMetadataJson: string;
+  readonly authorKind: 'chief' | 'human';
+  readonly canModerateContext: boolean;
+  readonly content: string;
+  readonly editedAt: number | null;
+  readonly messageId: string;
+  readonly occurredAt: number;
+  readonly replyToMessageId: string | null;
+  readonly requesterId: string;
+  readonly revisionChecksum: string;
   readonly speakerName: string;
 }
 
@@ -66,12 +94,31 @@ export interface ConversationReservationEstimates {
   readonly voiceUsd: number;
 }
 
+type ExplicitTurn =
+  | {
+      readonly canModerateContext: boolean;
+      readonly confirmationNonce?: string;
+      readonly content: string;
+      readonly kind: 'context-forget';
+      readonly requesterId: string;
+      readonly requestMessageId: string;
+    }
+  | {
+      readonly intent: ExplicitMemoryIntent;
+      readonly kind: 'memory';
+      readonly source: SourceObservation;
+      readonly sourceEventId: number;
+    };
+
 export interface ConversationOrchestratorOptions {
   readonly agent: ChiefAgent;
+  readonly assembler: Pick<ContextAssembler, 'assemble'>;
   readonly budget: UsageBudget;
+  readonly context: ChannelContextService;
   readonly conversation: ConversationStore;
   readonly memory: MemoryService;
   readonly now?: () => number;
+  readonly queue?: PaidWorkQueue;
   readonly reservations?: ConversationReservationEstimates;
   readonly telemetry?: (event: ConversationTelemetry) => void;
 }
@@ -79,12 +126,17 @@ export interface ConversationOrchestratorOptions {
 export type ConversationTelemetry =
   | {
       readonly approximateContextTokens: number;
+      readonly degraded: boolean;
       readonly durableMemoryCount: number;
+      readonly historicalCounts: Readonly<
+        Record<ContextTier | 'source', number>
+      >;
       readonly recentMessageCount: number;
       readonly type: 'context-prepared';
     }
   | {
-      readonly outcome: MemoryMutationReceipt['status'];
+      readonly outcome:
+        ContextForgetReceipt['status'] | MemoryMutationReceipt['status'];
       readonly type: 'explicit-memory';
     };
 
@@ -94,23 +146,28 @@ const SOURCE_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export class ConversationOrchestrator {
   readonly #agent: ChiefAgent;
+  readonly #assembler: Pick<ContextAssembler, 'assemble'>;
   readonly #budget: UsageBudget;
+  readonly #context: ChannelContextService;
   readonly #conversation: ConversationStore;
   readonly #memory: MemoryService;
   readonly #now: () => number;
+  readonly #queue: PaidWorkQueue;
   readonly #reservations: ConversationReservationEstimates;
   readonly #telemetry: ((event: ConversationTelemetry) => void) | undefined;
-  #queueTail: Promise<void> = Promise.resolve();
   #voiceIdleTimer: ReturnType<typeof setTimeout> | undefined;
   #voiceSession: ChiefVoiceSession | undefined;
   #voiceSpeakerId: string | undefined;
 
   public constructor(options: ConversationOrchestratorOptions) {
     this.#agent = options.agent;
+    this.#assembler = options.assembler;
     this.#budget = options.budget;
+    this.#context = options.context;
     this.#conversation = options.conversation;
     this.#memory = options.memory;
     this.#now = options.now ?? Date.now;
+    this.#queue = options.queue ?? new PaidWorkQueue();
     this.#reservations = options.reservations ?? {
       textUsd: 0.25,
       transcriptionUsd: 0.05,
@@ -123,121 +180,153 @@ export class ConversationOrchestrator {
     turn: NormalizedTextTurn,
   ): Promise<ConversationResult | null> {
     let eventId: number;
-    let explicit:
-      | {
-          readonly intent: ExplicitMemoryIntent;
-          readonly source: SourceObservation;
-          readonly sourceEventId: number;
-        }
-      | undefined;
+    let explicit: ExplicitTurn | undefined;
+    const intent =
+      turn.kind === 'request' ? detectExplicitMemoryIntent(turn.content) : null;
+    const confirmationNonce =
+      turn.kind === 'request'
+        ? detectForgetConfirmationNonce(turn.content)
+        : null;
     try {
-      eventId = this.#conversation.record({
+      const applied = this.#context.apply({
+        attachmentMetadataJson: turn.attachmentMetadataJson ?? '[]',
+        canModerateContext: turn.canModerateContext ?? false,
         content: turn.content,
-        medium: 'text',
+        editedAt: turn.editedAt ?? null,
+        memoryExtraction:
+          intent === 'forget' || confirmationNonce !== null
+            ? 'none'
+            : intent === null
+              ? 'automatic'
+              : 'explicit',
+        messageId: turn.platformSourceId,
         occurredAt: turn.occurredAt,
-        platformEventId: `discord:text:${turn.platformSourceId}`,
+        platformEventId: turn.platformSourceId,
+        replyToMessageId: turn.replyToMessageId ?? null,
         requestId: turn.requestId,
-        retentionDeadline: turn.occurredAt + CONVERSATION_RETENTION_MS,
+        ...(turn.revisionChecksum === undefined
+          ? {}
+          : { revisionChecksum: turn.revisionChecksum }),
         role: 'human',
         speakerId: turn.speakerId,
         speakerName: turn.speakerName,
+        type: 'upsert',
       });
+      if (applied.status !== 'applied') return Promise.resolve(null);
+      eventId = applied.eventId;
       const source: SourceObservation = {
+        canModerateContext: turn.canModerateContext ?? false,
         content: turn.content,
         medium: 'text',
         occurredAt: turn.occurredAt,
         platformSourceId: turn.platformSourceId,
+        ...(turn.revisionChecksum === undefined
+          ? {}
+          : { revisionChecksum: turn.revisionChecksum }),
         retentionDeadline: turn.occurredAt + SOURCE_RETENTION_MS,
         speakerId: turn.speakerId,
       };
-      const intent =
-        turn.kind === 'request'
-          ? detectExplicitMemoryIntent(turn.content)
-          : null;
-      if (intent === null) this.#memory.observeAutomatic(source);
-      else {
+      if (intent === 'forget' || confirmationNonce !== null) {
+        explicit = {
+          canModerateContext: turn.canModerateContext ?? false,
+          ...(confirmationNonce === null ? {} : { confirmationNonce }),
+          content: turn.content,
+          kind: 'context-forget',
+          requestMessageId: turn.platformSourceId,
+          requesterId: turn.speakerId,
+        };
+      } else if (intent === null) {
+        if (applied.memorySourceEventId === null) {
+          this.#memory.observeAutomatic(source);
+        }
+      } else {
         explicit = {
           intent,
+          kind: 'memory',
           source,
-          sourceEventId: this.#memory.observeExplicit(source),
+          sourceEventId:
+            applied.memorySourceEventId ?? this.#memory.observeExplicit(source),
         };
       }
     } catch {
+      if (turn.kind === 'observe') return Promise.resolve(null);
+      if (turn.kind === 'greeting') {
+        return Promise.resolve(
+          this.#recordLocalReply('At your service, Mr. President', 'completed'),
+        );
+      }
+      if (intent === null) return this.#handlePaidText(turn);
       return Promise.resolve(this.#lostThread());
     }
     if (turn.kind === 'observe') return Promise.resolve(null);
     if (turn.kind === 'greeting') {
       return Promise.resolve(
-        this.#recordLocalReply(
-          turn,
-          'At your service, Mr. President',
-          'completed',
-        ),
+        this.#recordLocalReply('At your service, Mr. President', 'completed'),
       );
     }
-    if (explicit !== undefined) return this.#handleExplicit(turn, explicit);
+    if (explicit !== undefined) return this.#handleExplicit(explicit);
     return this.#handlePaidText(turn, eventId);
   }
 
-  #handleExplicit(
-    turn: NormalizedTextTurn & { readonly kind: 'request' },
-    explicit: {
-      readonly intent: ExplicitMemoryIntent;
-      readonly source: SourceObservation;
-      readonly sourceEventId: number;
-    },
-  ): Promise<ConversationResult> {
+  #handleExplicit(explicit: ExplicitTurn): Promise<ConversationResult> {
     return this.#enqueue(async () => {
-      const receipt = await this.#memory.applyExplicit({
-        ...explicit,
-        now: this.#now(),
-      });
+      const receipt =
+        explicit.kind === 'context-forget'
+          ? await this.#context.forget({
+              canModerateContext: explicit.canModerateContext,
+              ...(explicit.confirmationNonce === undefined
+                ? {}
+                : { confirmationNonce: explicit.confirmationNonce }),
+              content: explicit.content,
+              now: this.#now(),
+              requestMessageId: explicit.requestMessageId,
+              requesterId: explicit.requesterId,
+            })
+          : await this.#memory.applyExplicit({
+              intent: explicit.intent,
+              now: this.#now(),
+              source: explicit.source,
+              sourceEventId: explicit.sourceEventId,
+            });
       this.#telemetry?.({ outcome: receipt.status, type: 'explicit-memory' });
       return this.#recordLocalReply(
-        turn,
         explicitReceiptContent(receipt),
-        receipt.status === 'budget-paused'
-          ? 'budget-paused'
-          : receipt.status === 'failed'
-            ? 'failed'
-            : 'completed',
+        receipt.status === 'journal-pending'
+          ? 'failed'
+          : receipt.status === 'budget-paused'
+            ? 'budget-paused'
+            : receipt.status === 'failed'
+              ? 'failed'
+              : 'completed',
       );
     });
   }
 
   async #handlePaidText(
     turn: NormalizedTextTurn & { readonly kind: 'request' },
-    eventId: number,
+    eventId?: number,
   ): Promise<ConversationResult> {
-    const reservation = this.#budget.reserve(
-      'text-response',
-      this.#reservations.textUsd,
-    );
-    if (!reservation.allowed) {
-      return this.#recordLocalReply(
-        turn,
-        'AI usage is paused until the next UTC month, Mr. President',
-        'budget-paused',
-      );
-    }
-
     return this.#enqueue(async () => {
-      let recent: {
-        readonly approximateTokens: number;
-        readonly messages: ChiefConversationMessage[];
-      };
-      try {
-        recent = this.#recentConversation(eventId);
-      } catch {
-        this.#budget.reconcile(reservation.id, this.#reservations.textUsd);
-        return this.#lostThread();
+      const reservation = this.#budget.reserve(
+        'text-response',
+        this.#reservations.textUsd,
+      );
+      if (!reservation.allowed) {
+        return this.#recordLocalReply(
+          'AI usage is paused until the next UTC month, Mr. President',
+          'budget-paused',
+        );
       }
-      let context: Awaited<ReturnType<MemoryService['recall']>>;
+      let context: PreparedContext;
       try {
-        context = await this.#memory.recall(turn.prompt);
+        context = await this.#assembler.assemble({
+          ...(eventId === undefined ? {} : { beforeEventId: eventId }),
+          now: this.#now(),
+          prompt: turn.prompt,
+        });
       } catch (error) {
         this.#budget.reconcile(reservation.id, this.#reservations.textUsd);
-        return error instanceof MemoryPersistenceError
+        return error instanceof ContextPersistenceError
           ? this.#lostThread()
           : {
               citations: [],
@@ -247,15 +336,18 @@ export class ConversationOrchestrator {
       }
       try {
         this.#telemetry?.({
-          approximateContextTokens: recent.approximateTokens,
+          approximateContextTokens: context.approximateTokens,
+          degraded: context.degraded,
           durableMemoryCount: context.memories.length,
-          recentMessageCount: recent.messages.length,
+          historicalCounts: countHistoricalContext(context),
+          recentMessageCount: context.recentConversation.length,
           type: 'context-prepared',
         });
         const answer = await this.#agent.answerText({
+          historicalContext: context.historicalContext,
           memories: context.memories,
           prompt: turn.prompt,
-          recentConversation: recent.messages,
+          recentConversation: context.recentConversation,
           requestId: turn.requestId,
         });
         this.#budget.reconcile(
@@ -267,7 +359,7 @@ export class ConversationOrchestrator {
           content: ensureTextSuffix(answer.content),
           status: 'completed' as const,
         };
-        return this.#recordReply(turn, result);
+        return result;
       } catch {
         this.#budget.reconcile(reservation.id, this.#reservations.textUsd);
         return {
@@ -298,37 +390,54 @@ export class ConversationOrchestrator {
   }
 
   #recordLocalReply(
-    turn: NormalizedTextTurn,
     content: string,
     status: ConversationResult['status'],
   ): ConversationResult {
-    return this.#recordReply(turn, {
+    return {
       citations: [],
       content: ensureTextSuffix(content),
       status,
+    };
+  }
+
+  public recordDeliveredReply(input: DeliveredReplyInput): void {
+    this.#context.recordDeliveredReply(input);
+  }
+
+  public applyTextSource(source: NormalizedTextSource): ContextApplyResult {
+    return this.#context.apply({
+      attachmentMetadataJson: source.attachmentMetadataJson,
+      canModerateContext: source.canModerateContext,
+      content: source.content,
+      editedAt: source.editedAt,
+      memoryExtraction: source.authorKind === 'human' ? 'automatic' : 'none',
+      messageId: source.messageId,
+      occurredAt: source.occurredAt,
+      platformEventId: source.messageId,
+      replyToMessageId: source.replyToMessageId,
+      requestId: source.messageId,
+      revisionChecksum: source.revisionChecksum,
+      role: source.authorKind === 'chief' ? 'chief' : 'human',
+      speakerId: source.requesterId,
+      speakerName: source.speakerName,
+      type: 'upsert',
     });
   }
 
-  #recordReply(
-    turn: NormalizedTextTurn,
-    result: ConversationResult,
-  ): ConversationResult {
-    try {
-      this.#conversation.record({
-        content: result.content,
-        medium: 'text',
-        occurredAt: this.#now(),
-        platformEventId: `chief:${turn.requestId}`,
-        requestId: turn.requestId,
-        retentionDeadline: this.#now() + CONVERSATION_RETENTION_MS,
-        role: 'chief',
-        speakerId: null,
-        speakerName: 'Chief',
-      });
-      return result;
-    } catch {
-      return this.#lostThread();
-    }
+  public hasTextSource(messageId: string): boolean {
+    return this.#context.hasSource(messageId);
+  }
+
+  public deleteTextSource(input: {
+    readonly deletedAt: number;
+    readonly messageId: string;
+  }): Promise<ContextApplyResult> {
+    return this.#context.applyAuthoritativeSuppression({
+      deletedAt: input.deletedAt,
+      messageId: input.messageId,
+      reason: 'discord-deleted',
+      type: 'delete',
+    });
   }
 
   #lostThread(): ConversationResult {
@@ -348,12 +457,12 @@ export class ConversationOrchestrator {
   }
 
   public async transcribeVoice(pcm: ArrayBuffer): Promise<string | null> {
-    const reservation = this.#budget.reserve(
-      'voice-transcription',
-      this.#reservations.transcriptionUsd,
-    );
-    if (!reservation.allowed) return null;
     return this.#enqueue(async () => {
+      const reservation = this.#budget.reserve(
+        'voice-transcription',
+        this.#reservations.transcriptionUsd,
+      );
+      if (!reservation.allowed) return null;
       try {
         const transcript = await withDeadline(
           this.#agent.transcribe({
@@ -387,6 +496,7 @@ export class ConversationOrchestrator {
       medium: 'voice',
       occurredAt: input.occurredAt,
       platformEventId: `discord:voice:${input.platformSourceId}`,
+      recentUntil: input.occurredAt + CONVERSATION_RETENTION_MS,
       requestId: input.platformSourceId,
       retentionDeadline: input.occurredAt + CONVERSATION_RETENTION_MS,
       role: 'human',
@@ -408,19 +518,19 @@ export class ConversationOrchestrator {
     turn: VoiceTurn,
     sink: VoiceSink,
   ): Promise<VoiceConversationResult> {
-    const reservation = this.#budget.reserve(
-      'voice-response',
-      this.#reservations.voiceUsd,
-    );
-    if (!reservation.allowed) {
-      return {
-        citations: [],
-        inputTranscript: '',
-        status: 'budget-paused',
-        transcript: '',
-      };
-    }
     return this.#enqueue(async () => {
+      const reservation = this.#budget.reserve(
+        'voice-response',
+        this.#reservations.voiceUsd,
+      );
+      if (!reservation.allowed) {
+        return {
+          citations: [],
+          inputTranscript: '',
+          status: 'budget-paused',
+          transcript: '',
+        };
+      }
       let reconciled = false;
       const reconcile = (actualUsd: number): void => {
         if (reconciled) return;
@@ -531,7 +641,12 @@ export class ConversationOrchestrator {
               }
             });
             try {
-              session.sendAudio(turn.pcm, { commit: true });
+              session.sendAudio(turn.pcm, {
+                ...(turn.humanObservation === undefined
+                  ? {}
+                  : { beforeEventId: turn.humanObservation.eventId }),
+                commit: true,
+              });
             } catch (error) {
               fail(error);
             }
@@ -596,6 +711,7 @@ export class ConversationOrchestrator {
               medium: 'voice' as const,
               occurredAt: now,
               platformEventId: `discord:voice:${turn.requestId}:human`,
+              recentUntil: now + CONVERSATION_RETENTION_MS,
               requestId: associationId,
               retentionDeadline: now + CONVERSATION_RETENTION_MS,
               role: 'human' as const,
@@ -609,6 +725,7 @@ export class ConversationOrchestrator {
         medium: 'voice',
         occurredAt: now,
         platformEventId: `chief:voice:${turn.requestId}`,
+        recentUntil: now + CONVERSATION_RETENTION_MS,
         requestId: associationId,
         retentionDeadline: now + CONVERSATION_RETENTION_MS,
         role: 'chief',
@@ -629,17 +746,7 @@ export class ConversationOrchestrator {
   }
 
   async #enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const predecessor = this.#queueTail;
-    let release = (): void => undefined;
-    this.#queueTail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await predecessor;
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
+    return this.#queue.interactive(operation);
   }
 
   async #closeVoiceSession(): Promise<void> {
@@ -661,14 +768,28 @@ export class ConversationOrchestrator {
   }
 }
 
-function explicitReceiptContent(receipt: MemoryMutationReceipt): string {
+function explicitReceiptContent(
+  receipt: ContextForgetReceipt | MemoryMutationReceipt,
+): string {
   switch (receipt.status) {
     case 'created':
       return 'I have committed that to the record';
     case 'superseded':
       return 'I have corrected the record';
     case 'forgotten':
-      return 'I have removed that from the record';
+      return 'I have removed that from local active context; recovery copies may retain older encrypted bytes for up to 30 days';
+    case 'confirmation-required':
+      return `That scope requires confirmation. Reply “Chief, confirm forget ${receipt.confirmationNonce}” within five minutes`;
+    case 'confirmation-expired':
+      return 'That deletion confirmation expired, so I changed nothing';
+    case 'confirmation-invalid':
+      return 'That deletion confirmation is invalid or already used, so I changed nothing';
+    case 'unauthorized':
+      return 'I cannot remove another member or a whole topic without current administrator authority';
+    case 'clarification-required':
+      return 'I could not identify one authorized target, so I changed nothing';
+    case 'journal-pending':
+      return 'I removed the target from local active context, but recovery-journal upload failed, so I cannot confirm completion yet';
     case 'conflict':
       return 'I found a conflicting memory and need clarification before treating either as settled';
     case 'rejected-sensitive':
@@ -680,6 +801,30 @@ function explicitReceiptContent(receipt: MemoryMutationReceipt): string {
     case 'failed':
       return 'The memory update failed, so I did not save that';
   }
+}
+
+function detectForgetConfirmationNonce(content: string): string | null {
+  return (
+    /\bconfirm\s+forget\s+([a-f\d]{24})\b/iu
+      .exec(content)?.[1]
+      ?.toLowerCase() ?? null
+  );
+}
+
+function countHistoricalContext(
+  context: PreparedContext,
+): Record<ContextTier | 'source', number> {
+  const counts: Record<ContextTier | 'source', number> = {
+    daily: 0,
+    hourly: 0,
+    'long-term': 0,
+    source: 0,
+    weekly: 0,
+  };
+  for (const item of context.historicalContext) {
+    counts[item.evidenceForm === 'source' ? 'source' : item.tier] += 1;
+  }
+  return counts;
 }
 
 async function withDeadline<T>(

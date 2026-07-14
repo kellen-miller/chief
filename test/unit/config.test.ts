@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config/config.js';
 
 const validEnvironment = {
+  CHIEF_BACKUP_BUCKET: 'chief-backups',
   DISCORD_APPLICATION_ID: '123456789012345678',
   DISCORD_GUILD_ID: '223456789012345678',
   DISCORD_MAIN_TEXT_CHANNEL_ID: '323456789012345678',
@@ -14,6 +15,8 @@ const validEnvironment = {
 describe('loadConfig', () => {
   it('loads allowlist and pinned model defaults', () => {
     expect(loadConfig(validEnvironment)).toMatchObject({
+      backupBucket: 'chief-backups',
+      contextTimeZone: 'America/New_York',
       discord: {
         applicationId: validEnvironment.DISCORD_APPLICATION_ID,
         guildId: validEnvironment.DISCORD_GUILD_ID,
@@ -33,7 +36,7 @@ describe('loadConfig', () => {
         textInput: 1,
         textOutput: 6,
       },
-      usage: { ceilingUsd: 10, warningUsd: 5 },
+      usage: { ceilingUsd: 10, indexingCeilingUsd: 3, warningUsd: 5 },
     });
   });
 
@@ -46,9 +49,39 @@ describe('loadConfig', () => {
     );
   });
 
+  it('requires a durable forget-journal bucket', () => {
+    const environment = { ...validEnvironment } as Record<string, string>;
+    delete environment.CHIEF_BACKUP_BUCKET;
+
+    expect(() => loadConfig(environment)).toThrow(/CHIEF_BACKUP_BUCKET/u);
+  });
+
   it('never includes secret values in a validation error', () => {
     expect(() =>
       loadConfig({ ...validEnvironment, DISCORD_GUILD_ID: 'invalid' }),
     ).toThrow(expect.not.stringContaining('discord-secret'));
+  });
+
+  it('rejects an indexing ceiling above the overall ceiling', () => {
+    expect(() =>
+      loadConfig({
+        ...validEnvironment,
+        CHIEF_USAGE_CEILING_USD: '4',
+        CHIEF_USAGE_INDEXING_CEILING_USD: '5',
+        CHIEF_USAGE_WARNING_USD: '2',
+      }),
+    ).toThrow(/CHIEF_USAGE_INDEXING_CEILING_USD/u);
+  });
+
+  it('accepts an IANA context timezone and rejects an unknown one', () => {
+    expect(
+      loadConfig({ ...validEnvironment, CHIEF_CONTEXT_TIME_ZONE: 'UTC' }),
+    ).toMatchObject({ contextTimeZone: 'UTC' });
+    expect(() =>
+      loadConfig({
+        ...validEnvironment,
+        CHIEF_CONTEXT_TIME_ZONE: 'Mars/Olympus_Mons',
+      }),
+    ).toThrow(/CHIEF_CONTEXT_TIME_ZONE/u);
   });
 });

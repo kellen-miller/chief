@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { Temporal } from '@js-temporal/polyfill';
 
 export const DEFAULT_TEXT_MODEL = 'gpt-5.6-luna';
 
@@ -6,7 +7,20 @@ const snowflake = z
   .string()
   .regex(/^\d{17,20}$/u, 'must be a Discord snowflake');
 
+const timeZone = z
+  .string()
+  .min(1)
+  .superRefine((value, context) => {
+    try {
+      Temporal.Instant.fromEpochMilliseconds(0).toZonedDateTimeISO(value);
+    } catch {
+      context.addIssue({ code: 'custom', message: 'must be an IANA timezone' });
+    }
+  });
+
 const environmentSchema = z.object({
+  CHIEF_BACKUP_BUCKET: z.string().min(1),
+  CHIEF_CONTEXT_TIME_ZONE: timeZone.default('America/New_York'),
   CHIEF_DATA_DIR: z.string().min(1).default('/var/lib/chief'),
   CHIEF_HEALTH_PORT: z.coerce.number().int().min(1).max(65_535).default(8_080),
   CHIEF_MODEL_EMBEDDING: z.string().min(1).default('text-embedding-3-small'),
@@ -42,6 +56,7 @@ const environmentSchema = z.object({
   CHIEF_PRICE_VOICE_TEXT_INPUT: z.coerce.number().nonnegative().default(0.6),
   CHIEF_PRICE_VOICE_TEXT_OUTPUT: z.coerce.number().nonnegative().default(2.4),
   CHIEF_USAGE_CEILING_USD: z.coerce.number().positive().default(10),
+  CHIEF_USAGE_INDEXING_CEILING_USD: z.coerce.number().positive().default(3),
   CHIEF_USAGE_WARNING_USD: z.coerce.number().nonnegative().default(5),
   CHIEF_VOICE_NAME: z.string().min(1).default('cedar'),
   CHIEF_VOICE_SUFFIX_PATH: z
@@ -57,6 +72,8 @@ const environmentSchema = z.object({
 });
 
 export interface ChiefConfig {
+  readonly backupBucket: string;
+  readonly contextTimeZone: string;
   readonly dataDirectory: string;
   readonly discord: {
     readonly applicationId: string;
@@ -93,6 +110,7 @@ export interface ChiefConfig {
   };
   readonly usage: {
     readonly ceilingUsd: number;
+    readonly indexingCeilingUsd: number;
     readonly warningUsd: number;
   };
   readonly voiceName: string;
@@ -115,7 +133,14 @@ export function loadConfig(
       'invalid Chief configuration: CHIEF_USAGE_WARNING_USD must be below CHIEF_USAGE_CEILING_USD',
     );
   }
+  if (value.CHIEF_USAGE_INDEXING_CEILING_USD > value.CHIEF_USAGE_CEILING_USD) {
+    throw new Error(
+      'invalid Chief configuration: CHIEF_USAGE_INDEXING_CEILING_USD must not exceed CHIEF_USAGE_CEILING_USD',
+    );
+  }
   return {
+    backupBucket: value.CHIEF_BACKUP_BUCKET,
+    contextTimeZone: value.CHIEF_CONTEXT_TIME_ZONE,
     dataDirectory: value.CHIEF_DATA_DIR,
     discord: {
       applicationId: value.DISCORD_APPLICATION_ID,
@@ -153,6 +178,7 @@ export function loadConfig(
     },
     usage: {
       ceilingUsd: value.CHIEF_USAGE_CEILING_USD,
+      indexingCeilingUsd: value.CHIEF_USAGE_INDEXING_CEILING_USD,
       warningUsd: value.CHIEF_USAGE_WARNING_USD,
     },
     voiceName: value.CHIEF_VOICE_NAME,

@@ -8,6 +8,48 @@ import { describe, expect, it } from 'vitest';
 const read = (path: string): Promise<string> => readFile(path, 'utf8');
 
 describe('repository policy', () => {
+  it('keeps Discord identifiers and error payloads out of logs', async () => {
+    const gateway = await read('src/discord/gateway.ts');
+    const runtime = await read('src/runtime.ts');
+
+    expect(gateway).not.toContain('logger.error({ err: error }');
+    expect(gateway).not.toMatch(
+      /logger\.warn\(\s*\{[^}]*\b(?:channelId|guildId|messageId)\b/su,
+    );
+    expect(runtime).not.toContain('...reconciliation?.diagnostics()');
+    expect(runtime).not.toContain('logger.error({ err: error }');
+  });
+
+  it('packages context policy without exposing retention or tier knobs', async () => {
+    const environment = await read('.env.example');
+    const variables = await read('infra/app/variables.tf');
+    const application = await read('infra/app/main.tf');
+    for (const setting of [
+      'CHIEF_CONTEXT_TIME_ZONE=America/New_York',
+      'CHIEF_USAGE_INDEXING_CEILING_USD=3',
+    ]) {
+      expect(environment).toContain(setting);
+    }
+    expect(variables).toContain('variable "context_time_zone"');
+    expect(variables).toContain('default     = "America/New_York"');
+    expect(variables).toContain('variable "usage_indexing_ceiling_usd"');
+    expect(variables).toContain('default     = 3');
+    expect(application).toMatch(
+      /context_time_zone\s+= var\.context_time_zone/u,
+    );
+    expect(application).toMatch(
+      /usage_indexing_ceiling_usd\s+= var\.usage_indexing_ceiling_usd/u,
+    );
+    for (const forbidden of [
+      'CHIEF_CONTEXT_RETENTION',
+      'CHIEF_CONTEXT_TOKEN_LIMIT',
+      'context_retention',
+      'context_token_limit',
+    ]) {
+      expect(`${environment}\n${variables}`).not.toContain(forbidden);
+    }
+  });
+
   it('keeps the four stable pull-request checks', async () => {
     const workflow = await read('.github/workflows/ci.yml');
     for (const name of ['Format', 'Lint', 'Test', 'Build']) {
@@ -62,7 +104,9 @@ describe('repository policy', () => {
     const app = await read('infra/app/main.tf');
     const health = await read('src/health/health-server.ts');
     const runtime = await read('src/runtime.ts');
+    const dockerfile = await read('Dockerfile');
     const deployScript = await read('scripts/deploy.sh');
+    const restoreScript = await read('scripts/restore.sh');
     const runContainerScript = await read('scripts/run-container.sh');
     const aptScript = await read('scripts/configure-google-cloud-apt.sh');
     for (const suite of [
@@ -104,6 +148,15 @@ describe('repository policy', () => {
     expect(deploy).not.toContain("--image='");
     expect(health).toContain("this.#options.host ?? '127.0.0.1'");
     expect(runtime).toContain("host: '0.0.0.0'");
+    expect(runtime).toContain('createGcsForgetJournalUploader');
+    expect(runtime).toContain(
+      'context.flushForgetJournal(startupMaintenanceAt)',
+    );
+    expect(startup).toContain('CHIEF_BACKUP_BUCKET=${backup_bucket}');
+    expect(startup).toContain('CHIEF_CONTEXT_TIME_ZONE=${context_time_zone}');
+    expect(startup).toContain(
+      'CHIEF_USAGE_INDEXING_CEILING_USD=${usage_indexing_ceiling_usd}',
+    );
     expect(startup).not.toContain('docker login');
     expect(deployScript).toContain('DOCKER_CONFIG');
     expect(deployScript).toContain('docker-config.XXXXXX');
@@ -115,6 +168,24 @@ describe('repository policy', () => {
     expect(startup).toContain('${configure_google_cloud_apt_script}');
     expect(startup).toContain('/opt/chief/configure-google-cloud-apt.sh');
     expect(aptScript).toContain('chief-google-cloud.list');
+    expect(runContainerScript).toContain('RECOVERY_IMAGE');
+    expect(runContainerScript).toContain('recover-forget-journals');
+    expect(runContainerScript).toContain('forget-journal');
+    expect(runContainerScript).toContain('--all-versions');
+    expect(runContainerScript).toContain('database-capability');
+    expect(restoreScript).toContain('database-capability');
+    expect(dockerfile).toContain(
+      'LABEL io.chief.database-capability="0003_channel_context"',
+    );
+    expect(runContainerScript.indexOf('recover-forget-journals')).toBeLessThan(
+      runContainerScript.indexOf('DISCORD_TOKEN='),
+    );
+    expect(runContainerScript.indexOf('database-capability')).toBeLessThan(
+      runContainerScript.indexOf('DISCORD_TOKEN='),
+    );
+    expect(restoreScript.indexOf('database-capability')).toBeLessThan(
+      restoreScript.indexOf('systemctl stop'),
+    );
   });
 
   it('uses short-lived scoped WIF without secret or plan artifacts', async () => {
@@ -178,6 +249,18 @@ describe('repository policy', () => {
     expect(app).toContain('roles/storage.objectCreator');
     expect(app).toContain('roles/storage.objectViewer');
     expect(app).not.toContain('roles/storage.objectAdmin');
+    expect(app).toContain('matches_prefix = ["backups/"]');
+    expect(app).toContain('matches_prefix = ["forget-journal/"]');
+    expect(app).toContain('matches_suffix = [".db"]');
+    expect(app).toContain('age            = 28');
+    expect(app).toContain('days_since_noncurrent_time = 1');
+    expect(app).toContain('age            = 60');
+    expect(app).toContain('days_since_noncurrent_time = 60');
+    expect(app).toContain('soft_delete_policy');
+    expect(app).toContain('retention_duration_seconds = 0');
+    expect(startup).toContain('chief-recovery-prune.timer');
+    expect(startup).toContain('/var/lib/chief/backups');
+    expect(startup).toContain('-mmin +43139 -delete');
     expect(app).toContain(
       'resource "google_service_account_iam_member" "deploy_act_as"',
     );

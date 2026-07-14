@@ -5,6 +5,7 @@ locals {
     "chief_budget_warning",
     "chief_disk_low",
     "chief_health_failed",
+    "chief_recovery_failed",
     "chief_voice_underrun",
   ])
   labels = {
@@ -116,12 +117,58 @@ resource "google_storage_bucket" "backups" {
     enabled = true
   }
 
+  soft_delete_policy {
+    retention_duration_seconds = 0
+  }
+
   lifecycle_rule {
     action {
       type = "Delete"
     }
     condition {
-      age = 30
+      age            = 28
+      matches_prefix = ["backups/"]
+      matches_suffix = [".db"]
+    }
+  }
+
+  lifecycle_rule {
+    action {
+      type = "Delete"
+    }
+    condition {
+      age            = 28
+      matches_suffix = [".db"]
+    }
+  }
+
+  lifecycle_rule {
+    action {
+      type = "Delete"
+    }
+    condition {
+      age            = 60
+      matches_prefix = ["forget-journal/"]
+    }
+  }
+
+  lifecycle_rule {
+    action {
+      type = "Delete"
+    }
+    condition {
+      days_since_noncurrent_time = 1
+      matches_suffix             = [".db"]
+    }
+  }
+
+  lifecycle_rule {
+    action {
+      type = "Delete"
+    }
+    condition {
+      days_since_noncurrent_time = 60
+      matches_prefix             = ["forget-journal/"]
     }
   }
 
@@ -242,12 +289,14 @@ resource "google_compute_instance" "chief" {
     startup-script = templatefile("${path.module}/templates/startup.sh.tftpl", {
       backup_bucket                     = google_storage_bucket.backups.name
       configure_google_cloud_apt_script = file("${path.module}/../../scripts/configure-google-cloud-apt.sh")
+      context_time_zone                 = var.context_time_zone
       discord_application_id            = var.discord_application_id
       discord_guild_id                  = var.discord_guild_id
       discord_text_channel_id           = var.discord_text_channel_id
       discord_voice_channel_id          = var.discord_voice_channel_id
       project_id                        = var.project_id
       run_container_script              = file("${path.module}/../../scripts/run-container.sh")
+      usage_indexing_ceiling_usd        = var.usage_indexing_ceiling_usd
     })
   }
 

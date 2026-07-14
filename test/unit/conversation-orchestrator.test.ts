@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   ChiefAgent,
@@ -11,6 +11,8 @@ import {
   type NormalizedTextTurn,
   type VoiceTurn,
 } from '../../src/app/conversation-orchestrator.js';
+import { ChannelContextService } from '../../src/context/channel-context-service.js';
+import { ContextAssembler } from '../../src/context/context-assembler.js';
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import {
   migrateChiefDatabase,
@@ -18,10 +20,15 @@ import {
 } from '../../src/memory/database.js';
 import { MemoryService } from '../../src/memory/memory-service.js';
 import { SqliteMemoryStore } from '../../src/memory/memory-store.js';
+import { PaidWorkQueue } from '../../src/usage/paid-work-queue.js';
 import { UsageBudget } from '../../src/usage/usage-budget.js';
 import type { HumanVoiceObservation } from '../../src/voice/voice-session-manager.js';
 
 let occurredAt = 0;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function textTurn(input: {
   readonly prompt: string;
@@ -60,6 +67,7 @@ function createOrchestrator(
   budget: UsageBudget,
   memories: readonly string[] = [],
   reservations?: ConversationReservationEstimates,
+  queue?: PaidWorkQueue,
 ): ConversationOrchestrator {
   const database = openChiefDatabase(':memory:');
   migrateChiefDatabase(database);
@@ -76,23 +84,372 @@ function createOrchestrator(
       timestamp: 1,
     });
   }
+  const conversation = new ConversationStore(database);
+  const memory = new MemoryService({
+    budget,
+    embed: () => Promise.resolve({ embedding: vector, usageUsd: 0.001 }),
+    estimateUsd: 0.1,
+    extract: () => Promise.resolve({ proposals: [], usageUsd: 0 }),
+    store,
+  });
   return new ConversationOrchestrator({
     agent,
+    assembler: createAssembler(database, conversation, memory),
     budget,
-    conversation: new ConversationStore(database),
-    memory: new MemoryService({
-      budget,
-      embed: () => Promise.resolve({ embedding: vector, usageUsd: 0.001 }),
-      estimateUsd: 0.1,
-      extract: () => Promise.resolve({ proposals: [], usageUsd: 0 }),
-      store,
-    }),
+    context: createContext(database, conversation, () => occurredAt),
+    conversation,
+    memory,
     now: () => occurredAt,
+    ...(queue === undefined ? {} : { queue }),
     ...(reservations === undefined ? {} : { reservations }),
   });
 }
 
+function createContext(
+  database: ReturnType<typeof openChiefDatabase>,
+  conversation = new ConversationStore(database),
+  now: () => number = () => occurredAt,
+): ChannelContextService {
+  return new ChannelContextService({
+    channelId: 'main-text',
+    conversation,
+    database,
+    guildId: 'presidents',
+    now,
+    timeZone: 'America/New_York',
+  });
+}
+
+function createAssembler(
+  database: ReturnType<typeof openChiefDatabase>,
+  conversation: ConversationStore,
+  memory?: MemoryService,
+): ContextAssembler {
+  const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+  const vector = new Float32Array(1_536).fill(0.4);
+  return new ContextAssembler({
+    channelId: 'main-text',
+    conversation,
+    database,
+    embed: () => Promise.resolve({ embedding: vector, usageUsd: 0.001 }),
+    guildId: 'presidents',
+    memory:
+      memory ??
+      new MemoryService({
+        budget,
+        embed: vi.fn(),
+        estimateUsd: 0.1,
+        extract: vi.fn(),
+        store: new SqliteMemoryStore(database),
+      }),
+    timeZone: 'America/New_York',
+  });
+}
+
+function createTextHarness() {
+  const database = openChiefDatabase(':memory:');
+  migrateChiefDatabase(database);
+  const conversation = new ConversationStore(database);
+  const context = createContext(database, conversation, () => 1_000);
+  const store = new SqliteMemoryStore(database);
+  const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+  const vector = new Float32Array(1_536).fill(0.4);
+  const answerText = vi.fn<ChiefAgent['answerText']>(() =>
+    Promise.resolve({ citations: [], content: 'Current answer', usageUsd: 0 }),
+  );
+  const extract = vi.fn(() => Promise.resolve({ proposals: [], usageUsd: 0 }));
+  const memory = new MemoryService({
+    budget,
+    embed: () => Promise.resolve({ embedding: vector, usageUsd: 0 }),
+    estimateUsd: 0.1,
+    extract,
+    store,
+  });
+  const orchestrator = new ConversationOrchestrator({
+    agent: {
+      answerText,
+      interruptVoice: vi.fn(),
+      openVoice: vi.fn(),
+      transcribe: vi.fn(),
+    },
+    assembler: createAssembler(database, conversation, memory),
+    budget,
+    context,
+    conversation,
+    memory,
+    now: () => 1_000,
+  });
+  return { answerText, context, database, extract, memory, orchestrator };
+}
+
+function tombstoneSource(
+  context: ChannelContextService,
+  messageId: string,
+): void {
+  context.apply({
+    content: 'Original source content.',
+    messageId,
+    occurredAt: 500,
+    platformEventId: `original:${messageId}`,
+    replyToMessageId: null,
+    requestId: messageId,
+    role: 'human',
+    speakerId: 'president-test',
+    speakerName: 'President Test',
+    type: 'upsert',
+  });
+  context.apply({
+    deletedAt: 750,
+    messageId,
+    reason: 'discord-deleted',
+    type: 'delete',
+  });
+}
+
 describe('ConversationOrchestrator', () => {
+  it('records no Chief source before Discord delivery', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const store = new SqliteMemoryStore(database);
+    const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+    const orchestrator = new ConversationOrchestrator({
+      agent: {
+        answerText: () =>
+          Promise.resolve({ citations: [], content: 'Answer', usageUsd: 0.01 }),
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe: vi.fn(),
+      },
+      assembler: createAssembler(database, new ConversationStore(database)),
+      budget,
+      context: createContext(database, undefined, () => 1_000),
+      conversation: new ConversationStore(database),
+      memory: new MemoryService({
+        budget,
+        embed: () =>
+          Promise.resolve({
+            embedding: new Float32Array(1_536),
+            usageUsd: 0,
+          }),
+        estimateUsd: 0.1,
+        extract: () => Promise.resolve({ proposals: [], usageUsd: 0 }),
+        store,
+      }),
+      now: () => 1_000,
+    });
+
+    await orchestrator.handleText({
+      content: 'Chief, answer',
+      kind: 'request',
+      occurredAt: 500,
+      platformSourceId: '52345678901234567',
+      prompt: 'answer',
+      requestId: '52345678901234567',
+      speakerId: '42345678901234567',
+      speakerName: 'President Test',
+    });
+
+    expect(
+      database
+        .prepare(
+          "select count(*) from conversation_events where role = 'chief'",
+        )
+        .pluck()
+        .get(),
+    ).toBe(0);
+    database.close();
+  });
+
+  it('skips automatic memory for a suppressed replay', async () => {
+    const { answerText, context, database, memory, orchestrator } =
+      createTextHarness();
+    const deletedMessageId = '52345678901234567';
+    tombstoneSource(context, deletedMessageId);
+    const observeAutomatic = vi.spyOn(memory, 'observeAutomatic');
+
+    await expect(
+      orchestrator.handleText({
+        content: 'Deleted launch code must stay gone.',
+        kind: 'observe',
+        occurredAt: 900,
+        platformSourceId: deletedMessageId,
+        requestId: deletedMessageId,
+        speakerId: 'president-test',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toBeNull();
+    expect(observeAutomatic).not.toHaveBeenCalled();
+    expect(answerText).not.toHaveBeenCalled();
+    expect(
+      database.prepare('select count(*) from source_events').pluck().get(),
+    ).toBe(0);
+
+    const expiredMessageId = '52345678901234571';
+    context.apply({
+      content: 'Expired source content.',
+      messageId: expiredMessageId,
+      occurredAt: 500,
+      platformEventId: `original:${expiredMessageId}`,
+      replyToMessageId: null,
+      requestId: expiredMessageId,
+      role: 'human',
+      speakerId: 'president-test',
+      speakerName: 'President Test',
+      type: 'upsert',
+    });
+    context.maintain(500 + 30 * 24 * 60 * 60 * 1_000);
+    await expect(
+      orchestrator.handleText({
+        content: 'Expired content must stay gone.',
+        kind: 'observe',
+        occurredAt: 925,
+        platformSourceId: expiredMessageId,
+        requestId: expiredMessageId,
+        speakerId: 'president-test',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toBeNull();
+    expect(observeAutomatic).not.toHaveBeenCalled();
+
+    await expect(
+      orchestrator.handleText({
+        content: 'Legitimate new observation.',
+        kind: 'observe',
+        occurredAt: 950,
+        platformSourceId: '52345678901234568',
+        requestId: '52345678901234568',
+        speakerId: 'president-test',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toBeNull();
+    expect(observeAutomatic).toHaveBeenCalledOnce();
+    expect(
+      database.prepare('select content from source_events').pluck().all(),
+    ).toEqual(['Legitimate new observation.']);
+    database.close();
+  });
+
+  it('skips explicit memory and generation for a suppressed replay', async () => {
+    const { answerText, context, database, extract, memory, orchestrator } =
+      createTextHarness();
+    const deletedMessageId = '52345678901234569';
+    tombstoneSource(context, deletedMessageId);
+    const observeExplicit = vi.spyOn(memory, 'observeExplicit');
+
+    await expect(
+      orchestrator.handleText({
+        content: 'Chief, remember that the deleted launch code is red',
+        kind: 'request',
+        occurredAt: 900,
+        platformSourceId: deletedMessageId,
+        prompt: 'remember that the deleted launch code is red',
+        requestId: deletedMessageId,
+        speakerId: 'president-test',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toBeNull();
+    expect(observeExplicit).not.toHaveBeenCalled();
+    expect(extract).not.toHaveBeenCalled();
+    expect(answerText).not.toHaveBeenCalled();
+    expect(
+      database.prepare('select count(*) from source_events').pluck().get(),
+    ).toBe(0);
+
+    await expect(
+      orchestrator.handleText({
+        content: 'Chief, summarize the current agenda',
+        kind: 'request',
+        occurredAt: 950,
+        platformSourceId: '52345678901234570',
+        prompt: 'summarize the current agenda',
+        requestId: '52345678901234570',
+        speakerId: 'president-test',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toMatchObject({ status: 'completed' });
+    expect(answerText).toHaveBeenCalledOnce();
+    database.close();
+  });
+
+  it('keeps text raw content after recent context expires', async () => {
+    const now = Date.UTC(2026, 6, 14, 12);
+    occurredAt = now;
+    const record = vi.spyOn(ConversationStore.prototype, 'record');
+    const orchestrator = createOrchestrator(
+      {
+        answerText: () =>
+          Promise.resolve({ citations: [], content: 'Answer', usageUsd: 0.01 }),
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe: vi.fn(),
+      },
+      new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
+    );
+
+    const result = await orchestrator.handleText({
+      content: 'Question',
+      kind: 'request',
+      occurredAt: now,
+      platformSourceId: 'retention-question',
+      prompt: 'Question',
+      requestId: 'retention-question',
+      speakerId: 'president-test',
+      speakerName: 'President Test',
+    });
+    if (result === null) throw new Error('expected a reply');
+    orchestrator.recordDeliveredReply({
+      chunks: [{ content: result.content, messageId: '62345678901234567' }],
+      logicalResponseId: 'retention-response',
+      replyToMessageId: 'retention-question',
+      requestId: 'retention-question',
+    });
+
+    const sevenDays = 7 * 24 * 60 * 60 * 1_000;
+    const thirtyDays = 30 * 24 * 60 * 60 * 1_000;
+    expect(record.mock.calls[0]?.[0]).toMatchObject({
+      recentUntil: now + sevenDays,
+      retentionDeadline: now + thirtyDays,
+      role: 'human',
+    });
+    expect(record.mock.calls[1]?.[0]).toMatchObject({
+      recentUntil: now + sevenDays,
+      retentionDeadline: now + thirtyDays,
+      role: 'chief',
+    });
+    record.mockRestore();
+  });
+
+  it('uses seven days for voice recency and raw retention', () => {
+    const now = Date.UTC(2026, 6, 14, 12);
+    const record = vi.spyOn(ConversationStore.prototype, 'record');
+    const orchestrator = createOrchestrator(
+      {
+        answerText: vi.fn(),
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe: vi.fn(),
+      },
+      new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
+    );
+
+    orchestrator.observeVoiceTranscript({
+      content: 'Voice context',
+      occurredAt: now,
+      platformSourceId: 'voice-retention',
+      speakerId: 'president-test',
+      speakerName: 'President Test',
+    });
+
+    const sevenDays = 7 * 24 * 60 * 60 * 1_000;
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recentUntil: now + sevenDays,
+        retentionDeadline: now + sevenDays,
+      }),
+    );
+    record.mockRestore();
+  });
+
   it('serializes paid generations in FIFO order', async () => {
     const releases: (() => void)[] = [];
     let active = 0;
@@ -137,6 +494,141 @@ describe('ConversationOrchestrator', () => {
       expect.objectContaining({ content: 'second Mr. President' }),
     ]);
     expect(maximumActive).toBe(1);
+  });
+
+  it('reserves an interaction only after its shared queue slot starts', async () => {
+    const queue = new PaidWorkQueue();
+    let releaseBackground = (): void => undefined;
+    const activeBackground = queue.background(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseBackground = resolve;
+        }),
+    );
+    await Promise.resolve();
+    const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+    const answerText = vi.fn<ChiefAgent['answerText']>(() =>
+      Promise.resolve({ citations: [], content: 'answer', usageUsd: 0.01 }),
+    );
+    const orchestrator = createOrchestrator(
+      {
+        answerText,
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe: vi.fn(),
+      },
+      budget,
+      [],
+      undefined,
+      queue,
+    );
+
+    const interaction = orchestrator.handleText(
+      textTurn({ prompt: 'next', requestId: 'queued-interaction' }),
+    );
+    await Promise.resolve();
+    expect(answerText).not.toHaveBeenCalled();
+    expect(budget.snapshot().reservedUsd).toBe(0);
+
+    releaseBackground();
+    await expect(Promise.all([activeBackground, interaction])).resolves.toEqual(
+      [undefined, expect.objectContaining({ status: 'completed' })],
+    );
+    expect(answerText).toHaveBeenCalledOnce();
+  });
+
+  it('reserves transcription only after its shared queue slot starts', async () => {
+    const queue = new PaidWorkQueue();
+    let releaseBackground = (): void => undefined;
+    const activeBackground = queue.background(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseBackground = resolve;
+        }),
+    );
+    await Promise.resolve();
+    const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+    const transcribe = vi.fn<ChiefAgent['transcribe']>(() =>
+      Promise.resolve({ text: 'hello', usageUsd: 0.01 }),
+    );
+    const orchestrator = createOrchestrator(
+      {
+        answerText: vi.fn(),
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe,
+      },
+      budget,
+      [],
+      undefined,
+      queue,
+    );
+
+    const transcription = orchestrator.transcribeVoice(new ArrayBuffer(2));
+    await Promise.resolve();
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(budget.snapshot().reservedUsd).toBe(0);
+
+    releaseBackground();
+    await expect(
+      Promise.all([activeBackground, transcription]),
+    ).resolves.toEqual([undefined, 'hello']);
+  });
+
+  it('reserves realtime voice only after its shared queue slot starts', async () => {
+    const queue = new PaidWorkQueue();
+    let releaseBackground = (): void => undefined;
+    const activeBackground = queue.background(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseBackground = resolve;
+        }),
+    );
+    await Promise.resolve();
+    let listener: ((event: ChiefVoiceEvent) => void) | undefined;
+    const sendAudio = vi.fn(() => {
+      queueMicrotask(() => listener?.({ type: 'interrupted' }));
+    });
+    const openVoice = vi.fn<ChiefAgent['openVoice']>(() =>
+      Promise.resolve({
+        close: () => Promise.resolve(),
+        interrupt: vi.fn(),
+        onEvent: (next) => {
+          listener = next;
+          return () => {
+            listener = undefined;
+          };
+        },
+        sendAudio,
+      }),
+    );
+    const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+    const orchestrator = createOrchestrator(
+      {
+        answerText: vi.fn(),
+        interruptVoice: vi.fn(),
+        openVoice,
+        transcribe: vi.fn(),
+      },
+      budget,
+      [],
+      undefined,
+      queue,
+    );
+
+    const voice = orchestrator.handleVoice(
+      voiceTurn({ pcm: new ArrayBuffer(2), requestId: 'queued-voice' }),
+      { audio: vi.fn(), transcript: vi.fn() },
+    );
+    await Promise.resolve();
+    expect(openVoice).not.toHaveBeenCalled();
+    expect(budget.snapshot().reservedUsd).toBe(0);
+
+    releaseBackground();
+    await expect(Promise.all([activeBackground, voice])).resolves.toEqual([
+      undefined,
+      expect.objectContaining({ status: 'interrupted' }),
+    ]);
   });
 
   it('interrupts voice out of band while text generation is active', async () => {
@@ -217,6 +709,7 @@ describe('ConversationOrchestrator', () => {
     );
 
     expect(answerText).toHaveBeenCalledWith({
+      historicalContext: [],
       memories: ['The annual trip is in October.'],
       prompt: 'When is the trip?',
       recentConversation: [],
@@ -248,9 +741,16 @@ describe('ConversationOrchestrator', () => {
       new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
     );
 
-    await orchestrator.handleText(
+    const first = await orchestrator.handleText(
       textTurn({ prompt: 'List Teddy teams', requestId: '1' }),
     );
+    if (first === null) throw new Error('expected a reply');
+    orchestrator.recordDeliveredReply({
+      chunks: [{ content: first.content, messageId: '62345678901234568' }],
+      logicalResponseId: 'response-1',
+      replyToMessageId: '1',
+      requestId: '1',
+    });
     await orchestrator.handleText(
       textTurn({ prompt: 'What about those?', requestId: '2' }),
     );
@@ -275,6 +775,18 @@ describe('ConversationOrchestrator', () => {
     });
     const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
     const answerText = vi.fn<ChiefAgent['answerText']>();
+    const conversation = new ConversationStore(database);
+    const memory = new MemoryService({
+      budget,
+      embed: () =>
+        Promise.resolve({
+          embedding: new Float32Array(1_536).fill(0.4),
+          usageUsd: 0.001,
+        }),
+      estimateUsd: 0.1,
+      extract: () => Promise.resolve({ proposals: [], usageUsd: 0 }),
+      store,
+    });
     const orchestrator = new ConversationOrchestrator({
       agent: {
         answerText,
@@ -282,19 +794,11 @@ describe('ConversationOrchestrator', () => {
         openVoice: vi.fn(),
         transcribe: vi.fn(),
       },
+      assembler: createAssembler(database, conversation, memory),
       budget,
-      conversation: new ConversationStore(database),
-      memory: new MemoryService({
-        budget,
-        embed: () =>
-          Promise.resolve({
-            embedding: new Float32Array(1_536).fill(0.4),
-            usageUsd: 0.001,
-          }),
-        estimateUsd: 0.1,
-        extract: () => Promise.resolve({ proposals: [], usageUsd: 0 }),
-        store,
-      }),
+      context: createContext(database),
+      conversation,
+      memory,
     });
 
     await expect(
@@ -354,7 +858,9 @@ describe('ConversationOrchestrator', () => {
       };
       const orchestrator = new ConversationOrchestrator({
         agent,
+        assembler: createAssembler(database, new ConversationStore(database)),
         budget,
+        context: createContext(database),
         conversation: new ConversationStore(database),
         memory: new MemoryService({
           budget,
@@ -436,7 +942,17 @@ describe('ConversationOrchestrator', () => {
         openVoice: vi.fn(),
         transcribe: vi.fn(),
       },
+      assembler: createAssembler(database, new ConversationStore(database)),
       budget,
+      context: new ChannelContextService({
+        channelId: 'main-text',
+        conversation: new ConversationStore(database),
+        database,
+        guildId: 'presidents',
+        memory: store,
+        timeZone: 'America/New_York',
+        uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+      }),
       conversation: new ConversationStore(database),
       memory: new MemoryService({
         budget,
@@ -492,7 +1008,8 @@ describe('ConversationOrchestrator', () => {
         speakerName: 'President Test',
       }),
     ).resolves.toMatchObject({
-      content: 'I have removed that from the record Mr. President',
+      content:
+        'I have removed that from local active context; recovery copies may retain older encrypted bytes for up to 30 days Mr. President',
       status: 'completed',
     });
     expect(
@@ -505,6 +1022,96 @@ describe('ConversationOrchestrator', () => {
     expect(
       database.prepare('select count(*) from memory_jobs').pluck().get(),
     ).toBe(0);
+    expect(answerText).not.toHaveBeenCalled();
+    database.close();
+  });
+
+  it('routes explicit forgetting through historical context without paid work', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const store = new SqliteMemoryStore(database);
+    const conversation = new ConversationStore(database);
+    const context = new ChannelContextService({
+      channelId: 'main-text',
+      conversation,
+      database,
+      guildId: 'presidents',
+      memory: store,
+      timeZone: 'America/New_York',
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    context.apply({
+      content: 'Project Marigold launches Friday.',
+      messageId: '52345678901234567',
+      occurredAt: 90,
+      requestId: '52345678901234567',
+      role: 'human',
+      speakerId: 'president-1',
+      speakerName: 'President Test',
+      type: 'upsert',
+    });
+    const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+    const extract = vi.fn();
+    const embed = vi.fn();
+    const answerText = vi.fn<ChiefAgent['answerText']>();
+    const memory = new MemoryService({
+      budget,
+      embed,
+      estimateUsd: 0.1,
+      extract,
+      store,
+    });
+    const orchestrator = new ConversationOrchestrator({
+      agent: {
+        answerText,
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe: vi.fn(),
+      },
+      assembler: createAssembler(database, conversation, memory),
+      budget,
+      context,
+      conversation,
+      memory,
+      now: () => 110,
+    });
+
+    await expect(
+      orchestrator.handleText({
+        content: 'Chief, forget Project Marigold launches Friday',
+        kind: 'request',
+        occurredAt: 100,
+        platformSourceId: '62345678901234567',
+        prompt: 'forget Project Marigold launches Friday',
+        requestId: '62345678901234567',
+        speakerId: 'president-1',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toMatchObject({
+      content:
+        'I have removed that from local active context; recovery copies may retain older encrypted bytes for up to 30 days Mr. President',
+      status: 'completed',
+    });
+    expect(
+      database
+        .prepare(
+          `select content_state from conversation_events
+           where discord_message_id = '52345678901234567'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe('scrubbed');
+    expect(
+      database
+        .prepare(
+          `select count(*) from conversation_events
+           where content like '%Marigold%'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(extract).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
     expect(answerText).not.toHaveBeenCalled();
     database.close();
   });
@@ -614,6 +1221,7 @@ describe('ConversationOrchestrator', () => {
 
   it('does not seed an observed group request twice', async () => {
     let listener: ((event: ChiefVoiceEvent) => void) | undefined;
+    const sendAudio = vi.fn();
     const openVoice = vi.fn<ChiefAgent['openVoice']>(() =>
       Promise.resolve({
         close: () => Promise.resolve(),
@@ -624,7 +1232,7 @@ describe('ConversationOrchestrator', () => {
             listener = undefined;
           };
         },
-        sendAudio: vi.fn(),
+        sendAudio,
       }),
     );
     const orchestrator = createOrchestrator(
@@ -678,6 +1286,10 @@ describe('ConversationOrchestrator', () => {
         ],
       }),
     );
+    expect(sendAudio).toHaveBeenCalledWith(expect.any(ArrayBuffer), {
+      beforeEventId: humanEventId,
+      commit: true,
+    });
     listener?.({
       inputTranscript: 'Chief, when does the cabinet meet?',
       transcript: 'At noon, Mr. President',
@@ -703,7 +1315,9 @@ describe('ConversationOrchestrator', () => {
         openVoice,
         transcribe: vi.fn(),
       },
+      assembler: createAssembler(database, conversation),
       budget,
+      context: createContext(database, conversation),
       conversation,
       memory: new MemoryService({
         budget,
@@ -748,7 +1362,9 @@ describe('ConversationOrchestrator', () => {
           }),
         transcribe: vi.fn(),
       },
+      assembler: createAssembler(database, conversation),
       budget,
+      context: createContext(database, conversation),
       conversation,
       memory: new MemoryService({
         budget,

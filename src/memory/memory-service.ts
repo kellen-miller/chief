@@ -1,4 +1,5 @@
 import type { UsageBudget } from '../usage/usage-budget.js';
+import { ContextPersistenceError } from '../context/context-errors.js';
 import {
   type MemoryInput,
   type PreparedMemoryMutation,
@@ -67,9 +68,9 @@ export interface MemoryServiceOptions {
   readonly store: SqliteMemoryStore;
 }
 
-export class MemoryPersistenceError extends Error {
+export class MemoryPersistenceError extends ContextPersistenceError {
   public constructor(cause: unknown) {
-    super('durable memory persistence failed', { cause });
+    super('durable memory persistence failed', cause);
     this.name = 'MemoryPersistenceError';
   }
 }
@@ -89,25 +90,41 @@ export class MemoryService {
     return this.#options.store.observeExplicit(source);
   }
 
-  public async recall(prompt: string): Promise<{
-    readonly memories: readonly string[];
-    readonly usageUsd: number;
-  }> {
-    const embedded = await this.#options.embed(prompt);
+  public recallPrepared(input: {
+    readonly embedding: Float32Array;
+    readonly now: number;
+    readonly prompt: string;
+  }): { readonly memories: readonly string[] } {
     let memories;
     try {
       memories = this.#options.store.retrieve({
-        embedding: embedded.embedding,
+        embedding: input.embedding,
         limit: this.#options.limit ?? 6,
-        now: Date.now(),
-        text: prompt,
+        now: input.now,
+        text: input.prompt,
       });
     } catch (error) {
       throw new MemoryPersistenceError(error);
     }
     return {
       memories: memories.map((memory) => memory.canonicalText),
-      usageUsd: embedded.usageUsd,
+    };
+  }
+
+  public recallLexical(prompt: string): {
+    readonly memories: readonly string[];
+  } {
+    let memories;
+    try {
+      memories = this.#options.store.findLexical(
+        prompt,
+        this.#options.limit ?? 6,
+      );
+    } catch (error) {
+      throw new MemoryPersistenceError(error);
+    }
+    return {
+      memories: memories.map((memory) => memory.canonicalText),
     };
   }
 
@@ -120,6 +137,7 @@ export class MemoryService {
     const reservation = this.#options.budget.reserve(
       'memory-extraction',
       this.#options.estimateUsd,
+      { priority: 'interactive', workCategory: 'memory' },
     );
     if (!reservation.allowed) return { status: 'budget-paused' };
 
@@ -131,11 +149,21 @@ export class MemoryService {
             ? undefined
             : this.#options.store.findLexical(target, 1)[0];
         const mutations: PreparedMemoryMutation[] =
-          candidate === undefined
+          candidate === undefined ||
+          !this.#options.store.canRequesterForget(
+            candidate.id,
+            input.source.speakerId,
+            input.source.canModerateContext ?? false,
+          )
             ? []
             : [{ action: 'forget', targetMemoryId: candidate.id }];
         const applied = this.#options.store.applyPreparedMutationBatch({
           completedAt: input.now,
+          ...(input.source.revisionChecksum === undefined
+            ? {}
+            : {
+                expectedRevisionChecksum: input.source.revisionChecksum,
+              }),
           mutations,
           sourceEventId: input.sourceEventId,
         });
@@ -155,6 +183,11 @@ export class MemoryService {
       if (extractionContent === null) {
         this.#options.store.applyPreparedMutationBatch({
           completedAt: input.now,
+          ...(input.source.revisionChecksum === undefined
+            ? {}
+            : {
+                expectedRevisionChecksum: input.source.revisionChecksum,
+              }),
           mutations: [],
           sourceEventId: input.sourceEventId,
         });
@@ -177,6 +210,11 @@ export class MemoryService {
       ) {
         this.#options.store.applyPreparedMutationBatch({
           completedAt: input.now,
+          ...(input.source.revisionChecksum === undefined
+            ? {}
+            : {
+                expectedRevisionChecksum: input.source.revisionChecksum,
+              }),
           mutations: [],
           sourceEventId: input.sourceEventId,
         });
@@ -193,6 +231,9 @@ export class MemoryService {
       );
       const applied = this.#options.store.applyPreparedMutationBatch({
         completedAt: input.now,
+        ...(input.source.revisionChecksum === undefined
+          ? {}
+          : { expectedRevisionChecksum: input.source.revisionChecksum }),
         mutations: prepared.mutations,
         sourceEventId: input.sourceEventId,
       });
@@ -230,9 +271,13 @@ export class MemoryService {
     const reservation = this.#options.budget.reserve(
       'memory-extraction',
       this.#options.estimateUsd,
+      { priority: 'background', workCategory: 'memory' },
     );
     if (!reservation.allowed) {
-      const notBefore = nextUtcMonth(now);
+      const notBefore =
+        reservation.reason === 'interactive-headroom'
+          ? now + 5_000
+          : nextUtcMonth(now);
       this.#options.store.deferForBudget(job.id, notBefore);
       return { notBefore, status: 'budget-deferred' };
     }
@@ -249,9 +294,15 @@ export class MemoryService {
         const candidate = this.#options.store.findLexical(forgetTarget, 1)[0];
         this.#options.store.applyPreparedMutationBatch({
           completedAt: now,
+          expectedRevisionChecksum: source.revisionChecksum,
           jobId: job.id,
           mutations:
-            candidate === undefined
+            candidate === undefined ||
+            !this.#options.store.canRequesterForget(
+              candidate.id,
+              source.speakerId,
+              source.canModerateContext,
+            )
               ? []
               : [{ action: 'forget', targetMemoryId: candidate.id }],
           sourceEventId: source.id,
@@ -273,6 +324,7 @@ export class MemoryService {
       );
       this.#options.store.applyPreparedMutationBatch({
         completedAt: now,
+        expectedRevisionChecksum: source.revisionChecksum,
         jobId: job.id,
         mutations: prepared.mutations,
         sourceEventId: source.id,
@@ -294,11 +346,15 @@ export class MemoryService {
     }
   }
 
+  public nextDeadline(now: number): number | null {
+    return this.#options.store.nextJobDeadline(now);
+  }
+
   async #prepareMutations(
     proposals: readonly MemoryProposal[],
     source: Pick<
       SourceObservation,
-      'occurredAt' | 'platformSourceId' | 'speakerId'
+      'canModerateContext' | 'occurredAt' | 'platformSourceId' | 'speakerId'
     >,
     sourceEventId: number,
     now: number,
@@ -313,7 +369,14 @@ export class MemoryService {
       if (!isAccepted(proposal, explicit)) continue;
       if (proposal.action === 'no-op') continue;
       if (proposal.action === 'forget') {
-        if (proposal.targetMemoryId !== null) {
+        if (
+          proposal.targetMemoryId !== null &&
+          this.#options.store.canRequesterForget(
+            proposal.targetMemoryId,
+            source.speakerId,
+            source.canModerateContext ?? false,
+          )
+        ) {
           mutations.push({
             action: 'forget',
             targetMemoryId: proposal.targetMemoryId,

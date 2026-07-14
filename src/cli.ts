@@ -4,11 +4,20 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
 import { loadConfig } from './config/config.js';
+import { executeContextBackfillCommand } from './context/context-backfill-command.js';
+import { ContextBackfillService } from './context/context-backfill.js';
+import { DiscordRestHistorySource } from './discord/rest-history-source.js';
 import { registerGuildCommands } from './discord/register-commands.js';
 import { HealthServer } from './health/health-server.js';
 import { migrateChiefDatabase, openChiefDatabase } from './memory/database.js';
 import { backupChiefDatabase } from './memory/backup.js';
 import { SqliteMemoryStore } from './memory/memory-store.js';
+import {
+  readForgetJournalDirectory,
+  replayForgetJournals,
+  restorableDatabaseCapability,
+  verifyRestorableDatabase,
+} from './memory/recovery.js';
 import { startChief } from './runtime.js';
 
 const { OpusEncoder } = createRequire(import.meta.url)('@discordjs/opus') as {
@@ -53,17 +62,73 @@ async function main(arguments_: readonly string[]): Promise<void> {
     case 'verify-restore': {
       const backup = requireFlag(arguments_, '--backup');
       const database = openChiefDatabase(backup);
-      const integrity = database
-        .prepare('pragma integrity_check')
-        .pluck()
-        .get();
-      const vectorVersion = database
-        .prepare('select vec_version()')
-        .pluck()
-        .get();
+      const requiredMigration = optionalFlag(arguments_, '--require-migration');
+      const verified = verifyRestorableDatabase(database, requiredMigration);
       database.close();
-      if (integrity !== 'ok' || vectorVersion !== 'v0.1.9') {
+      if (!verified) {
         throw new Error(`backup verification failed for ${basename(backup)}`);
+      }
+      break;
+    }
+    case 'recover-forget-journals': {
+      const database = openChiefDatabase(requireFlag(arguments_, '--database'));
+      try {
+        const entries = await readForgetJournalDirectory(
+          requireFlag(arguments_, '--journal-directory'),
+        );
+        replayForgetJournals(database, entries, Date.now());
+        if (!verifyRestorableDatabase(database)) {
+          throw new Error('recovered database verification failed');
+        }
+        process.stdout.write(
+          `replayed ${entries.length.toString()} journals\n`,
+        );
+      } finally {
+        database.close();
+      }
+      break;
+    }
+    case 'database-capability': {
+      const database = openChiefDatabase(requireFlag(arguments_, '--database'));
+      const capability = restorableDatabaseCapability(database);
+      database.close();
+      if (capability === null) {
+        throw new Error('database capability verification failed');
+      }
+      process.stdout.write(`${capability}\n`);
+      break;
+    }
+    case 'context-backfill': {
+      const config = loadConfig(process.env);
+      const database = openChiefDatabase(
+        join(config.dataDirectory, 'chief.db'),
+      );
+      try {
+        migrateChiefDatabase(database);
+        const history = new DiscordRestHistorySource({
+          botUserId: config.discord.applicationId,
+          channelId: config.discord.textChannelId,
+          guildId: config.discord.guildId,
+          token: config.discord.token,
+        });
+        const service = new ContextBackfillService({
+          channelId: config.discord.textChannelId,
+          database,
+          guildId: config.discord.guildId,
+          history,
+          pricing: {
+            embeddingInputPerMillionUsd: config.pricing.embeddingInput,
+            summaryInputPerMillionUsd: config.pricing.memoryInput,
+            summaryOutputPerMillionUsd: config.pricing.memoryOutput,
+          },
+        });
+        const output = await executeContextBackfillCommand(
+          arguments_.slice(1),
+          service,
+        );
+        process.stdout.write(`${output}\n`);
+      } finally {
+        database.close();
       }
       break;
     }
@@ -86,7 +151,13 @@ async function smoke(): Promise<void> {
   await new SqliteMemoryStore(database).backup(join(directory, 'backup.db'));
   database.close();
   const health = new HealthServer({
-    check: () => Promise.resolve({ database: true, discord: true, disk: true }),
+    check: () =>
+      Promise.resolve({
+        database: true,
+        discord: true,
+        disk: true,
+        maintenance: true,
+      }),
     port: 0,
   });
   await health.start();
@@ -102,6 +173,17 @@ function requireFlag(arguments_: readonly string[], name: string): string {
   const index = arguments_.indexOf(name);
   const value = arguments_[index + 1];
   if (index < 0 || value === undefined) throw new Error(`missing ${name}`);
+  return value;
+}
+
+function optionalFlag(
+  arguments_: readonly string[],
+  name: string,
+): string | undefined {
+  const index = arguments_.indexOf(name);
+  if (index < 0) return undefined;
+  const value = arguments_[index + 1];
+  if (value === undefined) throw new Error(`missing ${name}`);
   return value;
 }
 

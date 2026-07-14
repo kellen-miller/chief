@@ -43,6 +43,9 @@ install -d -o 1000 -g 1000 -m 0750 /var/lib/chief/backups
 cat >/etc/chief/chief.env <<'EOF'
 CHIEF_DATA_DIR=/var/lib/chief
 CHIEF_HEALTH_PORT=8080
+CHIEF_BACKUP_BUCKET=${backup_bucket}
+CHIEF_CONTEXT_TIME_ZONE=${context_time_zone}
+CHIEF_USAGE_INDEXING_CEILING_USD=${usage_indexing_ceiling_usd}
 DISCORD_APPLICATION_ID=${discord_application_id}
 DISCORD_GUILD_ID=${discord_guild_id}
 DISCORD_MAIN_TEXT_CHANNEL_ID=${discord_text_channel_id}
@@ -68,11 +71,23 @@ if ! docker inspect chief >/dev/null 2>&1; then
   exit 1
 fi
 backup="$(docker exec chief node dist/cli.js backup --database /var/lib/chief/chief.db --destination /var/lib/chief/backups)"
-docker exec chief node dist/cli.js verify-restore --backup "$backup"
-gcloud storage cp "$backup" 'gs://${backup_bucket}/'
+docker exec chief node dist/cli.js verify-restore --backup "$backup" --require-migration 0003_channel_context
+gcloud storage cp "$backup" 'gs://${backup_bucket}/backups/'
 trap - ERR
 EOF
 chmod 0750 /opt/chief/backup.sh
+
+cat >/opt/chief/prune-recovery.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -d /var/lib/chief/pre-deploy ]]; then
+  find /var/lib/chief/pre-deploy -type f -name '*.db' -mmin +43139 -delete
+fi
+find /var/lib/chief -maxdepth 1 -type f -name 'chief.db.failed.*' \
+  -mmin +43139 -delete
+find /var/lib/chief/backups -type f -name '*.db' -mmin +43139 -delete
+EOF
+chmod 0750 /opt/chief/prune-recovery.sh
 
 cat >/opt/chief/health-watchdog.sh <<'EOF'
 #!/usr/bin/env bash
@@ -153,6 +168,29 @@ Unit=chief-backup.service
 WantedBy=timers.target
 EOF
 
+cat >/etc/systemd/system/chief-recovery-prune.service <<'EOF'
+[Unit]
+Description=Prune expired Chief recovery artifacts
+
+[Service]
+Type=oneshot
+ExecStart=/opt/chief/prune-recovery.sh
+EOF
+
+cat >/etc/systemd/system/chief-recovery-prune.timer <<'EOF'
+[Unit]
+Description=Prune Chief recovery artifacts hourly
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=chief-recovery-prune.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
 install -d -m 0755 /etc/systemd/journald.conf.d
 cat >/etc/systemd/journald.conf.d/chief.conf <<'EOF'
 [Journal]
@@ -179,6 +217,7 @@ EOF
 systemctl daemon-reload
 systemctl restart systemd-journald
 systemctl restart google-cloud-ops-agent
-systemctl enable --now docker chief-health.timer chief-backup.timer
+systemctl enable --now docker chief-health.timer chief-backup.timer \
+  chief-recovery-prune.timer
 systemctl enable chief.service
 if [[ -f /var/lib/chief/deploy.env ]]; then systemctl restart chief.service; fi

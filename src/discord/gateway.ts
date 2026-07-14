@@ -5,14 +5,32 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  Partials,
+  PermissionFlagsBits,
   type ChatInputCommandInteraction,
   type Guild,
   type Message,
+  type PartialMessage,
+  type TextChannel,
 } from 'discord.js';
 import type { Logger } from 'pino';
 
 import type { ConversationOrchestrator } from '../app/conversation-orchestrator.js';
 import { roll } from '../commands/roll.js';
+import {
+  buildDiscordHistoryPage,
+  discordHistoryFetchRequest,
+  rateLimitedDiscordHistoryPage,
+  type DiscordHistoryFetchInput,
+  type DiscordHistoryPage,
+  type DiscordHistorySource,
+  type DiscordReconciliationResult,
+} from './discord-reconciliation-service.js';
+import { contextPermissionSnapshot } from './source-message.js';
+import {
+  discordSourceRevisionChecksum,
+  normalizeDiscordSourceForStorage,
+} from './source-message.js';
 import { DiscordTextController } from './text-controller.js';
 
 export interface GatewayVoiceController {
@@ -26,16 +44,26 @@ export interface DiscordGatewayOptions {
   readonly guildId: string;
   readonly logger: Logger;
   readonly orchestrator: ConversationOrchestrator;
+  readonly reconciliation?: (input: {
+    readonly botUserId: string;
+    readonly history: DiscordHistorySource;
+  }) => GatewayReconciliation;
   readonly token: string;
   readonly voice: GatewayVoiceController;
   readonly voiceChannelId: string;
+}
+
+export interface GatewayReconciliation {
+  reconcileAfterGap(): Promise<DiscordReconciliationResult>;
 }
 
 export class DiscordGateway {
   readonly #client: Client;
   readonly #options: DiscordGatewayOptions;
   #ready = false;
+  #reconciliation: GatewayReconciliation | undefined;
   #text: DiscordTextController | undefined;
+  #textChannel: TextChannel | undefined;
 
   public constructor(options: DiscordGatewayOptions) {
     this.#options = options;
@@ -48,6 +76,7 @@ export class DiscordGateway {
           GatewayIntentBits.GuildVoiceStates,
           GatewayIntentBits.MessageContent,
         ],
+        partials: [Partials.Message, Partials.Channel],
       });
   }
 
@@ -57,14 +86,70 @@ export class DiscordGateway {
 
   public async start(): Promise<void> {
     this.#client.on(Events.MessageCreate, (message) => {
-      void this.#handleMessage(message).catch((error: unknown) => {
-        this.#options.logger.error({ err: error }, 'discord_message_failed');
+      void this.#handleCreate(message).catch((error: unknown) => {
+        this.#options.logger.error(
+          { errorName: errorName(error) },
+          'discord_message_failed',
+        );
       });
+    });
+    this.#client.on(Events.MessageUpdate, (_oldMessage, message) => {
+      void this.#handleUpdate(message).catch((error: unknown) => {
+        this.#options.logger.error(
+          { errorName: errorName(error), retryable: true },
+          'discord_message_update_failed',
+        );
+      });
+    });
+    this.#client.on(Events.MessageDelete, (message) => {
+      void this.#handleDelete(message).catch((error: unknown) => {
+        this.#options.logger.error(
+          { errorName: errorName(error), retryable: true },
+          'discord_message_delete_failed',
+        );
+      });
+    });
+    this.#client.on(Events.MessageBulkDelete, (messages) => {
+      for (const message of messages.values()) {
+        void this.#handleDelete(message).catch((error: unknown) => {
+          this.#options.logger.error(
+            { errorName: errorName(error), retryable: true },
+            'discord_message_delete_failed',
+          );
+        });
+      }
+    });
+    this.#client.on(Events.Error, (error) => {
+      this.#options.logger.error(
+        { errorName: error.name },
+        'discord_gateway_error',
+      );
+    });
+    this.#client.on(Events.ShardError, (error, shardId) => {
+      this.#options.logger.error(
+        { errorName: error.name, shardId },
+        'discord_shard_error',
+      );
+    });
+    this.#client.on(Events.ShardReconnecting, (shardId) => {
+      this.#ready = false;
+      this.#options.logger.warn({ shardId }, 'discord_shard_reconnecting');
+    });
+    this.#client.on(Events.ShardResume, (shardId, replayedEvents) => {
+      this.#ready = true;
+      this.#options.logger.info(
+        { replayedEvents, shardId },
+        'discord_shard_resumed',
+      );
+      void this.#reconcile('resume');
     });
     this.#client.on(Events.InteractionCreate, (interaction) => {
       if (!interaction.isChatInputCommand()) return;
       void this.#handleCommand(interaction).catch((error: unknown) => {
-        this.#options.logger.error({ err: error }, 'discord_command_failed');
+        this.#options.logger.error(
+          { errorName: errorName(error) },
+          'discord_command_failed',
+        );
       });
     });
     const ready = once(this.#client, Events.ClientReady);
@@ -81,9 +166,31 @@ export class DiscordGateway {
         guildId: this.#options.guildId,
       },
       {
+        applyTextSource: (source) =>
+          this.#options.orchestrator.applyTextSource(source),
+        deleteTextSource: (input) =>
+          this.#options.orchestrator.deleteTextSource(input),
         handleText: (turn) => this.#options.orchestrator.handleText(turn),
+        hasTextSource: (messageId) =>
+          this.#options.orchestrator.hasTextSource(messageId),
+        recordDeliveredReply: (input) => {
+          this.#options.orchestrator.recordDeliveredReply(input);
+        },
       },
     );
+    if (this.#textChannel === undefined) {
+      throw new Error('configured Discord text channel is unavailable');
+    }
+    this.#reconciliation = this.#options.reconciliation?.({
+      botUserId,
+      history: new DiscordGatewayHistorySource({
+        botUserId,
+        channel: this.#textChannel,
+        channelId: this.#options.channelId,
+        guildId: this.#options.guildId,
+      }),
+    });
+    await this.#reconcile('startup');
     this.#ready = true;
   }
 
@@ -93,42 +200,125 @@ export class DiscordGateway {
     await this.#client.destroy();
   }
 
-  async #handleMessage(message: Message): Promise<void> {
+  async #handleCreate(message: Message | PartialMessage): Promise<void> {
     const text = this.#text;
     if (text === undefined) return;
+    const resolved = await this.#resolveMessage(message, 'create');
+    if (resolved === null) return;
     let replied = false;
-    await text.handle(
-      {
-        authorDisplayName:
-          message.member?.displayName ??
-          message.author.globalName ??
-          message.author.username,
-        authorId: message.author.id,
-        authorIsBot: message.author.bot,
-        channelId: message.channelId,
-        content: message.content,
-        guildId: message.guildId,
-        id: message.id,
-        isThread: message.channel.isThread(),
-        webhookId: message.webhookId,
+    await text.handle(this.#messageCandidate(resolved), {
+      reply: async (content) => {
+        if (!replied) {
+          const sent = await resolved.reply({
+            allowedMentions: { repliedUser: false },
+            content,
+          });
+          replied = true;
+          return { messageId: sent.id, occurredAt: sent.createdTimestamp };
+        }
+        if (!resolved.channel.isSendable()) {
+          throw new Error('Discord channel is no longer sendable');
+        }
+        const sent = await resolved.channel.send(content);
+        return { messageId: sent.id, occurredAt: sent.createdTimestamp };
       },
-      {
-        reply: async (content) => {
-          if (!replied) {
-            await message.reply({
-              allowedMentions: { repliedUser: false },
-              content,
-            });
-            replied = true;
-          } else if (message.channel.isSendable()) {
-            await message.channel.send(content);
-          }
-        },
-        typing: async () => {
-          if (message.channel.isSendable()) await message.channel.sendTyping();
-        },
+      typing: async () => {
+        if (resolved.channel.isSendable()) await resolved.channel.sendTyping();
       },
-    );
+    });
+  }
+
+  async #handleUpdate(message: Message | PartialMessage): Promise<void> {
+    const text = this.#text;
+    if (text === undefined) return;
+    const resolved = await this.#resolveMessage(message, 'update');
+    if (resolved === null) return;
+    text.handleUpdate(this.#messageCandidate(resolved));
+  }
+
+  async #handleDelete(message: Message | PartialMessage): Promise<void> {
+    await this.#text?.handleDelete({
+      channelId: message.channelId,
+      deletedAt: Date.now(),
+      guildId: message.guildId,
+      messageId: message.id,
+    });
+  }
+
+  async #resolveMessage(
+    message: Message | PartialMessage,
+    event: 'create' | 'update',
+  ): Promise<Message | null> {
+    if (!message.partial) return message;
+    try {
+      return await message.fetch();
+    } catch (error) {
+      this.#options.logger.warn(
+        {
+          errorName: errorName(error),
+          event,
+          retryable: true,
+        },
+        'discord_partial_message_retryable',
+      );
+      return null;
+    }
+  }
+
+  #messageCandidate(message: Message) {
+    return {
+      attachments: [...message.attachments.values()].map(
+        ({ description, name }) => ({ description, name }),
+      ),
+      authorDisplayName:
+        message.member?.displayName ??
+        message.author.globalName ??
+        message.author.username,
+      authorId: message.author.id,
+      authorIsBot: message.author.bot,
+      canModerateContext:
+        !message.author.bot &&
+        contextPermissionSnapshot(message.content, () =>
+          message.guild?.ownerId === message.author.id
+            ? true
+            : message.member?.permissions.has(
+                PermissionFlagsBits.Administrator,
+              ),
+        ),
+      channelId: message.channelId,
+      content: message.content,
+      editedAt: message.editedTimestamp,
+      guildId: message.guildId,
+      id: message.id,
+      isThread: message.channel.isThread(),
+      occurredAt: message.createdTimestamp,
+      replyToMessageId: message.reference?.messageId ?? null,
+      webhookId: message.webhookId,
+    };
+  }
+
+  async #reconcile(trigger: 'resume' | 'startup'): Promise<void> {
+    const reconciliation = this.#reconciliation;
+    if (reconciliation === undefined) return;
+    try {
+      const result = await reconciliation.reconcileAfterGap();
+      if (result.status === 'completed') {
+        this.#options.logger.info(
+          { status: result.status, trigger },
+          'discord_reconciliation',
+        );
+      } else {
+        this.#options.logger.warn(
+          { retryable: true, status: result.status, trigger },
+          'discord_reconciliation_incomplete',
+        );
+      }
+    } catch (error) {
+      this.#options.logger.warn(
+        { errorName: errorName(error), retryable: true, trigger },
+        'discord_reconciliation_failed',
+      );
+    }
   }
 
   async #handleCommand(
@@ -199,9 +389,113 @@ export class DiscordGateway {
     if (text?.type !== ChannelType.GuildText) {
       throw new Error('configured Discord text channel is unavailable');
     }
+    this.#textChannel = text;
     const voice = guild.channels.cache.get(this.#options.voiceChannelId);
     if (voice?.type !== ChannelType.GuildVoice) {
       throw new Error('configured Discord voice channel is unavailable');
     }
   }
+}
+
+interface DiscordGatewayHistorySourceOptions {
+  readonly botUserId: string;
+  readonly channel: TextChannel;
+  readonly channelId: string;
+  readonly guildId: string;
+}
+
+class DiscordGatewayHistorySource implements DiscordHistorySource {
+  readonly #allowed: {
+    readonly botUserId: string;
+    readonly channelId: string;
+    readonly guildId: string;
+  };
+  readonly #channel: TextChannel;
+
+  public constructor(options: DiscordGatewayHistorySourceOptions) {
+    this.#allowed = options;
+    this.#channel = options.channel;
+  }
+
+  public async fetchPage(
+    input: DiscordHistoryFetchInput,
+  ): Promise<DiscordHistoryPage> {
+    try {
+      const messages = await this.#channel.messages.fetch(
+        discordHistoryFetchRequest(input),
+      );
+      const fetched = [...messages.values()].map((message) => {
+        const source = normalizeDiscordSourceForStorage(
+          this.#allowed,
+          historyCandidate(message),
+        );
+        const revisionChecksum =
+          source === null ? undefined : discordSourceRevisionChecksum(source);
+        const item =
+          source === null || revisionChecksum === undefined
+            ? undefined
+            : {
+                messageId: message.id,
+                occurredAt: message.createdTimestamp,
+                revisionChecksum,
+                ...(input.mode === 'full'
+                  ? {}
+                  : {
+                      source: {
+                        ...source,
+                        revisionChecksum,
+                      },
+                    }),
+              };
+        return {
+          ...(item === undefined ? {} : { item }),
+          messageId: message.id,
+          occurredAt: message.createdTimestamp,
+        };
+      });
+      return buildDiscordHistoryPage(input, fetched);
+    } catch (error) {
+      if (isRateLimited(error)) {
+        return rateLimitedDiscordHistoryPage(input);
+      }
+      throw error;
+    }
+  }
+}
+
+function historyCandidate(message: Message) {
+  return {
+    attachments: [...message.attachments.values()].map(
+      ({ description, name }) => ({ description, name }),
+    ),
+    authorDisplayName:
+      message.member?.displayName ??
+      message.author.globalName ??
+      message.author.username,
+    authorId: message.author.id,
+    authorIsBot: message.author.bot,
+    canModerateContext: false,
+    channelId: message.channelId,
+    content: message.content,
+    editedAt: message.editedTimestamp,
+    guildId: message.guildId,
+    id: message.id,
+    isThread: message.channel.isThread(),
+    occurredAt: message.createdTimestamp,
+    replyToMessageId: message.reference?.messageId ?? null,
+    webhookId: message.webhookId,
+  };
+}
+
+function isRateLimited(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'status' in error &&
+    error.status === 429
+  );
+}
+
+function errorName(error: unknown): string {
+  return error instanceof Error ? error.name : 'UnknownError';
 }

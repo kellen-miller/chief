@@ -243,7 +243,111 @@ describe('SqliteMemoryStore', () => {
     database.close();
   });
 
-  it('builds bounded conversational context from hybrid retrieval', async () => {
+  it('repeats deletion after memory indexes are gone', async () => {
+    const { database, store } = await createStore();
+    const messageId = '52345678901234567';
+    const sourceScopeId = `32345678901234567/22345678901234567/${messageId}`;
+    const sourceId = store.observe({
+      content: 'Forget this once',
+      medium: 'text',
+      occurredAt: 1,
+      platformSourceId: messageId,
+      retentionDeadline: 100,
+      sourceScopeId,
+      speakerId: 'president-1',
+    });
+    const memoryId = store.applyMemory({
+      canonicalText: 'A forgotten indexed memory',
+      confidence: 0.9,
+      embedding: embedding(0.3),
+      kind: 'fact',
+      provenance: {},
+      sourceEventId: sourceId,
+      timestamp: 2,
+    });
+    store.supersedeForContextDeletion([memoryId], 3);
+
+    expect(() => {
+      store.scrubContextSources([messageId]);
+      store.scrubContextSources([messageId]);
+      store.deleteContextSources([messageId]);
+      store.deleteContextSources([messageId]);
+    }).not.toThrow();
+    expect(
+      database.prepare('select count(*) from source_events').pluck().get(),
+    ).toBe(0);
+    expect(
+      database.prepare('select count(*) from memories').pluck().get(),
+    ).toBe(0);
+
+    const secondMemoryId = store.applyMemory({
+      canonicalText: 'A superseded memory without source',
+      confidence: 0.8,
+      embedding: embedding(0.4),
+      kind: 'fact',
+      provenance: {},
+      sourceEventId: null,
+      timestamp: 4,
+    });
+    store.supersedeForContextDeletion([secondMemoryId], 5);
+    expect(store.forget(secondMemoryId)).toEqual({
+      deleted: true,
+      sourceDeleted: false,
+    });
+    expect(store.forget(secondMemoryId)).toEqual({
+      deleted: false,
+      sourceDeleted: false,
+    });
+    database.close();
+  });
+
+  it('rejects mutation through a legacy bare source tombstone', async () => {
+    const { database, store } = await createStore();
+    const messageId = '52345678901234567';
+    const sourceId = store.observe({
+      content: 'Never extract this',
+      medium: 'text',
+      occurredAt: 1,
+      platformSourceId: messageId,
+      retentionDeadline: 100,
+      sourceScopeId: `32345678901234567/22345678901234567/${messageId}`,
+      speakerId: 'president-1',
+    });
+    database
+      .prepare(
+        `insert into context_tombstones
+           (tombstone_key, scope_type, scope_id, reason, occurred_at, checksum)
+         values (?, 'source', ?, 'locally-forgotten', 2, 'checksum')`,
+      )
+      .run(`source:${messageId}`, messageId);
+
+    expect(
+      store.applyPreparedMutationBatch({
+        completedAt: 3,
+        mutations: [
+          {
+            action: 'create',
+            memory: {
+              canonicalText: 'A resurrected memory',
+              confidence: 0.9,
+              embedding: embedding(0.5),
+              kind: 'fact',
+              provenance: {},
+              sourceEventId: sourceId,
+              timestamp: 3,
+            },
+          },
+        ],
+        sourceEventId: sourceId,
+      }),
+    ).toEqual([]);
+    expect(
+      database.prepare('select count(*) from memories').pluck().get(),
+    ).toBe(0);
+    database.close();
+  });
+
+  it('retrieves bounded durable memory from a prepared query', async () => {
     const { database, store } = await createStore();
     store.applyMemory({
       canonicalText: 'The trip is in October',
@@ -264,9 +368,14 @@ describe('SqliteMemoryStore', () => {
       store,
     });
 
-    await expect(context.recall('trip October')).resolves.toEqual({
+    expect(
+      context.recallPrepared({
+        embedding: embedding(0.5),
+        now: 2,
+        prompt: 'trip October',
+      }),
+    ).toEqual({
       memories: ['The trip is in October'],
-      usageUsd: 0.001,
     });
     database.close();
   });
