@@ -251,6 +251,12 @@ describe('ContextBackfillService', () => {
       now: () => now,
       warningUsd: 5,
     });
+    const reconcileTransactionStates: boolean[] = [];
+    const reconcileWith = budget.reconcileWith.bind(budget);
+    vi.spyOn(budget, 'reconcileWith').mockImplementation((...input) => {
+      reconcileTransactionStates.push(database.inTransaction);
+      return reconcileWith(...input);
+    });
     const service = new ContextBackfillService({
       budget,
       channelId,
@@ -319,6 +325,8 @@ describe('ContextBackfillService', () => {
         .pluck()
         .get(),
     ).toBe(2);
+    expect(reconcileTransactionStates).not.toContain(true);
+    expect(reconcileTransactionStates.length).toBeGreaterThan(0);
     expect(
       JSON.stringify(
         database.prepare('select * from context_backfill_segments').all(),
@@ -1063,6 +1071,75 @@ describe('ContextBackfillService', () => {
       status: 'paused',
     });
     expect(summarize).not.toHaveBeenCalled();
+    database.close();
+  });
+
+  it('reconciles a prior-month reservation before finalizing', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const reservedAt = Date.UTC(2026, 6, 31, 23, 59);
+    const setup = new ContextBackfillService({
+      channelId,
+      database,
+      guildId,
+      history: fakeHistory([page([], null)]),
+      now: () => reservedAt,
+      pricing: zeroPricing,
+    });
+    const ready = await setup.dryRun({ replace: false });
+    setup.activate({ confirmGuildId: guildId, maximumUsageUsd: 1 });
+    database
+      .prepare(
+        'update context_backfills set next_page_index = null where id = ?',
+      )
+      .run(ready.runId);
+    const ledger = new SqliteUsageLedger(database);
+    const firstBudget = new UsageBudget({
+      ceilingUsd: 10,
+      indexingCeilingUsd: 3,
+      ledger,
+      now: () => reservedAt,
+      warningUsd: 5,
+    });
+    expect(
+      firstBudget.reserve('context-backfill', 0.05, {
+        backfillRunId: ready.runId,
+        priority: 'background',
+        workCategory: 'indexing',
+      }),
+    ).toMatchObject({ allowed: true });
+    const restartedAt = Date.UTC(2026, 7, 1, 0, 1);
+    const restarted = new ContextBackfillService({
+      budget: new UsageBudget({
+        ceilingUsd: 10,
+        indexingCeilingUsd: 3,
+        ledger,
+        now: () => restartedAt,
+        warningUsd: 5,
+      }),
+      channelId,
+      database,
+      guildId,
+      now: () => restartedAt,
+      pricing: zeroPricing,
+    });
+
+    await expect(restarted.runNext(restartedAt)).resolves.toEqual({
+      runId: ready.runId,
+      status: 'completed',
+    });
+    expect(restarted.status()).toMatchObject({
+      actualUsageUsd: 0.05,
+      status: 'completed',
+    });
+    expect(
+      database
+        .prepare(
+          'select actual_usd from usage_ledger where backfill_run_id = ?',
+        )
+        .pluck()
+        .get(ready.runId),
+    ).toBe(0.05);
     database.close();
   });
 

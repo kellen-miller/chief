@@ -1300,6 +1300,58 @@ describe('ContextAssembler', () => {
     });
     database.close();
   });
+
+  it('falls back to recent and lexical memory when embedding fails', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const conversation = new ConversationStore(database);
+    const memoryStore = new SqliteMemoryStore(database);
+    memoryStore.applyMemory({
+      canonicalText: 'Marigold is an accepted project.',
+      confidence: 0.99,
+      embedding: queryVector,
+      kind: 'fact',
+      provenance: {},
+      sourceEventId: null,
+      timestamp: now - 1,
+    });
+    recordEvent(conversation, {
+      content: 'Recent context remains available.',
+      messageId: '52345678901234661',
+      occurredAt: now - 1_000,
+      recentUntil: now + 60_000,
+    });
+    const assembler = new ContextAssembler({
+      channelId,
+      conversation,
+      database,
+      embed: () => Promise.reject(new Error('embedding unavailable')),
+      guildId,
+      memory: new MemoryService({
+        budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
+        embed: vi.fn(),
+        estimateUsd: 0.1,
+        extract: vi.fn(),
+        store: memoryStore,
+      }),
+      timeZone: 'America/New_York',
+    });
+
+    const prepared = await assembler.assemble({ now, prompt: 'Marigold' });
+
+    expect(prepared).toMatchObject({
+      degraded: true,
+      historicalContext: [],
+      memories: ['Marigold is an accepted project.'],
+      recentConversation: [
+        expect.objectContaining({
+          content: 'Recent context remains available.',
+        }),
+      ],
+      usageUsd: 0,
+    });
+    database.close();
+  });
 });
 
 function recordEvent(

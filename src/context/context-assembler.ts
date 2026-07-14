@@ -126,31 +126,40 @@ export class ContextAssembler {
         speakerName,
       }),
     );
-    const embedded = await this.#embed(input.prompt);
-    const { memories } = this.#memory.recallPrepared({
-      embedding: embedded.embedding,
-      now: input.now,
-      prompt: input.prompt,
-    });
-
-    let historicalContext: readonly HistoricalContext[] = [];
     let degraded = false;
+    let embedded:
+      Awaited<ReturnType<ContextAssemblerOptions['embed']>> | undefined;
+    let memories: readonly string[] = [];
     try {
-      historicalContext = this.#retrieveHistorical({
-        ...(input.beforeEventId === undefined
-          ? {}
-          : { beforeEventId: input.beforeEventId }),
-        embedding: embedded.embedding,
-        historyTokenAllowance: Math.max(
-          0,
-          TOTAL_CONTEXT_TOKENS - recent.approximateTokens,
-        ),
-        now: input.now,
-        prompt: input.prompt,
-        recentEvents: recent.events,
-      });
+      embedded = await this.#embed(input.prompt);
     } catch {
       degraded = true;
+      ({ memories } = this.#memory.recallLexical(input.prompt));
+    }
+    let historicalContext: readonly HistoricalContext[] = [];
+    if (embedded !== undefined) {
+      ({ memories } = this.#memory.recallPrepared({
+        embedding: embedded.embedding,
+        now: input.now,
+        prompt: input.prompt,
+      }));
+      try {
+        historicalContext = this.#retrieveHistorical({
+          ...(input.beforeEventId === undefined
+            ? {}
+            : { beforeEventId: input.beforeEventId }),
+          embedding: embedded.embedding,
+          historyTokenAllowance: Math.max(
+            0,
+            TOTAL_CONTEXT_TOKENS - recent.approximateTokens,
+          ),
+          now: input.now,
+          prompt: input.prompt,
+          recentEvents: recent.events,
+        });
+      } catch {
+        degraded = true;
+      }
     }
     const historicalTokens = historicalContext.reduce(
       (total, context) => total + estimateTokens(JSON.stringify(context)),
@@ -165,7 +174,7 @@ export class ContextAssembler {
       historicalContext,
       memories,
       recentConversation,
-      usageUsd: embedded.usageUsd,
+      usageUsd: embedded?.usageUsd ?? 0,
     };
   }
 

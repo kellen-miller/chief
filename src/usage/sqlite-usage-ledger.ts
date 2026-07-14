@@ -68,7 +68,17 @@ export class SqliteUsageLedger implements UsageLedger {
   }
 
   public reconcile(id: string, actualUsd: number, reconciledAt: number): void {
-    this.#database.transaction(() => {
+    this.reconcileWith(id, actualUsd, reconciledAt, () => undefined);
+  }
+
+  public reconcileWith<T>(
+    id: string,
+    actualUsd: number,
+    reconciledAt: number,
+    work: () => T,
+  ): T {
+    return this.#database.transaction(() => {
+      const workResult = work();
       const reservation = this.#database
         .prepare(
           `select l.backfill_run_id as backfillRunId,
@@ -87,13 +97,15 @@ export class SqliteUsageLedger implements UsageLedger {
       if (reservation.held === 1) {
         throw new Error('usage reservation is held for accounting rebuild');
       }
-      const result = this.#database
+      const updateResult = this.#database
         .prepare(
           `update usage_ledger set actual_usd = ?, reconciled_at = ?
            where id = ? and actual_usd is null`,
         )
         .run(actualUsd, reconciledAt, id);
-      if (result.changes !== 1) throw new Error('unknown usage reservation');
+      if (updateResult.changes !== 1) {
+        throw new Error('unknown usage reservation');
+      }
       if (reservation.backfillRunId !== null) {
         const run = this.#database
           .prepare(
@@ -104,6 +116,7 @@ export class SqliteUsageLedger implements UsageLedger {
           .run(actualUsd, reconciledAt, reservation.backfillRunId);
         if (run.changes !== 1) throw new Error('unknown backfill run');
       }
+      return workResult;
     })();
   }
 

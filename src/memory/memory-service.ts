@@ -111,6 +111,23 @@ export class MemoryService {
     };
   }
 
+  public recallLexical(prompt: string): {
+    readonly memories: readonly string[];
+  } {
+    let memories;
+    try {
+      memories = this.#options.store.findLexical(
+        prompt,
+        this.#options.limit ?? 6,
+      );
+    } catch (error) {
+      throw new MemoryPersistenceError(error);
+    }
+    return {
+      memories: memories.map((memory) => memory.canonicalText),
+    };
+  }
+
   public async applyExplicit(input: {
     readonly intent: ExplicitMemoryIntent;
     readonly now: number;

@@ -940,12 +940,11 @@ export class ChannelContextService {
         };
       }
       let documentId = 0;
-      const obsolete = this.#database.transaction((): boolean => {
+      const commit = this.#database.transaction((): boolean => {
         const commitNow = this.#now();
         this.#assertCurrentLease(job, reservation.id, commitNow);
         if (this.#provisionalObsolete(job, commitNow)) {
           this.#completeEmptyJob(job.id);
-          budget.reconcile(reservation.id, usageUsd);
           return true;
         }
         const documentKey = job.jobKey.replace(/:(?:final|provisional)$/u, '');
@@ -1048,9 +1047,9 @@ export class ChannelContextService {
             now,
           );
         }
-        budget.reconcile(reservation.id, usageUsd);
         return false;
-      })();
+      });
+      const obsolete = budget.reconcileWith(reservation.id, usageUsd, commit);
       if (obsolete) return { status: 'idle' };
       return {
         completeness: job.completeness,

@@ -113,6 +113,40 @@ describe('UsageBudget', () => {
     });
   });
 
+  it('keeps in-memory accounting unchanged when atomic work rolls back', () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const budget = new UsageBudget({
+      ceilingUsd: 10,
+      ledger: new SqliteUsageLedger(database),
+      warningUsd: 5,
+    });
+    const reservation = budget.reserve('context-summary', 0.1);
+    if (!reservation.allowed) throw new Error('reservation should be allowed');
+
+    expect(() =>
+      budget.reconcileWith(
+        reservation.id,
+        0.02,
+        database.transaction(() => {
+          throw new Error('injected commit failure');
+        }),
+      ),
+    ).toThrow('injected commit failure');
+
+    expect(budget.snapshot()).toMatchObject({
+      actualUsd: 0,
+      reservedUsd: 0.1,
+    });
+    expect(
+      database
+        .prepare('select actual_usd from usage_ledger where id = ?')
+        .pluck()
+        .get(reservation.id),
+    ).toBeNull();
+    database.close();
+  });
+
   it('emits the warning threshold only once', () => {
     const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
 

@@ -45,6 +45,12 @@ export interface UsageLedger {
   list(start: number, end: number): UsageLedgerEntry[];
   listOutstanding(): UsageLedgerEntry[];
   reconcile(id: string, actualUsd: number, reconciledAt: number): void;
+  reconcileWith<T>(
+    id: string,
+    actualUsd: number,
+    reconciledAt: number,
+    work: () => T,
+  ): T;
   record(entry: UsageLedgerEntry): void;
 }
 
@@ -189,13 +195,24 @@ export class UsageBudget {
   }
 
   public reconcile(reservationId: string, actualUsd: number): void {
+    this.reconcileWith(reservationId, actualUsd, () => undefined);
+  }
+
+  public reconcileWith<T>(
+    reservationId: string,
+    actualUsd: number,
+    work: () => T,
+  ): T {
     const reservation = this.#reservations.get(reservationId);
     if (reservation === undefined) {
       throw new Error('unknown usage reservation');
     }
     validateAmount(actualUsd, 'usage');
     const now = this.#now();
-    this.#ledger?.reconcile(reservationId, actualUsd, now);
+    const result =
+      this.#ledger === undefined
+        ? work()
+        : this.#ledger.reconcileWith(reservationId, actualUsd, now, work);
     this.#reservations.delete(reservationId);
     this.#refreshMonth(now);
     if (monthStart(reservation.occurredAt) === this.#monthStart) {
@@ -206,6 +223,7 @@ export class UsageBudget {
       );
       this.#evaluateThresholds();
     }
+    return result;
   }
 
   public reconcileConservatively(reservationId: string): void {

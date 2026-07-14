@@ -222,9 +222,12 @@ export class ContextBackfillService {
   public async runNext(now: number): Promise<ContextBackfillWorkResult> {
     const run = this.#activeRun();
     if (run === null) return { status: 'idle' };
+    const budget = this.#budget;
+    if (budget !== undefined) {
+      this.#recoverOutstandingReservations(run.runId, budget);
+    }
     if (run.nextPageIndex === null) return this.#finalizeRun(run.runId, now);
     const history = this.#history;
-    const budget = this.#budget;
     const summarizer = this.#summarizer;
     const embed = this.#embed;
     if (
@@ -235,7 +238,6 @@ export class ContextBackfillService {
     ) {
       return { status: 'idle' };
     }
-    this.#recoverOutstandingReservations(run.runId, budget);
     const page = this.#page(run.runId, run.nextPageIndex);
     if (page === null) throw new Error('backfill manifest page is missing');
     const boundedSources = await this.#refetchManifestSources(history, page);
@@ -311,7 +313,7 @@ export class ContextBackfillService {
         this.#pause(run.runId, 'usage-contract', now);
         return { reason: 'usage-contract', status: 'budget-paused' };
       }
-      this.#database.transaction(() => {
+      const commit = this.#database.transaction(() => {
         this.#assertSegmentCommitCurrent(
           run.runId,
           page.pageIndex,
@@ -407,8 +409,8 @@ export class ContextBackfillService {
         ) {
           this.#completePage(run.runId, page.pageIndex, now);
         }
-        budget.reconcile(reservation.id, usageUsd);
-      })();
+      });
+      budget.reconcileWith(reservation.id, usageUsd, commit);
       return { status: 'completed', runId: run.runId };
     } catch {
       budget.reconcileConservatively(reservation.id);

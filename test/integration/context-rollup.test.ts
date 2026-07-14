@@ -28,6 +28,12 @@ describe('ChannelContextService rollups', () => {
       now: () => current,
       warningUsd: 5,
     });
+    const reconcileTransactionStates: boolean[] = [];
+    const reconcileWith = budget.reconcileWith.bind(budget);
+    vi.spyOn(budget, 'reconcileWith').mockImplementation((...input) => {
+      reconcileTransactionStates.push(database.inTransaction);
+      return reconcileWith(...input);
+    });
     const summarize = vi.fn(
       (input: { readonly sources: readonly { readonly id: string }[] }) =>
         Promise.resolve({
@@ -151,6 +157,7 @@ describe('ChannelContextService rollups', () => {
     expect(period.end).toBeGreaterThan(current);
     expect(summarize).toHaveBeenCalledOnce();
     expect(embed).toHaveBeenCalledOnce();
+    expect(reconcileTransactionStates).toEqual([false]);
     database.close();
   });
 
