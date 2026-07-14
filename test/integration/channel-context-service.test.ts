@@ -599,6 +599,60 @@ describe('ContextStore', () => {
     },
   );
 
+  it('rejects mixed raw and parent lineage for a higher tier atomically', () => {
+    const { contextStore, database, service } = createHarness(1_000);
+    const created = service.apply(source(500));
+    if (created.eventId === null) throw new Error('expected a source event');
+    const eventId = created.eventId;
+    const finalParentId = contextStore.activateDocumentRevision(
+      documentInput({
+        completeness: 'final',
+        documentKey: 'hourly-final-parent',
+        eventIds: [eventId],
+        summary: 'Final hourly parent.',
+      }),
+    );
+    const tables = [
+      'context_documents',
+      'context_document_fts',
+      'context_document_vectors',
+      'context_document_events',
+      'context_document_parents',
+    ] as const;
+    const countsBefore = tables.map((table) =>
+      database.prepare(`select count(*) from ${table}`).pluck().get(),
+    );
+
+    expect(() =>
+      contextStore.activateDocumentRevision(
+        documentInput({
+          documentKey: 'daily-mixed-lineage',
+          eventIds: [eventId],
+          parentDocumentIds: [finalParentId],
+          periodEnd: 3_000,
+          summary: 'Mixed lineage must not bypass hierarchy.',
+          tier: 'daily',
+        }),
+      ),
+    ).toThrow('higher context tier requires parent-only lineage');
+    expect(
+      tables.map((table) =>
+        database.prepare(`select count(*) from ${table}`).pluck().get(),
+      ),
+    ).toEqual(countsBefore);
+    expect(lexicalIds(database, 'context_document_fts', 'Mixed')).toEqual([]);
+    expect(
+      database
+        .prepare(
+          `select count(*) from context_documents
+           where document_key = 'daily-mixed-lineage'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(0);
+    database.close();
+  });
+
   it('requires final parents for every higher context tier', () => {
     const { contextStore, database, service } = createHarness(1_000);
     const created = service.apply(source(500));
