@@ -19,7 +19,7 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 - [x] (2026-07-14 04:58Z) Obtained explicit user approval of the adversarially revised written planning packet and activated implementation.
 - [x] (2026-07-14 05:08Z) Task 1 created migration 0003, DST-safe context periods, canonical source/FTS writes, hourly job records, retention separation, delivered-snowflake identity, and transactional document invariants; 233 tests and `pnpm verify` passed, and the task review approved the five-commit range with no findings.
 - [x] (2026-07-14 06:41Z) Task 2 normalized live Discord creates, edits, partials, single/bulk deletes, and delivered Chief chunks; synchronized edit/delete effects across source, memory, and context state; added resumable gap and weekly identity reconciliation with persisted coverage proof; and passed 267 tests plus a clean final review after three correction loops.
-- [ ] Milestone 3: generate resumable hierarchical rollups under a protected background budget.
+- [x] (2026-07-14 08:05Z) Task 3 added one protected paid-work queue, fair deadline-ordered background scheduling, categorized/month-safe budget accounting, provisional/final hourly plus daily/weekly/topic rollups, strict bounded summarization and segmentation, tiered retention, non-readiness lag diagnostics, and graceful draining; 300 tests and final review passed after two correction loops.
 - [ ] Milestone 4: assemble cross-tier context with one embedding per retrieval query.
 - [ ] Milestone 5: implement authorized correction, confirmation, forgetting, and lineage rebuild.
 - [ ] Milestone 6: add dry-run and resumable full-history backfill.
@@ -64,6 +64,12 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
   Evidence: Task 2 review reproduced a retained source `201` missing above surviving source `200`; the final design persists a scan-start snowflake ceiling, begins before that ceiling, and resumes with the same upper bound.
 - Observation: durable deletion and self-forget need minimal provenance after raw retention, while the raw content must still be erased.
   Evidence: Task 2 review reproduced loss of authorization and deletion linkage when `source_events` rows were removed; maintenance now retains scope identity with empty content only while a durable memory still depends on it.
+- Observation: a model-selected source subset is insufficient lineage for deletion safety. Every supplied rollup input must remain provenance even when the model cites only representative sources.
+  Evidence: Task 3 review reproduced an in-flight summary committing after an omitted supplied source was deleted; complete-input lineage plus a current leased-job guard now blocks it.
+- Observation: provisional finality must be checked both before paid work and inside the activation transaction.
+  Evidence: Task 3 review reproduced final-to-provisional regression from late activity and a second race where provider work crossed the period boundary; closed hours now reject provisional activation at commit time.
+- Observation: job success and usage reconciliation share one crash-consistency boundary.
+  Evidence: Task 3 trigger injection rolled back document, lineage, search, vector, downstream, job, and ledger state together; expired segmented leases conservatively reconcile their full stored reservation.
 
 ## Decision Log
 
