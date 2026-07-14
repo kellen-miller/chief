@@ -11,6 +11,7 @@ import {
 import { generateOpenAiVoiceSuffix } from './agent/openai-voice.js';
 import { ConversationOrchestrator } from './app/conversation-orchestrator.js';
 import type { ChiefConfig } from './config/config.js';
+import { ChannelContextService } from './context/channel-context-service.js';
 import { ConversationStore } from './conversation/conversation-store.js';
 import { DiscordGateway } from './discord/gateway.js';
 import { HealthServer } from './health/health-server.js';
@@ -55,6 +56,13 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
   migrateChiefDatabase(database);
   const memory = new SqliteMemoryStore(database);
   const conversation = new ConversationStore(database);
+  const context = new ChannelContextService({
+    channelId: config.discord.textChannelId,
+    conversation,
+    database,
+    guildId: config.discord.guildId,
+    timeZone: 'America/New_York',
+  });
   const budget = new UsageBudget({
     ...config.usage,
     ledger: new SqliteUsageLedger(database),
@@ -112,6 +120,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
   const orchestrator = new ConversationOrchestrator({
     agent,
     budget,
+    context,
     conversation,
     memory: memoryService,
     reservations: calculateConservativeReservations(config.pricing),
@@ -173,7 +182,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
   });
   const startupMaintenanceAt = Date.now();
   memory.maintain(startupMaintenanceAt);
-  conversation.maintain(startupMaintenanceAt);
+  context.maintain(startupMaintenanceAt);
   let maintenanceAt = startupMaintenanceAt;
   const health = new HealthServer({
     check: async () => ({
@@ -203,7 +212,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
       try {
         const now = Date.now();
         memory.maintain(now);
-        conversation.maintain(now);
+        context.maintain(now);
         maintenanceAt = now;
       } catch (error) {
         logger.error({ err: error }, 'memory_maintenance_failed');

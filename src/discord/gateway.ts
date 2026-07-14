@@ -82,6 +82,9 @@ export class DiscordGateway {
       },
       {
         handleText: (turn) => this.#options.orchestrator.handleText(turn),
+        recordDeliveredReply: (input) => {
+          this.#options.orchestrator.recordDeliveredReply(input);
+        },
       },
     );
     this.#ready = true;
@@ -115,14 +118,18 @@ export class DiscordGateway {
       {
         reply: async (content) => {
           if (!replied) {
-            await message.reply({
+            const sent = await message.reply({
               allowedMentions: { repliedUser: false },
               content,
             });
             replied = true;
-          } else if (message.channel.isSendable()) {
-            await message.channel.send(content);
+            return sent.id;
           }
+          if (!message.channel.isSendable()) {
+            throw new Error('Discord channel is no longer sendable');
+          }
+          const sent = await message.channel.send(content);
+          return sent.id;
         },
         typing: async () => {
           if (message.channel.isSendable()) await message.channel.sendTyping();

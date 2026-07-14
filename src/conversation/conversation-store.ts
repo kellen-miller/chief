@@ -118,32 +118,39 @@ export class ConversationStore {
                  @speakerName, @medium, @replyToMessageId, @content,
                  @attachmentMetadataJson, @occurredAt, @editedAt,
                  @recentUntil, @retentionDeadline, 'available', 'retained')
-         on conflict(platform_event_id) do update set
-           request_id = excluded.request_id,
-           speaker_name = excluded.speaker_name,
-           logical_response_id = excluded.logical_response_id,
-           reply_to_message_id = excluded.reply_to_message_id,
-           edited_at = excluded.edited_at,
+         on conflict(guild_id, channel_id, discord_message_id) do update set
+           speaker_name = case
+             when excluded.edited_at is not null
+               and (conversation_events.edited_at is null
+                    or excluded.edited_at >= conversation_events.edited_at)
+             then excluded.speaker_name else conversation_events.speaker_name end,
+           edited_at = case
+             when excluded.edited_at is not null
+               and (conversation_events.edited_at is null
+                    or excluded.edited_at >= conversation_events.edited_at)
+             then excluded.edited_at else conversation_events.edited_at end,
            content = case
              when conversation_events.content_state = 'available'
+               and excluded.edited_at is not null
+               and (conversation_events.edited_at is null
+                    or excluded.edited_at >= conversation_events.edited_at)
              then excluded.content else conversation_events.content end,
            attachment_metadata_json = case
              when conversation_events.content_state = 'available'
+               and excluded.edited_at is not null
+               and (conversation_events.edited_at is null
+                    or excluded.edited_at >= conversation_events.edited_at)
              then excluded.attachment_metadata_json
-             else conversation_events.attachment_metadata_json end,
-           recent_until = case
-             when conversation_events.content_state = 'available'
-             then excluded.recent_until else conversation_events.recent_until end,
-           retention_deadline = case
-             when conversation_events.content_state = 'available'
-             then excluded.retention_deadline
-             else conversation_events.retention_deadline end`,
+             else conversation_events.attachment_metadata_json end`,
       )
       .run(row);
     return this.#database
-      .prepare('select id from conversation_events where platform_event_id = ?')
+      .prepare(
+        `select id from conversation_events
+         where guild_id = ? and channel_id = ? and discord_message_id = ?`,
+      )
       .pluck()
-      .get(event.platformEventId) as number;
+      .get(row.guildId, row.channelId, row.discordMessageId) as number;
   }
 
   public recordBatch(

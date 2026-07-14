@@ -10,6 +10,7 @@ import {
   ConversationOrchestrator,
   type NormalizedTextTurn,
 } from '../../src/app/conversation-orchestrator.js';
+import { ChannelContextService } from '../../src/context/channel-context-service.js';
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import { qualifyTextMessage } from '../../src/discord/invocation-policy.js';
 import {
@@ -107,10 +108,20 @@ describe('conversation quality replay', () => {
       store,
     });
     let now = 100;
+    let deliveredId = 62_345_678_901_234_567n;
+    const conversation = new ConversationStore(database);
     const orchestrator = new ConversationOrchestrator({
       agent,
       budget,
-      conversation: new ConversationStore(database),
+      context: new ChannelContextService({
+        channelId: 'main-text',
+        conversation,
+        database,
+        guildId: 'presidents',
+        now: () => now,
+        timeZone: 'America/New_York',
+      }),
+      conversation,
       memory,
       now: () => now,
     });
@@ -146,7 +157,18 @@ describe('conversation quality replay', () => {
           ? { ...base, kind: 'request', prompt: qualification.prompt }
           : { ...base, kind: qualification.kind };
       const result = await orchestrator.handleText(turn);
-      if (result !== null) finalContent = result.content;
+      if (result !== null) {
+        finalContent = result.content;
+        deliveredId += 1n;
+        orchestrator.recordDeliveredReply({
+          chunks: [
+            { content: result.content, messageId: deliveredId.toString() },
+          ],
+          logicalResponseId: `response-${replay.id}`,
+          replyToMessageId: replay.id,
+          requestId: replay.id,
+        });
+      }
       now += 1;
     }
 

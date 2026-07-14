@@ -29,6 +29,7 @@ describe('DiscordTextController', () => {
     const controller = new DiscordTextController(allowed, {
       handleText,
       now: () => 1_000,
+      recordDeliveredReply: vi.fn(),
     });
 
     await controller.handle(message('Dinner is at seven.'), {
@@ -47,9 +48,12 @@ describe('DiscordTextController', () => {
   });
 
   it('answers a direct mention and only suffixes the final chunk', async () => {
-    const reply = vi
-      .fn<(content: string) => Promise<void>>()
-      .mockResolvedValue();
+    const deliveredIds = ['62345678901234567', '62345678901234568'];
+    let replyIndex = 0;
+    const reply = vi.fn<(content: string) => Promise<string>>(() =>
+      Promise.resolve(deliveredIds[replyIndex++] ?? 'unexpected'),
+    );
+    const recordDeliveredReply = vi.fn();
     const controller = new DiscordTextController(allowed, {
       handleText: vi.fn(() =>
         Promise.resolve({
@@ -59,6 +63,7 @@ describe('DiscordTextController', () => {
         }),
       ),
       now: () => 1_000,
+      recordDeliveredReply,
     });
 
     await controller.handle(message(`<@${allowed.botUserId}> brief us`), {
@@ -73,6 +78,42 @@ describe('DiscordTextController', () => {
         .slice(0, -1)
         .every(([chunk]) => !chunk.endsWith('Mr. President')),
     ).toBe(true);
+    expect(recordDeliveredReply).toHaveBeenCalledWith({
+      chunks: reply.mock.calls.map(([content], index) => ({
+        content,
+        messageId: deliveredIds[index],
+      })),
+      logicalResponseId: message('').id,
+      replyToMessageId: message('').id,
+      requestId: message('').id,
+    });
+  });
+
+  it('records no delivered reply when a chunk send fails', async () => {
+    const recordDeliveredReply = vi.fn();
+    const reply = vi
+      .fn<(content: string) => Promise<string>>()
+      .mockResolvedValueOnce('62345678901234567')
+      .mockRejectedValueOnce(new Error('Discord send failed'));
+    const controller = new DiscordTextController(allowed, {
+      handleText: vi.fn(() =>
+        Promise.resolve({
+          citations: [],
+          content: `${'brief '.repeat(450)}Mr. President`,
+          status: 'completed' as const,
+        }),
+      ),
+      now: () => 1_000,
+      recordDeliveredReply,
+    });
+
+    await expect(
+      controller.handle(message(`<@${allowed.botUserId}> brief us`), {
+        reply,
+        typing: vi.fn(() => Promise.resolve()),
+      }),
+    ).rejects.toThrow('Discord send failed');
+    expect(recordDeliveredReply).not.toHaveBeenCalled();
   });
 
   it('normalizes mentions for memory and renders missing source links', async () => {
@@ -84,11 +125,12 @@ describe('DiscordTextController', () => {
       }),
     );
     const reply = vi
-      .fn<(content: string) => Promise<void>>()
-      .mockResolvedValue();
+      .fn<(content: string) => Promise<string>>()
+      .mockResolvedValue('62345678901234567');
     const controller = new DiscordTextController(allowed, {
       handleText,
       now: () => 1_000,
+      recordDeliveredReply: vi.fn(),
     });
 
     await controller.handle(
@@ -112,8 +154,8 @@ describe('DiscordTextController', () => {
 
   it('delivers the orchestrator reply for a bare mention', async () => {
     const reply = vi
-      .fn<(content: string) => Promise<void>>()
-      .mockResolvedValue();
+      .fn<(content: string) => Promise<string>>()
+      .mockResolvedValue('62345678901234567');
     const handleText = vi.fn(() =>
       Promise.resolve({
         citations: [],
@@ -124,6 +166,7 @@ describe('DiscordTextController', () => {
     const controller = new DiscordTextController(allowed, {
       handleText,
       now: () => 1_000,
+      recordDeliveredReply: vi.fn(),
     });
 
     await controller.handle(message(`<@!${allowed.botUserId}>`), {

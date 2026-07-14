@@ -141,7 +141,7 @@ drop table migration_0003_conversation_validation;
 
 create table conversation_events_0003 (
   id integer primary key,
-  platform_event_id text not null unique,
+  platform_event_id text not null,
   discord_message_id text not null,
   guild_id text not null,
   channel_id text not null,
@@ -394,7 +394,7 @@ create virtual table context_document_vectors using vec0(
 `;
 
 export const CHANNEL_CONTEXT_MIGRATION_ID = '0003_channel_context';
-export const CHANNEL_CONTEXT_MIGRATION_CHECKSUM = 'chief-0003-v1';
+export const CHANNEL_CONTEXT_MIGRATION_CHECKSUM = 'chief-0003-v2';
 
 interface Migration {
   readonly checksum: string;

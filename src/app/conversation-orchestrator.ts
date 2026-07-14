@@ -3,6 +3,10 @@ import type {
   ChiefConversationMessage,
   ChiefVoiceSession,
 } from '../agent/chief-agent.js';
+import {
+  ChannelContextService,
+  type DeliveredReplyInput,
+} from '../context/channel-context-service.js';
 import { ConversationStore } from '../conversation/conversation-store.js';
 import {
   detectExplicitMemoryIntent,
@@ -69,6 +73,7 @@ export interface ConversationReservationEstimates {
 export interface ConversationOrchestratorOptions {
   readonly agent: ChiefAgent;
   readonly budget: UsageBudget;
+  readonly context: ChannelContextService;
   readonly conversation: ConversationStore;
   readonly memory: MemoryService;
   readonly now?: () => number;
@@ -95,6 +100,7 @@ const SOURCE_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 export class ConversationOrchestrator {
   readonly #agent: ChiefAgent;
   readonly #budget: UsageBudget;
+  readonly #context: ChannelContextService;
   readonly #conversation: ConversationStore;
   readonly #memory: MemoryService;
   readonly #now: () => number;
@@ -108,6 +114,7 @@ export class ConversationOrchestrator {
   public constructor(options: ConversationOrchestratorOptions) {
     this.#agent = options.agent;
     this.#budget = options.budget;
+    this.#context = options.context;
     this.#conversation = options.conversation;
     this.#memory = options.memory;
     this.#now = options.now ?? Date.now;
@@ -131,18 +138,22 @@ export class ConversationOrchestrator {
         }
       | undefined;
     try {
-      eventId = this.#conversation.record({
+      const applied = this.#context.apply({
+        attachmentMetadataJson: '[]',
         content: turn.content,
-        medium: 'text',
+        editedAt: null,
+        messageId: turn.platformSourceId,
         occurredAt: turn.occurredAt,
         platformEventId: `discord:text:${turn.platformSourceId}`,
-        recentUntil: turn.occurredAt + CONVERSATION_RETENTION_MS,
+        replyToMessageId: null,
         requestId: turn.requestId,
-        retentionDeadline: turn.occurredAt + SOURCE_RETENTION_MS,
         role: 'human',
         speakerId: turn.speakerId,
         speakerName: turn.speakerName,
+        type: 'upsert',
       });
+      if (applied.eventId === null) throw new Error('source was suppressed');
+      eventId = applied.eventId;
       const source: SourceObservation = {
         content: turn.content,
         medium: 'text',
@@ -169,25 +180,18 @@ export class ConversationOrchestrator {
     if (turn.kind === 'observe') return Promise.resolve(null);
     if (turn.kind === 'greeting') {
       return Promise.resolve(
-        this.#recordLocalReply(
-          turn,
-          'At your service, Mr. President',
-          'completed',
-        ),
+        this.#recordLocalReply('At your service, Mr. President', 'completed'),
       );
     }
-    if (explicit !== undefined) return this.#handleExplicit(turn, explicit);
+    if (explicit !== undefined) return this.#handleExplicit(explicit);
     return this.#handlePaidText(turn, eventId);
   }
 
-  #handleExplicit(
-    turn: NormalizedTextTurn & { readonly kind: 'request' },
-    explicit: {
-      readonly intent: ExplicitMemoryIntent;
-      readonly source: SourceObservation;
-      readonly sourceEventId: number;
-    },
-  ): Promise<ConversationResult> {
+  #handleExplicit(explicit: {
+    readonly intent: ExplicitMemoryIntent;
+    readonly source: SourceObservation;
+    readonly sourceEventId: number;
+  }): Promise<ConversationResult> {
     return this.#enqueue(async () => {
       const receipt = await this.#memory.applyExplicit({
         ...explicit,
@@ -195,7 +199,6 @@ export class ConversationOrchestrator {
       });
       this.#telemetry?.({ outcome: receipt.status, type: 'explicit-memory' });
       return this.#recordLocalReply(
-        turn,
         explicitReceiptContent(receipt),
         receipt.status === 'budget-paused'
           ? 'budget-paused'
@@ -216,7 +219,6 @@ export class ConversationOrchestrator {
     );
     if (!reservation.allowed) {
       return this.#recordLocalReply(
-        turn,
         'AI usage is paused until the next UTC month, Mr. President',
         'budget-paused',
       );
@@ -268,7 +270,7 @@ export class ConversationOrchestrator {
           content: ensureTextSuffix(answer.content),
           status: 'completed' as const,
         };
-        return this.#recordReply(turn, result);
+        return result;
       } catch {
         this.#budget.reconcile(reservation.id, this.#reservations.textUsd);
         return {
@@ -299,38 +301,18 @@ export class ConversationOrchestrator {
   }
 
   #recordLocalReply(
-    turn: NormalizedTextTurn,
     content: string,
     status: ConversationResult['status'],
   ): ConversationResult {
-    return this.#recordReply(turn, {
+    return {
       citations: [],
       content: ensureTextSuffix(content),
       status,
-    });
+    };
   }
 
-  #recordReply(
-    turn: NormalizedTextTurn,
-    result: ConversationResult,
-  ): ConversationResult {
-    try {
-      this.#conversation.record({
-        content: result.content,
-        medium: 'text',
-        occurredAt: this.#now(),
-        platformEventId: `chief:${turn.requestId}`,
-        recentUntil: this.#now() + CONVERSATION_RETENTION_MS,
-        requestId: turn.requestId,
-        retentionDeadline: this.#now() + SOURCE_RETENTION_MS,
-        role: 'chief',
-        speakerId: null,
-        speakerName: 'Chief',
-      });
-      return result;
-    } catch {
-      return this.#lostThread();
-    }
+  public recordDeliveredReply(input: DeliveredReplyInput): void {
+    this.#context.recordDeliveredReply(input);
   }
 
   #lostThread(): ConversationResult {

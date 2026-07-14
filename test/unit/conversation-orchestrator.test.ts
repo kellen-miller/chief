@@ -11,6 +11,7 @@ import {
   type NormalizedTextTurn,
   type VoiceTurn,
 } from '../../src/app/conversation-orchestrator.js';
+import { ChannelContextService } from '../../src/context/channel-context-service.js';
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import {
   migrateChiefDatabase,
@@ -80,10 +81,12 @@ function createOrchestrator(
       timestamp: 1,
     });
   }
+  const conversation = new ConversationStore(database);
   return new ConversationOrchestrator({
     agent,
     budget,
-    conversation: new ConversationStore(database),
+    context: createContext(database, conversation, () => occurredAt),
+    conversation,
     memory: new MemoryService({
       budget,
       embed: () => Promise.resolve({ embedding: vector, usageUsd: 0.001 }),
@@ -96,7 +99,74 @@ function createOrchestrator(
   });
 }
 
+function createContext(
+  database: ReturnType<typeof openChiefDatabase>,
+  conversation = new ConversationStore(database),
+  now: () => number = () => occurredAt,
+): ChannelContextService {
+  return new ChannelContextService({
+    channelId: 'main-text',
+    conversation,
+    database,
+    guildId: 'presidents',
+    now,
+    timeZone: 'America/New_York',
+  });
+}
+
 describe('ConversationOrchestrator', () => {
+  it('records no Chief source before Discord delivery', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const store = new SqliteMemoryStore(database);
+    const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+    const orchestrator = new ConversationOrchestrator({
+      agent: {
+        answerText: () =>
+          Promise.resolve({ citations: [], content: 'Answer', usageUsd: 0.01 }),
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe: vi.fn(),
+      },
+      budget,
+      context: createContext(database, undefined, () => 1_000),
+      conversation: new ConversationStore(database),
+      memory: new MemoryService({
+        budget,
+        embed: () =>
+          Promise.resolve({
+            embedding: new Float32Array(1_536),
+            usageUsd: 0,
+          }),
+        estimateUsd: 0.1,
+        extract: () => Promise.resolve({ proposals: [], usageUsd: 0 }),
+        store,
+      }),
+      now: () => 1_000,
+    });
+
+    await orchestrator.handleText({
+      content: 'Chief, answer',
+      kind: 'request',
+      occurredAt: 500,
+      platformSourceId: '52345678901234567',
+      prompt: 'answer',
+      requestId: '52345678901234567',
+      speakerId: '42345678901234567',
+      speakerName: 'President Test',
+    });
+
+    expect(
+      database
+        .prepare(
+          "select count(*) from conversation_events where role = 'chief'",
+        )
+        .pluck()
+        .get(),
+    ).toBe(0);
+    database.close();
+  });
+
   it('keeps text raw content after recent context expires', async () => {
     const now = Date.UTC(2026, 6, 14, 12);
     occurredAt = now;
@@ -112,7 +182,7 @@ describe('ConversationOrchestrator', () => {
       new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
     );
 
-    await orchestrator.handleText({
+    const result = await orchestrator.handleText({
       content: 'Question',
       kind: 'request',
       occurredAt: now,
@@ -121,6 +191,13 @@ describe('ConversationOrchestrator', () => {
       requestId: 'retention-question',
       speakerId: 'president-test',
       speakerName: 'President Test',
+    });
+    if (result === null) throw new Error('expected a reply');
+    orchestrator.recordDeliveredReply({
+      chunks: [{ content: result.content, messageId: '62345678901234567' }],
+      logicalResponseId: 'retention-response',
+      replyToMessageId: 'retention-question',
+      requestId: 'retention-question',
     });
 
     const sevenDays = 7 * 24 * 60 * 60 * 1_000;
@@ -324,9 +401,16 @@ describe('ConversationOrchestrator', () => {
       new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
     );
 
-    await orchestrator.handleText(
+    const first = await orchestrator.handleText(
       textTurn({ prompt: 'List Teddy teams', requestId: '1' }),
     );
+    if (first === null) throw new Error('expected a reply');
+    orchestrator.recordDeliveredReply({
+      chunks: [{ content: first.content, messageId: '62345678901234568' }],
+      logicalResponseId: 'response-1',
+      replyToMessageId: '1',
+      requestId: '1',
+    });
     await orchestrator.handleText(
       textTurn({ prompt: 'What about those?', requestId: '2' }),
     );
@@ -359,6 +443,7 @@ describe('ConversationOrchestrator', () => {
         transcribe: vi.fn(),
       },
       budget,
+      context: createContext(database),
       conversation: new ConversationStore(database),
       memory: new MemoryService({
         budget,
@@ -431,6 +516,7 @@ describe('ConversationOrchestrator', () => {
       const orchestrator = new ConversationOrchestrator({
         agent,
         budget,
+        context: createContext(database),
         conversation: new ConversationStore(database),
         memory: new MemoryService({
           budget,
@@ -513,6 +599,7 @@ describe('ConversationOrchestrator', () => {
         transcribe: vi.fn(),
       },
       budget,
+      context: createContext(database),
       conversation: new ConversationStore(database),
       memory: new MemoryService({
         budget,
@@ -780,6 +867,7 @@ describe('ConversationOrchestrator', () => {
         transcribe: vi.fn(),
       },
       budget,
+      context: createContext(database, conversation),
       conversation,
       memory: new MemoryService({
         budget,
@@ -825,6 +913,7 @@ describe('ConversationOrchestrator', () => {
         transcribe: vi.fn(),
       },
       budget,
+      context: createContext(database, conversation),
       conversation,
       memory: new MemoryService({
         budget,
