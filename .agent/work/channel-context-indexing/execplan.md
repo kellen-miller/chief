@@ -22,7 +22,7 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 - [x] (2026-07-14 08:05Z) Task 3 added one protected paid-work queue, fair deadline-ordered background scheduling, categorized/month-safe budget accounting, provisional/final hourly plus daily/weekly/topic rollups, strict bounded summarization and segmentation, tiered retention, non-readiness lag diagnostics, and graceful draining; 300 tests and final review passed after two correction loops.
 - [x] (2026-07-14 09:39Z) Task 4 assembled one bounded text/Realtime context with one embedding per query, per-tier source and rollup retrieval, recent/history budgeting, provenance links, deterministic replay, privacy/as-of boundaries, and utterance-safe voice recall; 331 tests and final review passed after three correction loops.
 - [x] (2026-07-14 11:43Z) Task 5 implemented redacted cross-store candidate discovery, current self/admin authorization, single-use broad confirmation, one synchronous atomic deletion shared by local and authoritative Discord suppression, immutable GCS upload/retry, content-free migration-safe replay, complete revision scrubbing, and stale-job-safe lineage rebuild; 362 tests and final review passed after three correction loops.
-- [ ] Milestone 6: add dry-run and resumable full-history backfill.
+- [x] (2026-07-14 12:22Z) Task 6 added an aggregate-only reverse manifest, owner-confirmed activation, GET-only Discord REST history, bounded derived-only expired-history processing, oldest-first resumable segment commits, tombstone/revision guards, and shared queue/budget execution; 388 tests and the repository gate passed.
 - [ ] Milestone 7: expose degraded health, document operations, and validate rollback.
 - [ ] Milestone 8: complete deterministic, quality, container, and live acceptance evidence.
 
@@ -92,6 +92,12 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
   Evidence: Task 5 review found runtime would otherwise leave every journal pending. Runtime now writes immutable GCS journal objects and drains pending rows on startup and in the background; host-wide fail-closed replay remains Task 7.
 - Observation: an external-content FTS row for a superseded durable memory was already removed when the replacement became active.
   Evidence: deleting that index row again produced `SQLITE_CORRUPT_VTAB`. Task 5 traverses and scrubs the full predecessor chain but removes FTS/vector entries only for active indexed versions.
+- Observation: resuming an aggregate-only dry-run cannot reconstruct duplicate identity from the durable manifest without persisting the source inventory.
+  Evidence: Task 6 refetches every previously recorded page boundary to rebuild an in-memory seen-ID set before it continues from the durable cursor; overlapping pages remain deduplicated without durable raw IDs or text.
+- Observation: a crashed paid backfill can leave a durable unresolved reservation that a newly constructed in-memory budget does not know about.
+  Evidence: Task 6 restart tests leave an unresolved ledger row, require conservative reconciliation before admission, and pause against the approved run ceiling without invoking the provider again.
+- Observation: bounded segments for the same historical hour need private derived children before they can safely replace one public active hourly revision.
+  Evidence: Task 6 stores one internal derived document per committed segment, aggregates active internal children into the public hourly revision, and preserves all child lineage while never persisting expired raw text.
 
 ## Decision Log
 
@@ -146,6 +152,15 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 - Decision: emit content-free external journal entries for authoritative Discord source deletions as well as explicit local forget operations.
   Rationale: both operations must remain suppressed when Chief starts from an older recovery artifact; reconciliation after startup is too late.
   Date/Author: 2026-07-14, Codex during implementation preflight.
+- Decision: reconstruct dry-run duplicate identity by refetching recorded page boundaries rather than persisting message IDs.
+  Rationale: page boundaries and aggregate checksums are sufficient durable progress; retaining the full historical source inventory would expand privacy-sensitive state merely to optimize resume.
+  Date/Author: 2026-07-14, Codex during Task 6 implementation.
+- Decision: represent expired raw sources as scrubbed retention-expired conversation identities only inside the atomic derived-document commit.
+  Rationale: existing lineage, tombstone, correction, and rebuild policy requires stable source identity, while the approved retention boundary prohibits durable historical text.
+  Date/Author: 2026-07-14, Codex during Task 6 implementation.
+- Decision: attach backfill as a separate source on the existing background scheduler and reuse the runtime's single `UsageBudget`.
+  Rationale: this preserves live-work priority and one authoritative view of overall, indexing, interactive-headroom, and per-run reservations across restart.
+  Date/Author: 2026-07-14, Codex during Task 6 implementation.
 - Decision: require confirmation for every broad scope, store only a nonce checksum and stable candidate IDs, and reevaluate authorization when the confirmation is presented.
   Rationale: candidate counts and target text do not belong in an authorization response, a leaked database must not reveal a usable nonce, and administrator authority may change during the confirmation window.
   Date/Author: 2026-07-14, Codex during Task 5 implementation.
@@ -155,7 +170,7 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 
 ## Outcomes & Retrospective
 
-Milestones 1 through 5 are implemented. Task 5 makes natural-language forgetting a redacted, authorized, confirmation-aware operation that removes selected material from active local SQL, search, vectors, durable memory, private extraction snapshots, assembled context, and restored backups after journal replay. The runtime uploads immutable content-free journals and retries its outbox on startup/background; the operational milestone still owns the unconditional host preflight, lifecycle policy, and rollback validation. The repository gate passes 362 deterministic tests with no provider or live Discord calls. No live acceptance is claimed.
+Milestones 1 through 6 are implemented. Task 6 can inventory accessible channel history without persisting message content, obtain explicit owner activation and a per-run ceiling, then use the running process's existing protected queue and budget to process oldest-first history. Recent sources follow normal ingestion; expired sources become only scrubbed identities plus derived, provenance-backed documents. Tombstones, live revisions, restart reservations, rate limits, duplicates, and page/segment replay remain safe. The repository gate passes 388 deterministic tests with no provider or live Discord calls. Operational and live acceptance remain in Milestones 7 and 8; no live acceptance is claimed.
 
 ## Context and Orientation
 
@@ -444,3 +459,4 @@ Current relevant dependencies are `discord.js` 14.26.5, `openai` 6.46.0, `@opena
 - 2026-07-14: Improvement pass 4 resolved adversarial findings across the real repository: dynamic Realtime recall, budget admission headroom, partial/bulk/offline Discord lifecycle handling, synchronous atomic deletion, actual delivered reply IDs, schema-aware restore checks, backup forget-journal replay, safe SQLite migration/FTS semantics, and measurable quality gates. Usefulness score: 10/10 because each change closed a concrete correctness, privacy, availability, or release-decision gap that queue priority or broad acceptance prose had hidden.
 - 2026-07-14: Improvement pass 5 closed the resolution review's remaining recovery and identity seams: unconditional fail-closed journal replay on every host start, migration-0002 recovery through a separate image, bounded local recovery artifacts, one source row per Chief reply chunk, covered deletion-inference logic, and explicit source-FTS retrieval. Usefulness score: 10/10 because it removed operator bypass, old-image, forgotten-byte, coverage, duplicate-chunk, and one-second retrieval ambiguities before implementation.
 - 2026-07-14: Task 5 implemented the planned synchronous deletion seam and refined confirmation-time permission checks, broad no-match redaction, supersession-chain scrubbing, and artifact-independent tombstone replay from executable regressions. These changes preserve the approved policy while closing concrete permission-loss, FTS, and older-backup failure modes.
+- 2026-07-14: Task 6 implemented the content-free reverse manifest and runtime-owned backfill seam. Resume refetches prior page boundaries to preserve privacy, expired raw content exists only in bounded memory before an atomic derived commit, and restart admission conservatively charges unresolved reservations before any new provider call.
