@@ -49,7 +49,8 @@ boundaries and do not duplicate ordering or file-selection knowledge.
 - [x] (2026-07-14 00:22Z) Ran the formal Standards and Spec reviews; resolved
       all standards findings and added the missing staged-source validation found by
       the Spec axis.
-- [ ] Run the adversarial implementation review.
+- [x] (2026-07-14 00:28Z) Completed the bounded adversarial implementation
+      review; no verified serious findings remained after the formal fixes.
 - [x] (2026-07-14 00:16Z) Ran all local validation and created the reviewed
       Conventional Commit.
 - [ ] Push the explicit remote ref, open the PR, and verify the four required
@@ -131,10 +132,10 @@ set for option Signed-By`.
 ## Outcomes & Retrospective
 
 Implementation is complete at the planned seams. Review and full validation are
-partially complete. The recent-work pass found no code defect; formal and
-two-axis review findings are resolved, and the adversarial implementation review
-remains. Completion depends on GitHub evidence, not the existence of this plan
-or local green tests.
+complete locally. The recent-work pass found no code defect, the formal two-axis
+review findings are resolved, and the final bounded adversarial pass found no
+remaining serious issue. Completion now depends on refreshed validation and
+GitHub evidence, not the existence of this plan or earlier green tests.
 
 ## Context and Orientation
 
@@ -391,3 +392,8 @@ filename glob to repository-content ownership, retained Debian's package-keyring
 suite, changed replacement order so the canonical file exists before legacy
 cleanup, and required fail-fast semantics in the remote deployment shell. It
 also verified and retained the narrow non-`--all` Docker prune design.
+
+Revision note (2026-07-14): Formal implementation review corrected plan
+freshness and added exact staged-source validation. The external adversarial
+implementation command timed out without a verdict; a fresh bounded fallback
+review completed with zero verified serious findings.
