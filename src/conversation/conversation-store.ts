@@ -4,6 +4,7 @@ import type {
   ContextContentState,
   ContextContentStateReason,
 } from '../context/context-types.js';
+import { hasSufficientLexicalOverlap } from '../context/lexical-relevance.js';
 
 export type ConversationRole = 'human' | 'chief';
 export type ConversationMedium = 'text' | 'voice';
@@ -278,12 +279,10 @@ export class ConversationStore {
       const remaining = maxApproxTokens - approximateTokens;
       const tokens = estimateTokens(row.content);
       if (tokens > remaining) {
-        if (selected.length === 0) {
-          const content = truncateToTokens(row.content, remaining);
-          if (content.length > 0) {
-            selected.push({ ...row, content });
-            approximateTokens = estimateTokens(content);
-          }
+        const content = truncateToTokens(row.content, remaining);
+        if (content.length > 0) {
+          selected.push({ ...row, content });
+          approximateTokens += estimateTokens(content);
         }
         break;
       }
@@ -301,8 +300,10 @@ export class ConversationStore {
     readonly excludeLogicalResponseIds?: readonly string[];
     readonly guildId: string;
     readonly lexicalQuery: string;
+    readonly lexicalTerms: readonly string[];
     readonly limit: number;
   }): readonly ConversationSourceGroup[] {
+    if (input.limit <= 0) return [];
     const excludedEventIds = input.excludeEventIds ?? [];
     const excludedResponseIds = input.excludeLogicalResponseIds ?? [];
     const eventExclusion =
@@ -316,9 +317,8 @@ export class ConversationStore {
                    e.logical_response_id not in (${excludedResponseIds
                      .map(() => '?')
                      .join(', ')}))`;
-    const matches = this.#database
-      .prepare(
-        `select e.id, e.content,
+    const search = this.#database.prepare(
+      `select e.id, e.content,
                 e.discord_message_id as discordMessageId,
                 e.logical_response_id as logicalResponseId,
                 e.occurred_at as occurredAt,
@@ -332,10 +332,15 @@ export class ConversationStore {
            and (? is null or e.id < ?)
            ${eventExclusion}
            ${responseExclusion}
-         order by bm25(conversation_event_fts), e.occurred_at desc
-         limit ?`,
-      )
-      .all(
+         order by bm25(conversation_event_fts), e.occurred_at desc, e.id desc
+         limit ? offset ?`,
+    );
+    const groups: ConversationSourceGroup[] = [];
+    const seen = new Set<string>();
+    const pageSize = Math.max(input.limit, 24);
+    let offset = 0;
+    while (groups.length < input.limit) {
+      const matches = search.all(
         input.lexicalQuery,
         input.guildId,
         input.channelId,
@@ -343,50 +348,60 @@ export class ConversationStore {
         input.beforeEventId ?? null,
         ...excludedEventIds,
         ...excludedResponseIds,
-        input.limit,
+        pageSize,
+        offset,
       ) as ConversationSourceRow[];
-    const groups: ConversationSourceGroup[] = [];
-    const seen = new Set<string>();
-    for (const match of matches) {
-      const key =
-        match.role === 'chief' && match.logicalResponseId !== null
-          ? `response:${match.logicalResponseId}`
-          : `event:${String(match.id)}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const rows =
-        match.role === 'chief' && match.logicalResponseId !== null
-          ? (this.#database
-              .prepare(
-                `select id, content,
-                        discord_message_id as discordMessageId,
-                        logical_response_id as logicalResponseId,
-                        occurred_at as occurredAt,
-                        response_chunk_index as responseChunkIndex,
-                        role, speaker_name as speakerName
-                 from conversation_events
-                 where guild_id = ? and channel_id = ?
-                   and logical_response_id = ? and role = 'chief'
-                   and content_state = 'available'
-                   and (? is null or id < ?)
-                 order by coalesce(response_chunk_index, 2147483647), id`,
-              )
-              .all(
-                input.guildId,
-                input.channelId,
-                match.logicalResponseId,
-                input.beforeEventId ?? null,
-                input.beforeEventId ?? null,
-              ) as ConversationSourceRow[])
-          : [match];
-      groups.push({
-        content: rows.map(({ content }) => content).join(''),
-        ids: rows.map(({ id }) => id),
-        logicalResponseId: match.logicalResponseId,
-        messageIds: rows.map(({ discordMessageId }) => discordMessageId),
-        occurredAt: Math.min(...rows.map(({ occurredAt }) => occurredAt)),
-        speakerName: match.speakerName,
-      });
+      offset += matches.length;
+      for (const match of matches) {
+        const key =
+          match.role === 'chief' && match.logicalResponseId !== null
+            ? `response:${match.logicalResponseId}`
+            : `event:${String(match.id)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const rows =
+          match.role === 'chief' && match.logicalResponseId !== null
+            ? (this.#database
+                .prepare(
+                  `select id, content,
+                          discord_message_id as discordMessageId,
+                          logical_response_id as logicalResponseId,
+                          occurred_at as occurredAt,
+                          response_chunk_index as responseChunkIndex,
+                          role, speaker_name as speakerName
+                   from conversation_events
+                   where guild_id = ? and channel_id = ?
+                     and logical_response_id = ? and role = 'chief'
+                     and content_state = 'available'
+                     and (? is null or id < ?)
+                   order by coalesce(response_chunk_index, 2147483647), id`,
+                )
+                .all(
+                  input.guildId,
+                  input.channelId,
+                  match.logicalResponseId,
+                  input.beforeEventId ?? null,
+                  input.beforeEventId ?? null,
+                ) as ConversationSourceRow[])
+            : [match];
+        const content = rows.map((row) => row.content).join('');
+        const searchableContent = rows.map((row) => row.content).join(' ');
+        if (
+          !hasSufficientLexicalOverlap(input.lexicalTerms, searchableContent)
+        ) {
+          continue;
+        }
+        groups.push({
+          content,
+          ids: rows.map(({ id }) => id),
+          logicalResponseId: match.logicalResponseId,
+          messageIds: rows.map(({ discordMessageId }) => discordMessageId),
+          occurredAt: Math.min(...rows.map(({ occurredAt }) => occurredAt)),
+          speakerName: match.speakerName,
+        });
+        if (groups.length === input.limit) break;
+      }
+      if (matches.length < pageSize) break;
     }
     return groups;
   }

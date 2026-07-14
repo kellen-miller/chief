@@ -782,6 +782,86 @@ describe('ContextAssembler', () => {
     database.close();
   });
 
+  it('rejects incidental lexical overlap but keeps lexical-only evidence', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const conversation = new ConversationStore(database);
+    const memoryStore = new SqliteMemoryStore(database);
+    const weakSourceId = recordEvent(conversation, {
+      content: 'The unrelated project lunch menu.',
+      messageId: '52345678901234632',
+      occurredAt: now - 4_000,
+      recentUntil: now - 1,
+    });
+    indexSource(database, weakSourceId, 'The unrelated project lunch menu.');
+    const validSourceId = recordEvent(conversation, {
+      content: 'Marigold launch review.',
+      messageId: '52345678901234633',
+      occurredAt: now - 3_000,
+      recentUntil: now - 1,
+    });
+    indexSource(database, validSourceId, 'Marigold launch review.');
+    for (const [index, summary] of [
+      'The unrelated project lunch plan.',
+      'Marigold launch readiness review.',
+    ].entries()) {
+      const eventId = recordEvent(conversation, {
+        content: `Lexical lineage ${String(index)}`,
+        messageId: String(52345678901234634n + BigInt(index)),
+        occurredAt: now - (index + 1) * 1_000,
+        recentUntil: now - 1,
+      });
+      insertDocument(database, {
+        eventIds: [eventId],
+        id: index + 1,
+        periodEnd: now - index,
+        periodStart: now - 24 * 60 * 60 * 1_000,
+        summary,
+        tier: 'daily',
+      });
+      database
+        .prepare('delete from context_document_vectors where document_id = ?')
+        .run(BigInt(index + 1));
+      database
+        .prepare(
+          'insert into context_document_vectors (document_id, embedding) values (?, ?)',
+        )
+        .run(
+          BigInt(index + 1),
+          JSON.stringify(Array.from(new Float32Array(1_536).fill(0.5))),
+        );
+    }
+    const assembler = new ContextAssembler({
+      channelId,
+      conversation,
+      database,
+      embed: () => Promise.resolve({ embedding: queryVector, usageUsd: 0.001 }),
+      guildId,
+      memory: new MemoryService({
+        budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
+        embed: vi.fn(),
+        estimateUsd: 0.1,
+        extract: vi.fn(),
+        store: memoryStore,
+      }),
+      timeZone: 'America/New_York',
+    });
+
+    const prepared = await assembler.assemble({
+      now,
+      prompt: 'Marigold launch project',
+    });
+    const statements = prepared.historicalContext.map((context) =>
+      context.evidenceForm === 'source' ? context.text : context.summary,
+    );
+
+    expect(statements).toEqual([
+      'Marigold launch review.',
+      'Marigold launch readiness review.',
+    ]);
+    database.close();
+  });
+
   it('does not retrieve rollups from another channel', async () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);

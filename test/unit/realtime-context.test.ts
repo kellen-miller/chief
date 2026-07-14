@@ -17,6 +17,57 @@ import { SqliteMemoryStore } from '../../src/memory/memory-store.js';
 import { UsageBudget } from '../../src/usage/usage-budget.js';
 
 describe('Realtime context recall', () => {
+  it('rejects committed greeting noise without blocking a short topic query', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const memory = new MemoryService({
+      budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
+      embed: vi.fn(),
+      estimateUsd: 0.1,
+      extract: vi.fn(),
+      store: new SqliteMemoryStore(database),
+    });
+    const assemble = vi.fn(() =>
+      Promise.resolve(preparedRealtimeContext('52345678901234569', 0.001)),
+    );
+    const state = {
+      citations: new Set<string>(),
+      committedUtterance: 1,
+      persistenceFailed: false,
+      successfulRecallUtterance: null,
+      usageUsd: 0,
+    };
+    const tools = createRealtimeContextTools(
+      { assemble },
+      memory,
+      {
+        recentConversation: [],
+        requestId: 'voice-substantive',
+        speakerId: 'president-1',
+        speakerName: 'President One',
+      },
+      state,
+    );
+    const recall = tools.find(
+      (candidate) => candidate.name === 'recall_context',
+    );
+    if (recall === undefined) throw new Error('context recall tool missing');
+
+    await expect(
+      recall.invoke({} as never, JSON.stringify({ query: 'Hello, Chief' })),
+    ).resolves.toContain('non-substantive-query');
+    expect(assemble).not.toHaveBeenCalled();
+    await expect(
+      recall.invoke({} as never, JSON.stringify({ query: 'x' })),
+    ).resolves.toContain('non-substantive-query');
+    expect(assemble).not.toHaveBeenCalled();
+    await expect(
+      recall.invoke({} as never, JSON.stringify({ query: 'Budget?' })),
+    ).resolves.toContain('"userRequest":"Budget?"');
+    expect(assemble).toHaveBeenCalledOnce();
+    database.close();
+  });
+
   it('discards stale recall side effects after the next utterance commits', async () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);

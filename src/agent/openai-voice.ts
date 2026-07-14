@@ -603,6 +603,9 @@ export function createRealtimeContextTools(
       if (state.committedUtterance <= 0) {
         return JSON.stringify({ status: 'no-committed-utterance' });
       }
+      if (!isSubstantiveRecallQuery(query)) {
+        return JSON.stringify({ status: 'non-substantive-query' });
+      }
       const utterance = state.committedUtterance;
       if (
         state.successfulRecallUtterance === utterance ||
@@ -689,6 +692,39 @@ export function createRealtimeContextTools(
     timeoutMs: 30_000,
   });
   return [recall, mutate];
+}
+
+const REALTIME_RECALL_NOISE = new Set([
+  'chief',
+  'hello',
+  'hey',
+  'hi',
+  'hmm',
+  'no',
+  'ok',
+  'okay',
+  'test',
+  'testing',
+  'thank',
+  'thanks',
+  'uh',
+  'um',
+  'yeah',
+  'yep',
+  'yes',
+  'yo',
+]);
+
+function isSubstantiveRecallQuery(query: string): boolean {
+  const tokens = query
+    .normalize('NFKC')
+    .toLocaleLowerCase('en-US')
+    .match(/[\p{L}\p{N}]+/gu);
+  return (
+    tokens?.some(
+      (token) => token.length >= 2 && !REALTIME_RECALL_NOISE.has(token),
+    ) ?? false
+  );
 }
 
 export function createRealtimeResearchTool(

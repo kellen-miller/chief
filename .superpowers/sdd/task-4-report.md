@@ -75,6 +75,20 @@ The implementation followed RED-GREEN cycles with focused local tests:
   into the query before its limit.
 - A later rollup appeared in an earlier replay turn, then recursive candidate
   lineage required every contributing event ID to precede `beforeEventId`.
+- Multiple recent rows underfilled the 6,000-token recent budget when the next
+  older row was oversized, then that row was truncated into the remaining
+  allowance. The regression now proves at least 4,000 recent tokens remain
+  available when the retained content can supply them.
+- Twenty-five matching Chief chunks consumed the raw source FTS limit and hid
+  another relevant response, then source matches were paged, grouped, relevance
+  checked, and limited in that order.
+- A common term in an OR query admitted unrelated source and rollup evidence,
+  then lexical candidates required both majority overlap and at least two
+  distinct meaningful terms for multi-term prompts. Single named-term and
+  valid lexical-only evidence remain supported.
+- Realtime trusted its instruction prompt to prevent greeting and one-character
+  recall calls, then a deterministic pre-assembler guard rejected both while a
+  short topical query on the same committed utterance still succeeded.
 
 No test makes a paid provider call. Embeddings, provider responses, clocks, and
 the retrieval corpus are deterministic and local.
@@ -102,21 +116,26 @@ the retrieval corpus are deterministic and local.
   below 8,000 approximate recent-plus-history tokens, retained at least 4,000
   approximate recent tokens, and truncated relevant history rather than
   dropping it. This supports retaining the initial fixed allocation.
+- Retrieval-intent words should not become relevance requirements. The full
+  replay exposed `source` in "Show the SourceBeacon source" as metadata rather
+  than a topic term, so it joined the lexical stop-word set while the named
+  beacon remained eligible.
 
 ## Verification
 
 `pnpm verify` passed:
 
 - Prettier, ESLint, and TypeScript checks passed.
-- 40 test files passed with 325 tests.
-- Coverage: 91.04% statements, 83.31% branches, 92.87% functions, and 92.61%
+- 40 test files passed with 328 tests.
+- Coverage: 91.07% statements, 83.42% branches, 92.96% functions, and 92.69%
   lines.
-- `ContextAssembler`: 98.18% statements, 87.77% branches, and 100% functions
+- `ContextAssembler`: 98.71% statements, 88.09% branches, and 100% functions
   and lines.
 - The production TypeScript build passed.
 
 Focused Task 4 verification also passed with 78 unit tests and two integration
-replays. `git diff --check` passed before the final commit.
+replays. Post-review verification passed 22 focused unit tests and 12 focused
+integration tests. `git diff --check` passed before the final commit.
 
 ## Independent review response
 
@@ -142,6 +161,18 @@ substantiated Important findings were reproduced and resolved:
    limit, so recent matches cannot starve retained historical evidence.
 9. Rollup candidate lineage is point-in-time safe: every contributing event
    must precede the current event boundary.
+10. Recent selection truncates any next oversized row into the remaining
+    budget, not only the first selected row, preserving the intended recent
+    context floor when content is available.
+11. Source FTS limits apply after Chief logical-response grouping and lexical
+    relevance checks, so one multi-chunk response cannot crowd out distinct
+    candidates.
+12. Lexical source and rollup candidates pass an absolute distinct-term overlap
+    gate before ranking; vector candidates still use their independent distance
+    threshold, and valid lexical-only evidence remains retrievable.
+13. Realtime recall rejects committed greeting and one-character noise before
+    claiming the per-utterance recall slot, preserving a subsequent short
+    topical request on that utterance.
 
 ## Concerns
 

@@ -239,11 +239,14 @@ describe('ConversationStore', () => {
     database.close();
   });
 
-  it('stops before an older event that would exceed the remaining budget', () => {
+  it('truncates an older event to fill the remaining token budget', () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
     const store = new ConversationStore(database);
-    for (const [index, content] of ['o'.repeat(30), 'n'.repeat(15)].entries()) {
+    for (const [index, content] of [
+      'o'.repeat(12_000),
+      'n'.repeat(9_000),
+    ].entries()) {
       store.record({
         content,
         medium: 'text',
@@ -257,12 +260,81 @@ describe('ConversationStore', () => {
       });
     }
 
-    const recent = store.recent({ maxApproxTokens: 6, now: 100 });
+    const recent = store.recent({ maxApproxTokens: 6_000, now: 100 });
 
     expect(recent.events.map(({ content }) => content)).toEqual([
-      'n'.repeat(15),
+      'o'.repeat(9_000),
+      'n'.repeat(9_000),
     ]);
-    expect(recent.approximateTokens).toBe(5);
+    expect(recent.approximateTokens).toBeGreaterThanOrEqual(4_000);
+    expect(recent.approximateTokens).toBe(6_000);
+    database.close();
+  });
+
+  it('limits source search after grouping Chief response chunks', () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const store = new ConversationStore(database);
+    for (let index = 0; index < 25; index += 1) {
+      const eventId = store.record({
+        channelId: 'main',
+        content: 'ChunkBeacon',
+        discordMessageId: String(52345678901235000n + BigInt(index)),
+        guildId: 'presidents',
+        logicalResponseId: 'chunked-response',
+        medium: 'text',
+        occurredAt: 100 - index,
+        platformEventId: `chief:chunk:${String(index)}`,
+        requestId: 'chunked-request',
+        responseChunkIndex: index,
+        retentionDeadline: 1_000,
+        role: 'chief',
+        speakerId: null,
+        speakerName: 'Chief',
+      });
+      database
+        .prepare(
+          'insert into conversation_event_fts (rowid, content) values (?, ?)',
+        )
+        .run(eventId, 'ChunkBeacon');
+    }
+    const independentId = store.record({
+      channelId: 'main',
+      content: 'ChunkBeacon independent source.',
+      discordMessageId: '52345678901235025',
+      guildId: 'presidents',
+      medium: 'text',
+      occurredAt: 1,
+      platformEventId: 'independent-source',
+      requestId: 'independent-source',
+      retentionDeadline: 1_000,
+      role: 'human',
+      speakerId: 'president',
+      speakerName: 'President',
+    });
+    database
+      .prepare(
+        'insert into conversation_event_fts (rowid, content) values (?, ?)',
+      )
+      .run(independentId, 'ChunkBeacon independent source.');
+
+    const groups = store.searchTextSourceGroups({
+      channelId: 'main',
+      guildId: 'presidents',
+      lexicalQuery: '"chunkbeacon"',
+      lexicalTerms: ['chunkbeacon'],
+      limit: 24,
+    });
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0]?.logicalResponseId).toBe('chunked-response');
+    expect(groups[0]?.ids).toHaveLength(25);
+    expect(groups[1]).toEqual(
+      expect.objectContaining({
+        content: 'ChunkBeacon independent source.',
+        logicalResponseId: null,
+      }),
+    );
     database.close();
   });
 

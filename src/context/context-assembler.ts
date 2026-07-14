@@ -11,53 +11,17 @@ import type {
   PreparedContext,
 } from './context-types.js';
 import { ContextPersistenceError } from './context-errors.js';
+import {
+  buildLexicalQuery,
+  extractLexicalTerms,
+  hasSufficientLexicalOverlap,
+} from './lexical-relevance.js';
 
 const TOTAL_CONTEXT_TOKENS = 8_000;
 const MAX_RECENT_TOKENS = 6_000;
 const MAX_RECENT_MESSAGES = 30;
 const SEARCH_LIMIT = 24;
 const MAX_VECTOR_DISTANCE = 1.2;
-const QUERY_STOP_WORDS = new Set([
-  'a',
-  'about',
-  'an',
-  'and',
-  'are',
-  'can',
-  'decide',
-  'did',
-  'do',
-  'for',
-  'from',
-  'give',
-  'how',
-  'i',
-  'in',
-  'is',
-  'it',
-  'me',
-  'of',
-  'on',
-  'or',
-  'our',
-  'please',
-  'show',
-  'that',
-  'the',
-  'this',
-  'to',
-  'was',
-  'we',
-  'were',
-  'what',
-  'when',
-  'where',
-  'which',
-  'who',
-  'why',
-  'with',
-  'you',
-]);
 const TIER_ORDER = [
   'source',
   'hourly',
@@ -213,7 +177,8 @@ export class ContextAssembler {
     readonly recentEvents: ReturnType<ConversationStore['recent']>['events'];
   }): readonly HistoricalContext[] {
     if (input.historyTokenAllowance <= 0) return [];
-    const lexicalQuery = buildLexicalQuery(input.prompt);
+    const lexicalTerms = extractLexicalTerms(input.prompt);
+    const lexicalQuery = buildLexicalQuery(lexicalTerms);
     const recentEventIds = new Set(input.recentEvents.map(({ id }) => id));
     const recentResponseIds = new Set(
       input.recentEvents.flatMap(({ logicalResponseId }) =>
@@ -225,6 +190,7 @@ export class ContextAssembler {
       ranked.push(
         ...this.#sourceCandidates(
           lexicalQuery,
+          lexicalTerms,
           recentEventIds,
           recentResponseIds,
           input.beforeEventId,
@@ -236,6 +202,7 @@ export class ContextAssembler {
         ...this.#rollupCandidates(
           tier,
           lexicalQuery,
+          lexicalTerms,
           input.embedding,
           input.beforeEventId,
         ),
@@ -285,6 +252,7 @@ export class ContextAssembler {
 
   #sourceCandidates(
     lexicalQuery: string,
+    lexicalTerms: readonly string[],
     recentEventIds: ReadonlySet<number>,
     recentResponseIds: ReadonlySet<string>,
     beforeEventId: number | undefined,
@@ -296,6 +264,7 @@ export class ContextAssembler {
       excludeLogicalResponseIds: [...recentResponseIds],
       guildId: this.#guildId,
       lexicalQuery,
+      lexicalTerms,
       limit: SEARCH_LIMIT,
     });
     const eligible = expanded.filter(
@@ -335,15 +304,17 @@ export class ContextAssembler {
   #rollupCandidates(
     tier: ContextTier,
     lexicalQuery: string | undefined,
+    lexicalTerms: readonly string[],
     embedding: Float32Array,
     beforeEventId: number | undefined,
   ): RankedHistorical[] {
     const lexicalRows =
       lexicalQuery === undefined
         ? []
-        : (this.#database
-            .prepare(
-              `select d.id, d.tier, d.period_start as periodStart,
+        : (
+            this.#database
+              .prepare(
+                `select d.id, d.tier, d.period_start as periodStart,
                       d.period_end as periodEnd, d.topic_label as topicLabel,
                       d.summary, d.confidence
                from context_document_fts f
@@ -370,17 +341,21 @@ export class ContextAssembler {
                      on e_link.document_id = l.id
                    join conversation_events e on e.id = e_link.event_id
                  )
-               order by bm25(context_document_fts) limit ?`,
+               order by bm25(context_document_fts)`,
+              )
+              .all(
+                lexicalQuery,
+                tier,
+                this.#guildId,
+                this.#channelId,
+                beforeEventId ?? null,
+                beforeEventId ?? null,
+              ) as RollupSearchRow[]
+          )
+            .filter((row) =>
+              hasSufficientLexicalOverlap(lexicalTerms, row.summary),
             )
-            .all(
-              lexicalQuery,
-              tier,
-              this.#guildId,
-              this.#channelId,
-              beforeEventId ?? null,
-              beforeEventId ?? null,
-              SEARCH_LIMIT,
-            ) as RollupSearchRow[]);
+            .slice(0, SEARCH_LIMIT);
     const serializedEmbedding = JSON.stringify(Array.from(embedding));
     const vectorRows = this.#database
       .prepare(
@@ -547,18 +522,6 @@ export class ContextAssembler {
     if (row.tier === 'long-term') return `since ${date}`;
     return date;
   }
-}
-
-function buildLexicalQuery(text: string): string | undefined {
-  const tokens = text.match(/[\p{L}\p{N}]+/gu);
-  if (tokens === null || tokens.length === 0) return undefined;
-  const searchable = [
-    ...new Set(tokens.map((token) => token.toLocaleLowerCase('en-US'))),
-  ].filter((token) => !QUERY_STOP_WORDS.has(token));
-  if (searchable.length === 0) return undefined;
-  return searchable
-    .map((token) => `"${token.replaceAll('"', '""')}"`)
-    .join(' OR ');
 }
 
 function normalizedRank(index: number, count: number): number {
