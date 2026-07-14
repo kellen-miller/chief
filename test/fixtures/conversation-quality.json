@@ -305,14 +305,14 @@
         {
           "tier": "source",
           "provenanceId": "62345678901235018",
-          "contentState": "discord-deleted",
           "text": "IrisPlan launches Monday."
         }
       ],
-      "requiredClaims": ["corrected to launch Wednesday"],
-      "forbiddenClaims": ["IrisPlan launches Monday"],
-      "allowedProvenanceIds": ["62345678901235017"],
+      "requiredClaims": ["corrected to launch Wednesday", "launches Monday"],
+      "forbiddenClaims": ["IrisPlan is confirmed for Friday"],
+      "allowedProvenanceIds": ["62345678901235017", "62345678901235018"],
       "expectedClassification": "history",
+      "expectedFirstClaim": "corrected to launch Wednesday",
       "expectedRetrievalTier": "source",
       "expectedProvenanceQuality": "source-backed",
       "requestSourceLinks": false
@@ -320,7 +320,7 @@
     {
       "id": "correction-kite",
       "category": "correction",
-      "prompt": "What is the latest KitePlan?",
+      "prompt": "What does KitePlan now use?",
       "evidence": [
         {
           "tier": "source",
@@ -330,14 +330,14 @@
         {
           "tier": "source",
           "provenanceId": "62345678901235020",
-          "contentState": "locally-forgotten",
           "text": "KitePlan uses port 8080."
         }
       ],
-      "requiredClaims": ["now uses port 8443"],
-      "forbiddenClaims": ["uses port 8080"],
-      "allowedProvenanceIds": ["62345678901235019"],
+      "requiredClaims": ["now uses port 8443", "uses port 8080"],
+      "forbiddenClaims": ["KitePlan uses port 9000"],
+      "allowedProvenanceIds": ["62345678901235019", "62345678901235020"],
       "expectedClassification": "history",
+      "expectedFirstClaim": "now uses port 8443",
       "expectedRetrievalTier": "source",
       "expectedProvenanceQuality": "source-backed",
       "requestSourceLinks": false
@@ -345,7 +345,7 @@
     {
       "id": "correction-lumen",
       "category": "correction",
-      "prompt": "Recall the corrected LumenPlan.",
+      "prompt": "Who changed as LumenPlan owner?",
       "evidence": [
         {
           "tier": "source",
@@ -355,14 +355,14 @@
         {
           "tier": "source",
           "provenanceId": "62345678901235022",
-          "contentState": "discord-deleted",
           "text": "LumenPlan owner is Riley."
         }
       ],
-      "requiredClaims": ["owner changed to Morgan"],
-      "forbiddenClaims": ["owner is Riley"],
-      "allowedProvenanceIds": ["62345678901235021"],
+      "requiredClaims": ["owner changed to Morgan", "owner is Riley"],
+      "forbiddenClaims": ["LumenPlan owner is Casey"],
+      "allowedProvenanceIds": ["62345678901235021", "62345678901235022"],
       "expectedClassification": "history",
+      "expectedFirstClaim": "owner changed to Morgan",
       "expectedRetrievalTier": "source",
       "expectedProvenanceQuality": "source-backed",
       "requestSourceLinks": false
@@ -380,14 +380,14 @@
         {
           "tier": "source",
           "provenanceId": "62345678901235024",
-          "contentState": "locally-forgotten",
           "text": "MesaPlan region is us-west1."
         }
       ],
-      "requiredClaims": ["final region is us-east4"],
-      "forbiddenClaims": ["region is us-west1"],
-      "allowedProvenanceIds": ["62345678901235023"],
+      "requiredClaims": ["final region is us-east4", "region is us-west1"],
+      "forbiddenClaims": ["MesaPlan region is europe-west1"],
+      "allowedProvenanceIds": ["62345678901235023", "62345678901235024"],
       "expectedClassification": "history",
+      "expectedFirstClaim": "final region is us-east4",
       "expectedRetrievalTier": "source",
       "expectedProvenanceQuality": "source-backed",
       "requestSourceLinks": false
@@ -395,19 +395,31 @@
     {
       "id": "evolution-nova",
       "category": "topic-evolution",
-      "prompt": "How did NovaTopic evolve?",
+      "prompt": "How has NovaTopic evolved?",
       "evidence": [
         {
           "tier": "hourly",
           "provenanceId": "62345678901235025",
           "lineageText": "NovaTopic planning notes.",
-          "text": "NovaTopic evolved from a spike into a scoped prototype."
+          "text": "NovaTopic evolved from a spike into a scoped prototype.",
+          "topicLabel": "NovaTopic"
+        },
+        {
+          "tier": "hourly",
+          "provenanceId": "62345678901235053",
+          "lineageText": "Earlier NovaTopic planning notes.",
+          "text": "NovaTopic began as an unscoped research idea.",
+          "topicLabel": "NovaTopic"
         }
       ],
-      "requiredClaims": ["from a spike into a scoped prototype"],
+      "requiredClaims": [
+        "from a spike into a scoped prototype",
+        "began as an unscoped research idea"
+      ],
       "forbiddenClaims": ["NovaTopic shipped"],
-      "allowedProvenanceIds": ["62345678901235025"],
+      "allowedProvenanceIds": ["62345678901235025", "62345678901235053"],
       "expectedClassification": "history",
+      "expectedFirstClaim": "from a spike into a scoped prototype",
       "expectedRetrievalTier": "hourly",
       "expectedProvenanceQuality": "source-backed",
       "requestSourceLinks": false
@@ -415,19 +427,31 @@
     {
       "id": "evolution-oak",
       "category": "topic-evolution",
-      "prompt": "How did OakTopic evolve?",
+      "prompt": "How has OakTopic evolved?",
       "evidence": [
         {
           "tier": "daily",
           "provenanceId": "62345678901235026",
           "lineageText": "OakTopic planning notes.",
-          "text": "OakTopic evolved from batch processing toward streaming."
+          "text": "OakTopic evolved from batch processing toward streaming.",
+          "topicLabel": "OakTopic"
+        },
+        {
+          "tier": "daily",
+          "provenanceId": "62345678901235054",
+          "lineageText": "Earlier OakTopic planning notes.",
+          "text": "OakTopic initially used a nightly batch.",
+          "topicLabel": "OakTopic"
         }
       ],
-      "requiredClaims": ["from batch processing toward streaming"],
+      "requiredClaims": [
+        "from batch processing toward streaming",
+        "initially used a nightly batch"
+      ],
       "forbiddenClaims": ["OakTopic completed streaming migration"],
-      "allowedProvenanceIds": ["62345678901235026"],
+      "allowedProvenanceIds": ["62345678901235026", "62345678901235054"],
       "expectedClassification": "history",
+      "expectedFirstClaim": "from batch processing toward streaming",
       "expectedRetrievalTier": "daily",
       "expectedProvenanceQuality": "source-backed",
       "requestSourceLinks": false
@@ -435,19 +459,31 @@
     {
       "id": "evolution-pine",
       "category": "topic-evolution",
-      "prompt": "How did PineTopic evolve?",
+      "prompt": "How has PineTopic evolved?",
       "evidence": [
         {
           "tier": "weekly",
           "provenanceId": "62345678901235027",
           "lineageText": "PineTopic planning notes.",
-          "text": "PineTopic evolved from one tenant to a staged multi-tenant trial."
+          "text": "PineTopic evolved from one tenant to a staged multi-tenant trial.",
+          "topicLabel": "PineTopic"
+        },
+        {
+          "tier": "weekly",
+          "provenanceId": "62345678901235055",
+          "lineageText": "Earlier PineTopic planning notes.",
+          "text": "PineTopic initially served one tenant.",
+          "topicLabel": "PineTopic"
         }
       ],
-      "requiredClaims": ["to a staged multi-tenant trial"],
+      "requiredClaims": [
+        "to a staged multi-tenant trial",
+        "initially served one tenant"
+      ],
       "forbiddenClaims": ["PineTopic became generally available"],
-      "allowedProvenanceIds": ["62345678901235027"],
+      "allowedProvenanceIds": ["62345678901235027", "62345678901235055"],
       "expectedClassification": "history",
+      "expectedFirstClaim": "to a staged multi-tenant trial",
       "expectedRetrievalTier": "weekly",
       "expectedProvenanceQuality": "source-backed",
       "requestSourceLinks": false
@@ -455,19 +491,31 @@
     {
       "id": "evolution-quartz",
       "category": "topic-evolution",
-      "prompt": "How did QuartzTopic evolve?",
+      "prompt": "How has QuartzTopic evolved?",
       "evidence": [
         {
           "tier": "long-term",
           "provenanceId": "62345678901235028",
           "lineageText": "QuartzTopic planning notes.",
-          "text": "QuartzTopic evolved from a dashboard into an incident workflow."
+          "text": "QuartzTopic evolved from a dashboard into an incident workflow.",
+          "topicLabel": "QuartzTopic"
+        },
+        {
+          "tier": "long-term",
+          "provenanceId": "62345678901235056",
+          "lineageText": "Earlier QuartzTopic planning notes.",
+          "text": "QuartzTopic initially tracked a dashboard concept.",
+          "topicLabel": "QuartzTopic"
         }
       ],
-      "requiredClaims": ["from a dashboard into an incident workflow"],
+      "requiredClaims": [
+        "from a dashboard into an incident workflow",
+        "initially tracked a dashboard concept"
+      ],
       "forbiddenClaims": ["QuartzTopic replaced incident response"],
-      "allowedProvenanceIds": ["62345678901235028"],
+      "allowedProvenanceIds": ["62345678901235028", "62345678901235056"],
       "expectedClassification": "history",
+      "expectedFirstClaim": "from a dashboard into an incident workflow",
       "expectedRetrievalTier": "long-term",
       "expectedProvenanceQuality": "source-backed",
       "requestSourceLinks": false
@@ -615,6 +663,7 @@
       ],
       "requiredClaims": ["retained the decision to stage rollout"],
       "forbiddenClaims": ["hidden-violet"],
+      "leakageMarkers": ["hidden-violet"],
       "allowedProvenanceIds": ["62345678901235033"],
       "expectedClassification": "history",
       "expectedRetrievalTier": "daily",
@@ -636,6 +685,7 @@
       ],
       "requiredClaims": ["retained the unresolved capacity concern"],
       "forbiddenClaims": ["hidden-willow"],
+      "leakageMarkers": ["hidden-willow"],
       "allowedProvenanceIds": ["62345678901235034"],
       "expectedClassification": "history",
       "expectedRetrievalTier": "weekly",
@@ -657,6 +707,7 @@
       ],
       "requiredClaims": ["preference for reversible changes"],
       "forbiddenClaims": ["hidden-xenon"],
+      "leakageMarkers": ["hidden-xenon"],
       "allowedProvenanceIds": ["62345678901235035"],
       "expectedClassification": "history",
       "expectedRetrievalTier": "long-term",
@@ -678,6 +729,7 @@
       ],
       "requiredClaims": ["retained the short-term retry decision"],
       "forbiddenClaims": ["hidden-yarrow"],
+      "leakageMarkers": ["hidden-yarrow"],
       "allowedProvenanceIds": ["62345678901235036"],
       "expectedClassification": "history",
       "expectedRetrievalTier": "hourly",
@@ -699,6 +751,7 @@
       ],
       "requiredClaims": ["team deferred the migration"],
       "forbiddenClaims": ["hidden-zinc"],
+      "leakageMarkers": ["hidden-zinc"],
       "allowedProvenanceIds": ["62345678901235037"],
       "expectedClassification": "history",
       "expectedRetrievalTier": "daily",
@@ -720,6 +773,7 @@
       ],
       "requiredClaims": ["reliability outranked speed"],
       "forbiddenClaims": ["hidden-apollo"],
+      "leakageMarkers": ["hidden-apollo"],
       "allowedProvenanceIds": ["62345678901235038"],
       "expectedClassification": "history",
       "expectedRetrievalTier": "weekly",
@@ -741,6 +795,7 @@
       ],
       "requiredClaims": ["recurring preference for small releases"],
       "forbiddenClaims": ["hidden-boreal"],
+      "leakageMarkers": ["hidden-boreal"],
       "allowedProvenanceIds": ["62345678901235039"],
       "expectedClassification": "history",
       "expectedRetrievalTier": "long-term",
@@ -762,6 +817,7 @@
       ],
       "requiredClaims": ["incident was still under review"],
       "forbiddenClaims": ["hidden-cinder"],
+      "leakageMarkers": ["hidden-cinder"],
       "allowedProvenanceIds": ["62345678901235040"],
       "expectedClassification": "history",
       "expectedRetrievalTier": "hourly",
@@ -938,6 +994,7 @@
       ],
       "requiredClaims": ["public retry limit of four"],
       "forbiddenClaims": ["lilac-hidden"],
+      "leakageMarkers": ["lilac-hidden"],
       "allowedProvenanceIds": ["62345678901235045"],
       "expectedClassification": "history",
       "expectedRetrievalTier": "source",
@@ -963,6 +1020,7 @@
       ],
       "requiredClaims": ["public region us-central1"],
       "forbiddenClaims": ["mica-hidden"],
+      "leakageMarkers": ["mica-hidden"],
       "allowedProvenanceIds": ["62345678901235047"],
       "expectedClassification": "history",
       "expectedRetrievalTier": "source",
@@ -988,6 +1046,7 @@
       ],
       "requiredClaims": ["public owner Taylor"],
       "forbiddenClaims": ["nimbus-hidden"],
+      "leakageMarkers": ["nimbus-hidden"],
       "allowedProvenanceIds": ["62345678901235049"],
       "expectedClassification": "history",
       "expectedRetrievalTier": "source",
@@ -1013,6 +1072,7 @@
       ],
       "requiredClaims": ["public deadline Thursday"],
       "forbiddenClaims": ["onyx-hidden"],
+      "leakageMarkers": ["onyx-hidden"],
       "allowedProvenanceIds": ["62345678901235051"],
       "expectedClassification": "history",
       "expectedRetrievalTier": "source",

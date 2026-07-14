@@ -37,9 +37,11 @@ Before production activation, an owner can explicitly grade the full pinned
 corpus with `pnpm eval:conversation -- --grade-pinned-corpus`. That mode makes
 additional paid answer and evaluator calls, records the text/evaluator models
 and timestamp, and reports rollup faithfulness, supported-claim precision,
-cross-tier retrieval relevance, classification accuracy, suppressed-source
-leakage, and returned provenance-ID validity. `CHIEF_MODEL_EVALUATOR` selects
-the grader model and defaults to `CHIEF_MODEL_TEXT`.
+cross-tier retrieval relevance, per-class and macro classification accuracy,
+requested-link recall, suppressed-source leakage, and returned provenance-ID
+validity. The paid input is assembled through the same deterministic SQLite
+retrieval replay used in CI. `CHIEF_MODEL_EVALUATOR` selects a dedicated
+structured grader model and defaults to `CHIEF_MODEL_TEXT`.
 
 ## Cost controls
 

@@ -43,9 +43,10 @@ If pinned `@discordjs/voice` 0.19.2 fails DAVE receive, upgrade to a verified fi
   `pnpm eval:conversation -- --grade-pinned-corpus` with an owner-approved paid
   budget. Save the emitted model names, UTC timestamp, and aggregate scores
   without saving prompts or private content. Acceptance requires at least 90%
-  supported-claim precision, at least 90% history/memory classification
-  accuracy, zero forbidden claims or suppressed-source leakage, and 100%
-  validity among returned provenance IDs.
+  supported-claim precision, at least 90% classification accuracy separately
+  for history and memory and as a macro average, complete requested-source-link
+  recall, zero forbidden claims or suppressed-source leakage, and 100% validity
+  among returned provenance IDs.
 
 - Normal text generation is at most 10 seconds after reaching the head of the paid queue, excluding deliberate queue wait and slow research.
 - First voice audio is at most 2.5 seconds after a qualifying completed turn reaches the head of the paid queue.

@@ -1,5 +1,3 @@
-import { readFile } from 'node:fs/promises';
-
 import { describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -21,71 +19,16 @@ import {
 import { MemoryService } from '../../src/memory/memory-service.js';
 import { SqliteMemoryStore } from '../../src/memory/memory-store.js';
 import { UsageBudget } from '../../src/usage/usage-budget.js';
-import type { ContextTier } from '../../src/context/context-types.js';
-
-interface ReplayTurn {
-  readonly content: string;
-  readonly id: string;
-}
-
-type QualityRetrievalTier = 'source' | ContextTier | 'memory';
-
-interface QualityEvidence {
-  readonly contentState?:
-    'available' | 'discord-deleted' | 'locally-forgotten' | 'retention-expired';
-  readonly lineageProvenanceId?: string;
-  readonly lineageText?: string;
-  readonly provenanceId: string;
-  readonly speakerName?: string;
-  readonly text: string;
-  readonly tier: QualityRetrievalTier;
-}
-
-interface QualityCase {
-  readonly allowedProvenanceIds: readonly string[];
-  readonly category:
-    | 'conflicting-speakers'
-    | 'correction'
-    | 'expired-source'
-    | 'joke'
-    | 'requested-source-link'
-    | 'repeated-across-tiers'
-    | 'speculation'
-    | 'summary-only'
-    | 'suppressed-source'
-    | 'topic-evolution';
-  readonly evidence: readonly QualityEvidence[];
-  readonly expectedClassification: 'history' | 'memory';
-  readonly expectedProvenanceQuality?: 'source-backed' | 'summary-only';
-  readonly expectedRetrievalTier: QualityRetrievalTier;
-  readonly forbiddenClaims: readonly string[];
-  readonly id: string;
-  readonly prompt: string;
-  readonly requestSourceLinks: boolean;
-  readonly requiredClaims: readonly string[];
-}
-
-interface QualityFixture {
-  readonly cases: readonly QualityCase[];
-  readonly replay: readonly ReplayTurn[];
-}
-
-const guildId = '32345678901234567';
-const channelId = '22345678901234567';
-const now = Date.parse('2026-07-14T16:00:00Z');
-
-async function loadFixture(): Promise<QualityFixture> {
-  return JSON.parse(
-    await readFile(
-      new URL('../fixtures/conversation-quality.json', import.meta.url),
-      'utf8',
-    ),
-  ) as QualityFixture;
-}
+import {
+  loadConversationQualityFixture,
+  type QualityCase,
+  replayConversationQualityCase,
+} from '../../scripts/conversation-quality-corpus.js';
+import { countNormalizedMatches } from '../../scripts/conversation-quality-grades.js';
 
 describe('conversation quality replay', () => {
   it('keeps Teddy constraints through the Polk follow-up', async () => {
-    const { replay: turns } = await loadFixture();
+    const { replay: turns } = await loadConversationQualityFixture();
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
@@ -241,7 +184,7 @@ describe('conversation quality replay', () => {
   });
 
   it('meets every pinned deterministic quality contract', async () => {
-    const { cases } = await loadFixture();
+    const { cases } = await loadConversationQualityFixture();
     const requiredCategories = new Set<QualityCase['category']>([
       'conflicting-speakers',
       'correction',
@@ -259,10 +202,22 @@ describe('conversation quality replay', () => {
       requiredCategories,
     );
     expect(new Set(cases.map(({ id }) => id)).size).toBe(cases.length);
+    expect(
+      cases.filter(
+        ({ expectedClassification }) => expectedClassification === 'memory',
+      ).length,
+    ).toBeGreaterThanOrEqual(4);
+    expect(
+      cases.filter(
+        ({ expectedClassification }) => expectedClassification === 'history',
+      ).length,
+    ).toBeGreaterThanOrEqual(4);
 
     const metrics = {
       forbiddenClaims: 0,
       invalidProvenanceIds: 0,
+      requestedSourceLinkCases: 0,
+      requestedSourceLinkPasses: 0,
       returnedProvenanceIds: 0,
       suppressedSourceLeaks: 0,
     };
@@ -274,19 +229,36 @@ describe('conversation quality replay', () => {
         qualityCase.allowedProvenanceIds.length,
         qualityCase.id,
       ).toBeGreaterThan(0);
+      if (
+        qualityCase.evidence.some(
+          ({ contentState }) =>
+            contentState !== undefined && contentState !== 'available',
+        )
+      ) {
+        expect(
+          qualityCase.leakageMarkers?.length ?? 0,
+          qualityCase.id,
+        ).toBeGreaterThan(0);
+      }
 
-      const result = await replayQualityCase(qualityCase);
+      const result = await replayConversationQualityCase(qualityCase);
+      const deterministicAnswer = renderDeterministicAnswer(
+        result.classification,
+        result.selectedText,
+        qualityCase.requestSourceLinks,
+        result.returnedSourceLinks,
+      );
       for (const claim of qualityCase.requiredClaims) {
-        expect(result.returnedText, qualityCase.id).toContain(claim);
+        expect(deterministicAnswer, qualityCase.id).toContain(claim);
       }
-      for (const claim of qualityCase.forbiddenClaims) {
-        if (result.returnedText.includes(claim)) metrics.forbiddenClaims += 1;
-      }
-      for (const suppressedText of result.suppressedSourceTexts) {
-        if (result.returnedText.includes(suppressedText)) {
-          metrics.suppressedSourceLeaks += 1;
-        }
-      }
+      metrics.forbiddenClaims += countNormalizedMatches(
+        deterministicAnswer,
+        qualityCase.forbiddenClaims,
+      );
+      metrics.suppressedSourceLeaks += countNormalizedMatches(
+        deterministicAnswer,
+        qualityCase.leakageMarkers ?? [],
+      );
       for (const provenanceId of result.returnedProvenanceIds) {
         metrics.returnedProvenanceIds += 1;
         if (!qualityCase.allowedProvenanceIds.includes(provenanceId)) {
@@ -294,9 +266,6 @@ describe('conversation quality replay', () => {
         }
       }
 
-      expect(result.classification, qualityCase.id).toBe(
-        qualityCase.expectedClassification,
-      );
       expect(result.retrievalTiers, qualityCase.id).toEqual(
         new Set([qualityCase.expectedRetrievalTier]),
       );
@@ -308,11 +277,89 @@ describe('conversation quality replay', () => {
           new Set([qualityCase.expectedProvenanceQuality]),
         );
       }
+      expect(result.productionPayload, qualityCase.id).toMatchObject({
+        dataClassification: 'untrusted_user_supplied_context',
+        userRequest: qualityCase.prompt,
+      });
+      expect(result.classification, qualityCase.id).toBe(
+        qualityCase.expectedClassification,
+      );
+      expect(result.distractors, qualityCase.id).toEqual({
+        crossTierFiltered: true,
+        memoryPresent: true,
+      });
+      if (result.classification === 'memory') {
+        expect(
+          result.productionPayload.communalMemory,
+          qualityCase.id,
+        ).not.toHaveLength(0);
+        expect(
+          result.productionPayload.historicalContext,
+          qualityCase.id,
+        ).toEqual([]);
+        for (const claim of qualityCase.requiredClaims) {
+          expect(
+            JSON.stringify(result.productionPayload.communalMemory),
+            qualityCase.id,
+          ).toContain(claim);
+        }
+        expect(deterministicAnswer, qualityCase.id).toMatch(
+          /^Accepted communal memory:/u,
+        );
+      } else {
+        expect(
+          result.productionPayload.historicalContext,
+          qualityCase.id,
+        ).not.toHaveLength(0);
+        for (const claim of qualityCase.requiredClaims) {
+          expect(
+            JSON.stringify(result.productionPayload.historicalContext),
+            qualityCase.id,
+          ).toContain(claim);
+          expect(
+            JSON.stringify(result.productionPayload.communalMemory),
+            qualityCase.id,
+          ).not.toContain(claim);
+        }
+        expect(deterministicAnswer, qualityCase.id).toMatch(
+          /^The group discussed:/u,
+        );
+      }
+      if (qualityCase.category === 'joke') {
+        expect(result.classification, qualityCase.id).toBe('history');
+        expect(deterministicAnswer, qualityCase.id).toMatch(/joke/iu);
+      }
+      if (qualityCase.category === 'speculation') {
+        expect(result.classification, qualityCase.id).toBe('history');
+        expect(deterministicAnswer, qualityCase.id).toMatch(
+          /speculation|guessed|wondered|proposed|might|could/iu,
+        );
+      }
+      if (qualityCase.expectedFirstClaim !== undefined) {
+        expect(result.selectedText[0], qualityCase.id).toContain(
+          qualityCase.expectedFirstClaim,
+        );
+      }
+      if (
+        qualityCase.category === 'topic-evolution' &&
+        qualityCase.expectedClassification === 'history'
+      ) {
+        expect(
+          new Set(result.temporalLabels).size,
+          qualityCase.id,
+        ).toBeGreaterThanOrEqual(2);
+      }
       if (qualityCase.requestSourceLinks) {
+        metrics.requestedSourceLinkCases += 1;
         expect(
           result.returnedSourceLinks.length,
           qualityCase.id,
         ).toBeGreaterThan(0);
+        const recalledEveryLink = result.returnedSourceLinks.every((link) =>
+          deterministicAnswer.includes(link),
+        );
+        if (recalledEveryLink) metrics.requestedSourceLinkPasses += 1;
+        expect(recalledEveryLink, qualityCase.id).toBe(true);
       }
     }
 
@@ -320,201 +367,23 @@ describe('conversation quality replay', () => {
     expect(metrics).toMatchObject({
       forbiddenClaims: 0,
       invalidProvenanceIds: 0,
+      requestedSourceLinkCases: 4,
+      requestedSourceLinkPasses: 4,
       suppressedSourceLeaks: 0,
     });
   });
 });
 
-async function replayQualityCase(qualityCase: QualityCase): Promise<{
-  readonly classification: 'history' | 'memory';
-  readonly provenanceQualities: ReadonlySet<'source-backed' | 'summary-only'>;
-  readonly retrievalTiers: ReadonlySet<QualityRetrievalTier>;
-  readonly returnedProvenanceIds: ReadonlySet<string>;
-  readonly returnedSourceLinks: readonly string[];
-  readonly returnedText: string;
-  readonly suppressedSourceTexts: readonly string[];
-}> {
-  const database = openChiefDatabase(':memory:');
-  migrateChiefDatabase(database);
-  const conversation = new ConversationStore(database);
-  const memoryStore = new SqliteMemoryStore(database);
-  const eventIds = new Map<string, number>();
-  const memoryIdsByText = new Map<string, string>();
-  const vector = new Float32Array(1_536);
-  vector[qualityCase.id.length % vector.length] = 1;
-
-  for (const [index, evidence] of qualityCase.evidence.entries()) {
-    if (evidence.tier === 'memory') {
-      memoryStore.applyMemory({
-        canonicalText: evidence.text,
-        confidence: 0.99,
-        embedding: vector,
-        kind: 'fact',
-        provenance: { qualityFixtureId: evidence.provenanceId },
-        sourceEventId: null,
-        timestamp: now - index,
-      });
-      memoryIdsByText.set(evidence.text, evidence.provenanceId);
-      continue;
-    }
-
-    let eventId =
-      evidence.lineageProvenanceId === undefined
-        ? undefined
-        : eventIds.get(evidence.lineageProvenanceId);
-    if (eventId === undefined) {
-      eventId = conversation.record({
-        channelId,
-        content: evidence.lineageText ?? evidence.text,
-        discordMessageId: evidence.provenanceId,
-        guildId,
-        medium: 'text',
-        occurredAt: now - 10_000 - index,
-        platformEventId: `${qualityCase.id}:${evidence.provenanceId}`,
-        recentUntil: now - 1,
-        requestId: `${qualityCase.id}:${evidence.provenanceId}`,
-        retentionDeadline: now + 30 * 24 * 60 * 60 * 1_000,
-        role: 'human',
-        speakerId: `speaker-${String(index)}`,
-        speakerName: evidence.speakerName ?? 'President Quality',
-      });
-      eventIds.set(evidence.provenanceId, eventId);
-    }
-
-    if (evidence.tier === 'source') {
-      database
-        .prepare(
-          'insert into conversation_event_fts (rowid, content) values (?, ?)',
-        )
-        .run(eventId, evidence.text);
-    } else {
-      insertQualityDocument(database, {
-        embedding: vector,
-        eventId,
-        id: index + 1,
-        summary: evidence.text,
-        tier: evidence.tier,
-      });
-    }
-    if (
-      evidence.contentState !== undefined &&
-      evidence.contentState !== 'available'
-    ) {
-      database
-        .prepare(
-          `update conversation_events
-           set content = '', content_state = 'scrubbed',
-               content_state_reason = ? where id = ?`,
-        )
-        .run(evidence.contentState, eventId);
-    }
-  }
-
-  const assembler = new ContextAssembler({
-    channelId,
-    conversation,
-    database,
-    embed: () => Promise.resolve({ embedding: vector, usageUsd: 0 }),
-    guildId,
-    memory: new MemoryService({
-      budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
-      embed: vi.fn(),
-      estimateUsd: 0.1,
-      extract: vi.fn(),
-      store: memoryStore,
-    }),
-    timeZone: 'America/New_York',
-  });
-  const prepared = await assembler.assemble({
-    now,
-    prompt: qualityCase.prompt,
-  });
-  const historicalText = prepared.historicalContext.map((context) =>
-    context.evidenceForm === 'source' ? context.text : context.summary,
-  );
-  const returnedSourceLinks = prepared.historicalContext.flatMap(
-    ({ sourceLinks }) => sourceLinks,
-  );
-  const returnedProvenanceIds = new Set([
-    ...returnedSourceLinks.map((link) => link.slice(link.lastIndexOf('/') + 1)),
-    ...prepared.memories.flatMap((memory) => {
-      const provenanceId = memoryIdsByText.get(memory);
-      return provenanceId === undefined ? [] : [provenanceId];
-    }),
-  ]);
-  const retrievalTiers = new Set<QualityRetrievalTier>([
-    ...prepared.historicalContext.map((context) =>
-      context.evidenceForm === 'source' ? 'source' : context.tier,
-    ),
-    ...(prepared.memories.length === 0 ? [] : (['memory'] as const)),
-  ]);
-  const classification: 'history' | 'memory' =
-    prepared.memories.length > 0 && prepared.historicalContext.length === 0
-      ? 'memory'
-      : 'history';
-  const suppressedSourceTexts = qualityCase.evidence.flatMap((evidence) =>
-    evidence.contentState !== undefined && evidence.contentState !== 'available'
-      ? [evidence.lineageText ?? evidence.text]
-      : [],
-  );
-  const result = {
-    classification,
-    provenanceQualities: new Set(
-      prepared.historicalContext.map(
-        ({ provenanceQuality }) => provenanceQuality,
-      ),
-    ),
-    retrievalTiers,
-    returnedProvenanceIds,
-    returnedSourceLinks,
-    returnedText: [...historicalText, ...prepared.memories].join('\n'),
-    suppressedSourceTexts,
-  };
-  database.close();
-  return result;
-}
-
-function insertQualityDocument(
-  database: ReturnType<typeof openChiefDatabase>,
-  input: {
-    readonly embedding: Float32Array;
-    readonly eventId: number;
-    readonly id: number;
-    readonly summary: string;
-    readonly tier: ContextTier;
-  },
-): void {
-  database
-    .prepare(
-      `insert into context_documents
-         (id, document_key, tier, period_start, period_end, timezone,
-          topic_key, topic_label, revision, completeness, state,
-          content_state, content_state_reason, summary, confidence,
-          retention_deadline, created_at, updated_at, is_internal)
-       values (?, ?, ?, ?, ?, 'America/New_York', null, null, 1, 'final',
-               'active', 'available', 'retained', ?, 0.95, null, ?, ?, 0)`,
-    )
-    .run(
-      input.id,
-      `quality:${input.tier}:${String(input.id)}`,
-      input.tier,
-      now - 60 * 60 * 1_000,
-      input.tier === 'long-term' ? null : now - 1,
-      input.summary,
-      now,
-      now,
-    );
-  database
-    .prepare(
-      'insert into context_document_events (document_id, event_id) values (?, ?)',
-    )
-    .run(input.id, input.eventId);
-  database
-    .prepare('insert into context_document_fts (rowid, content) values (?, ?)')
-    .run(input.id, input.summary);
-  database
-    .prepare(
-      'insert into context_document_vectors (document_id, embedding) values (?, ?)',
-    )
-    .run(BigInt(input.id), JSON.stringify(Array.from(input.embedding)));
+function renderDeterministicAnswer(
+  classification: 'history' | 'memory',
+  selectedText: readonly string[],
+  requestSourceLinks: boolean,
+  sourceLinks: readonly string[],
+): string {
+  const classificationLabel =
+    classification === 'memory'
+      ? 'Accepted communal memory:'
+      : 'The group discussed:';
+  const links = requestSourceLinks ? ` Sources: ${sourceLinks.join(' ')}` : '';
+  return `${classificationLabel} ${selectedText.join(' ')}${links}`;
 }

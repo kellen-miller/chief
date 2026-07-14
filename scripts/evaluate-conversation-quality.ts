@@ -1,15 +1,19 @@
-import { readFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 
 import { createExecution } from '../src/agent/openai-chief-agent.js';
 import { DEFAULT_TEXT_MODEL } from '../src/config/config.js';
 import { createOpenAiMemoryExtractor } from '../src/memory/openai-memory.js';
 import {
+  countNormalizedMatches,
+  createConversationQualityGrader,
   extractDiscordProvenanceIds,
-  parsePaidGrades,
   passesPinnedCorpus,
   summarizePinnedCorpus,
 } from './conversation-quality-grades.js';
+import {
+  loadConversationQualityFixture,
+  replayConversationQualityCase,
+} from './conversation-quality-corpus.js';
 
 const apiKey = process.env.OPENAI_API_KEY;
 if (apiKey === undefined || apiKey.length === 0) {
@@ -174,50 +178,32 @@ if (gradePinnedCorpus) {
 
 if (failed) process.exitCode = 1;
 
-interface PinnedEvidence {
-  readonly contentState?:
-    'available' | 'discord-deleted' | 'locally-forgotten' | 'retention-expired';
-  readonly lineageText?: string;
-  readonly provenanceId: string;
-  readonly text: string;
-  readonly tier:
-    'daily' | 'hourly' | 'long-term' | 'memory' | 'source' | 'weekly';
-}
-
-interface PinnedCase {
-  readonly allowedProvenanceIds: readonly string[];
-  readonly evidence: readonly PinnedEvidence[];
-  readonly expectedClassification: 'history' | 'memory';
-  readonly expectedRetrievalTier: PinnedEvidence['tier'];
-  readonly forbiddenClaims: readonly string[];
-  readonly id: string;
-  readonly prompt: string;
-  readonly requiredClaims: readonly string[];
-}
-
 async function evaluatePinnedCorpus(options: {
   readonly apiKey: string;
   readonly evaluatorModel: string;
   readonly textModel: string;
 }): Promise<boolean> {
-  const fixture = JSON.parse(
-    await readFile(
-      new URL('../test/fixtures/conversation-quality.json', import.meta.url),
-      'utf8',
-    ),
-  ) as { readonly cases: readonly PinnedCase[] };
+  const fixture = await loadConversationQualityFixture();
   if (fixture.cases.length < 40) {
     throw new Error('pinned conversation quality corpus requires 40 cases');
   }
   const answer = createExecution(options.apiKey, options.textModel);
-  const grade = createExecution(options.apiKey, options.evaluatorModel);
+  const grade = createConversationQualityGrader({
+    apiKey: options.apiKey,
+    model: options.evaluatorModel,
+  });
   const evaluatedAt = new Date().toISOString();
   const totals = {
-    classification: 0,
     crossTierRetrievalRelevance: 0,
     forbiddenClaimHits: 0,
+    historyClassification: 0,
+    historyClassificationCases: 0,
     invalidProvenanceIds: 0,
+    memoryClassification: 0,
+    memoryClassificationCases: 0,
     returnedProvenanceIds: 0,
+    requestedSourceLinkCases: 0,
+    requestedSourceLinkPasses: 0,
     rollupFaithfulness: 0,
     supportedClaimPrecision: 0,
     suppressedSourceLeaks: 0,
@@ -233,92 +219,74 @@ async function evaluatePinnedCorpus(options: {
   );
 
   for (const qualityCase of fixture.cases) {
-    const availableEvidence = qualityCase.evidence.filter(
-      ({ contentState, tier }) =>
-        tier !== 'source' ||
-        contentState === undefined ||
-        contentState === 'available',
-    );
-    const historicalContext = availableEvidence.flatMap<
-      Record<string, unknown>
-    >((evidence) =>
-      evidence.tier === 'memory'
-        ? []
-        : evidence.tier === 'source'
-          ? [
-              {
-                confidence: 0.95,
-                evidenceForm: 'source',
-                occurredAt: 0,
-                provenanceQuality: 'source-backed',
-                sourceLinks: [discordSourceLink(evidence.provenanceId)],
-                speakerLabel: 'President Quality',
-                temporalLabel: 'pinned corpus',
-                text: evidence.text,
-              },
-            ]
-          : [
-              {
-                confidence: 0.95,
-                evidenceForm: 'rollup',
-                periodEnd: null,
-                periodStart: 0,
-                provenanceQuality:
-                  evidence.contentState === undefined ||
-                  evidence.contentState === 'available'
-                    ? 'source-backed'
-                    : 'summary-only',
-                sourceLinks: [discordSourceLink(evidence.provenanceId)],
-                summary: evidence.text,
-                temporalLabel: 'pinned corpus',
-                tier: evidence.tier,
-              },
-            ],
-    );
-    const communalMemory = availableEvidence.flatMap((evidence) =>
-      evidence.tier === 'memory' ? [evidence.text] : [],
-    );
-    const answerResult = await answer(
-      JSON.stringify({
-        communalMemory,
-        dataClassification: 'untrusted_user_supplied_context',
-        historicalContext,
-        userRequest: qualityCase.prompt,
-      }),
-    );
+    const replay = await replayConversationQualityCase(qualityCase);
+    if (replay.classification !== qualityCase.expectedClassification) {
+      throw new Error(`pinned case ${qualityCase.id} classification mismatch`);
+    }
+    const answerResult = await answer(JSON.stringify(replay.productionPayload));
     const output = answerResult.output?.trim() ?? '';
-    const gradingResult = await grade(
-      paidGradingPrompt(qualityCase, availableEvidence, output),
+    const gradingResult = await grade({
+      candidateAnswer: output,
+      expectedClassification: replay.classification,
+      expectedRetrievalTier: qualityCase.expectedRetrievalTier,
+      forbiddenClaims: qualityCase.forbiddenClaims,
+      requiredClaims: qualityCase.requiredClaims,
+      suppliedContext: {
+        communalMemory: replay.productionPayload.communalMemory,
+        historicalContext: replay.productionPayload.historicalContext,
+      },
+    });
+    const numericGrades = {
+      classification: gradingResult.grades.classification,
+      crossTierRetrievalRelevance:
+        gradingResult.grades.crossTierRetrievalRelevance,
+      rollupFaithfulness: gradingResult.grades.rollupFaithfulness,
+      supportedClaimPrecision: gradingResult.grades.supportedClaimPrecision,
+    };
+    if (replay.classification === 'history') {
+      totals.historyClassification += gradingResult.grades.classification;
+      totals.historyClassificationCases += 1;
+    } else {
+      totals.memoryClassification += gradingResult.grades.classification;
+      totals.memoryClassificationCases += 1;
+    }
+    totals.crossTierRetrievalRelevance +=
+      gradingResult.grades.crossTierRetrievalRelevance;
+    totals.rollupFaithfulness += gradingResult.grades.rollupFaithfulness;
+    totals.supportedClaimPrecision +=
+      gradingResult.grades.supportedClaimPrecision;
+    totals.forbiddenClaimHits += countNormalizedMatches(
+      output,
+      qualityCase.forbiddenClaims,
     );
-    const grades = parsePaidGrades(gradingResult.output);
-    totals.classification += grades.classification;
-    totals.crossTierRetrievalRelevance += grades.crossTierRetrievalRelevance;
-    totals.rollupFaithfulness += grades.rollupFaithfulness;
-    totals.supportedClaimPrecision += grades.supportedClaimPrecision;
-    totals.forbiddenClaimHits += qualityCase.forbiddenClaims.filter((claim) =>
-      output.includes(claim),
-    ).length;
-    totals.suppressedSourceLeaks += qualityCase.evidence.filter(
-      (evidence) =>
-        evidence.contentState !== undefined &&
-        evidence.contentState !== 'available' &&
-        output.includes(evidence.lineageText ?? evidence.text),
-    ).length;
+    totals.suppressedSourceLeaks += countNormalizedMatches(
+      output,
+      qualityCase.leakageMarkers ?? [],
+    );
     const returnedProvenanceIds = extractDiscordProvenanceIds(output);
     totals.returnedProvenanceIds += returnedProvenanceIds.length;
     totals.invalidProvenanceIds += returnedProvenanceIds.filter(
       (provenanceId) =>
         !qualityCase.allowedProvenanceIds.includes(provenanceId),
     ).length;
+    if (qualityCase.requestSourceLinks) {
+      totals.requestedSourceLinkCases += 1;
+      if (
+        replay.returnedSourceLinks.length > 0 &&
+        replay.returnedSourceLinks.every((link) => output.includes(link))
+      ) {
+        totals.requestedSourceLinkPasses += 1;
+      }
+    }
     process.stdout.write(
       `${JSON.stringify({
         case: qualityCase.id,
         evaluatedAt,
         evaluatorModel: options.evaluatorModel,
-        grades,
+        grades: numericGrades,
         inputTokens: answerResult.inputTokens + gradingResult.inputTokens,
         outputTokens: answerResult.outputTokens + gradingResult.outputTokens,
-        returnedProvenanceIds,
+        returnedProvenanceCount: returnedProvenanceIds.length,
         textModel: options.textModel,
       })}\n`,
     );
@@ -336,28 +304,4 @@ async function evaluatePinnedCorpus(options: {
     `${JSON.stringify({ event: 'pinned-corpus-summary', passed, ...summary })}\n`,
   );
   return !passed;
-}
-
-function paidGradingPrompt(
-  qualityCase: PinnedCase,
-  availableEvidence: readonly PinnedEvidence[],
-  output: string,
-): string {
-  return JSON.stringify({
-    instruction:
-      'Grade the candidate answer. Return JSON only with numeric scores from 0 to 1 for rollupFaithfulness, supportedClaimPrecision, crossTierRetrievalRelevance, and classification, plus a rationale under 500 characters. A score of 1 means: rollup claims preserve qualifiers and disagreements (or no rollup was supplied); every answer claim is supported; the answer uses only relevant supplied tiers; and it treats history as discussion rather than accepted memory while treating memory as accepted context.',
-    rubric: {
-      expectedClassification: qualityCase.expectedClassification,
-      expectedRetrievalTier: qualityCase.expectedRetrievalTier,
-      forbiddenClaims: qualityCase.forbiddenClaims,
-      requiredClaims: qualityCase.requiredClaims,
-    },
-    suppliedEvidence: availableEvidence,
-    userRequest: qualityCase.prompt,
-    candidateAnswer: output,
-  });
-}
-
-function discordSourceLink(provenanceId: string): string {
-  return `https://discord.com/channels/32345678901234567/22345678901234567/${provenanceId}`;
 }
