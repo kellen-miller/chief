@@ -545,6 +545,37 @@ export class SqliteMemoryStore {
    * Synchronous authoritative-deletion primitive. The caller owns the shared
    * outer transaction, so this method must not open or commit one itself.
    */
+  public deleteContextMemories(
+    memoryIds: readonly number[],
+  ): readonly number[] {
+    const uniqueIds = [...new Set(memoryIds)].filter(
+      (memoryId) => Number.isSafeInteger(memoryId) && memoryId > 0,
+    );
+    if (uniqueIds.length === 0) return [];
+    const placeholders = uniqueIds.map(() => '?').join(', ');
+    const memories = this.#database
+      .prepare(
+        `select id, state from memories
+         where id in (${placeholders}) order by id`,
+      )
+      .all(...uniqueIds) as { readonly id: number; readonly state: string }[];
+    for (const { id, state } of memories) {
+      if (state === 'active') this.#deleteIndexes(id);
+    }
+    const existingIds = memories.map(({ id }) => id);
+    if (existingIds.length > 0) {
+      const existingPlaceholders = existingIds.map(() => '?').join(', ');
+      this.#database
+        .prepare(`delete from memories where id in (${existingPlaceholders})`)
+        .run(...existingIds);
+    }
+    return existingIds;
+  }
+
+  /**
+   * Synchronous authoritative-deletion primitive. The caller owns the shared
+   * outer transaction, so this method must not open or commit one itself.
+   */
   public deleteContextSources(sourceScopeIds: readonly string[]): void {
     const uniqueScopeIds = [...new Set(sourceScopeIds)];
     if (uniqueScopeIds.length === 0) return;

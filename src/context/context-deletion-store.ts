@@ -646,6 +646,7 @@ export class ContextDeletionStore {
               entry.occurredAt,
             );
       if (reason === 'discord-deleted') {
+        this.#memory.deleteContextMemories(affectedMemoryIds);
         this.#memory.deleteContextSources(entry.payload.sourceScopeIds);
       }
       if (tombstoneKeys.length === 0 && affectedMemoryIds.length > 0) {
@@ -783,6 +784,7 @@ export class ContextDeletionStore {
       ? memoryIds
       : this.#memory.supersedeForContextDeletion(memoryIds, input.now);
     if (input.hardDeleteMemorySources) {
+      this.#memory.deleteContextMemories(affectedMemoryIds);
       this.#memory.deleteContextSources(input.sourceScopeIds);
     }
     if (tombstoneKeys.length === 0 && affectedMemoryIds.length > 0) {

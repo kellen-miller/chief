@@ -665,13 +665,14 @@ describe('ChannelContextService', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
+    const memory = new SqliteMemoryStore(database);
     let captured: ContextForgetJournalEntry | undefined;
     const service = new ChannelContextService({
       channelId,
       conversation: new ConversationStore(database),
       database,
       guildId,
-      memory: new SqliteMemoryStore(database),
+      memory,
       timeZone,
       uploadForgetJournal: (entry) => {
         captured = entry;
@@ -683,7 +684,18 @@ describe('ChannelContextService', () => {
         content: 'AuthoritativeDeleteMarker source evidence.',
       }),
     );
-    if (created.eventId === null) throw new Error('expected source event');
+    if (created.status !== 'applied' || created.memorySourceEventId === null) {
+      throw new Error('expected source and memory provenance');
+    }
+    const memoryId = memory.applyMemory({
+      canonicalText: 'AuthoritativeDeleteMarker durable memory.',
+      confidence: 0.95,
+      embedding: embedding(0.8),
+      kind: 'fact',
+      provenance: { platformSourceId: source(occurredAt).messageId },
+      sourceEventId: created.memorySourceEventId,
+      timestamp: occurredAt + 500,
+    });
     const documentId = new ContextStore(database).activateDocumentRevision({
       ...documentInput({
         ...sourceJobInput(database, 'provisional'),
@@ -725,6 +737,7 @@ describe('ChannelContextService', () => {
     expect(captured.payload.documentKeys).toEqual([
       'authoritative-delete-document',
     ]);
+    expect(captured.payload.memoryIds).toEqual([memoryId]);
     expect(
       database
         .prepare(
@@ -754,6 +767,16 @@ describe('ChannelContextService', () => {
     const restored = openChiefDatabase(':memory:');
     try {
       migrateChiefDatabase(restored);
+      const restoredMemoryId = new SqliteMemoryStore(restored).applyMemory({
+        canonicalText: 'AuthoritativeDeleteMarker restored durable memory.',
+        confidence: 0.95,
+        embedding: embedding(0.8),
+        kind: 'fact',
+        provenance: { restored: true },
+        sourceEventId: null,
+        timestamp: occurredAt,
+      });
+      expect(restoredMemoryId).toBe(memoryId);
       const restoredDocumentId = Number(
         restored
           .prepare(
@@ -855,6 +878,15 @@ describe('ChannelContextService', () => {
           .pluck()
           .get(),
       ).toBe(0);
+      expect(
+        restored.prepare('select count(*) from memories').pluck().get(),
+      ).toBe(0);
+      expect(
+        restored.prepare('select count(*) from memory_fts').pluck().get(),
+      ).toBe(0);
+      expect(
+        restored.prepare('select count(*) from memory_vectors').pluck().get(),
+      ).toBe(0);
     } finally {
       restored.close();
       database.close();
@@ -928,6 +960,7 @@ describe('ChannelContextService', () => {
       documentIds: [],
       documentKeys: [],
       memoryIds: [],
+      reason: 'discord-deleted',
       sourceScopeIds: [scopeId],
       tombstoneKeys: [tombstoneKey],
     });
@@ -951,6 +984,107 @@ describe('ChannelContextService', () => {
           .pluck()
           .get(),
       ).toBe('scrubbed');
+    } finally {
+      restored.close();
+      database.close();
+    }
+  });
+
+  it('preserves a pending 0004 local-forget reason through migration', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database, DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      timeZone,
+    });
+    const created = service.apply(source(occurredAt));
+    if (created.eventId === null) throw new Error('expected source event');
+    const scopeId = `${guildId}/${channelId}/${source(occurredAt).messageId}`;
+    const tombstoneKey = `source:${scopeId}`;
+    const legacyChecksum = createHash('sha256')
+      .update(
+        JSON.stringify({
+          occurredAt: occurredAt + 1_000,
+          reason: 'locally-forgotten',
+          scopeId,
+          scopeType: 'source',
+        }),
+      )
+      .digest('hex');
+    database
+      .prepare(
+        `update conversation_events
+         set content = '', deleted_at = ?, content_state = 'scrubbed',
+             content_state_reason = 'locally-forgotten'
+         where id = ?`,
+      )
+      .run(occurredAt + 1_000, created.eventId);
+    database
+      .prepare(
+        `insert into context_tombstones
+           (tombstone_key, scope_type, scope_id, reason, occurred_at, checksum)
+         values (?, 'source', ?, 'locally-forgotten', ?, ?)`,
+      )
+      .run(tombstoneKey, scopeId, occurredAt + 1_000, legacyChecksum);
+    database
+      .prepare(
+        `insert into context_forget_journal
+           (journal_key, scope_id, tombstone_key, occurred_at, checksum)
+         values (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        `forget:${scopeId}`,
+        scopeId,
+        tombstoneKey,
+        occurredAt + 1_000,
+        legacyChecksum,
+      );
+
+    migrateChiefDatabase(database);
+    let captured: ContextForgetJournalEntry | undefined;
+    const upgraded = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal: (entry) => {
+        captured = entry;
+        return Promise.resolve();
+      },
+    });
+    await expect(
+      upgraded.flushForgetJournal(occurredAt + 2_000),
+    ).resolves.toEqual({ status: 'uploaded' });
+    if (captured === undefined) throw new Error('expected upgraded journal');
+    expect(captured.payload.reason).toBe('locally-forgotten');
+
+    const restored = openChiefDatabase(':memory:');
+    try {
+      migrateChiefDatabase(restored);
+      const restoredService = new ChannelContextService({
+        channelId,
+        conversation: new ConversationStore(restored),
+        database: restored,
+        guildId,
+        memory: new SqliteMemoryStore(restored),
+        timeZone,
+      });
+      const restoredSource = restoredService.apply(source(occurredAt));
+      restoredService.replayForgetJournal(captured, occurredAt + 3_000);
+      expect(
+        restored
+          .prepare(
+            'select content_state_reason from conversation_events where id = ?',
+          )
+          .pluck()
+          .get(restoredSource.eventId),
+      ).toBe('locally-forgotten');
     } finally {
       restored.close();
       database.close();

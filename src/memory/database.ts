@@ -481,7 +481,7 @@ alter table context_forget_journal
 `;
 
 export const CONTEXT_FORGETTING_MIGRATION_ID = '0005_context_forgetting';
-export const CONTEXT_FORGETTING_MIGRATION_CHECKSUM = 'chief-0005-v3';
+export const CONTEXT_FORGETTING_MIGRATION_CHECKSUM = 'chief-0005-v4';
 
 interface Migration {
   readonly checksum: string;
@@ -581,12 +581,26 @@ function backfillContextForgetJournals(database: Database.Database): void {
   const rows = database
     .prepare(
       `select journal_key as journalKey, occurred_at as occurredAt,
-              scope_id as scopeId, tombstone_key as tombstoneKey
+              scope_id as scopeId, tombstone_key as tombstoneKey,
+              coalesce(
+                (select t.reason from context_tombstones t
+                 where t.tombstone_key = context_forget_journal.tombstone_key
+                   and t.reason in ('discord-deleted', 'locally-forgotten')),
+                (select c.content_state_reason from conversation_events c
+                 where c.guild_id || '/' || c.channel_id || '/' ||
+                       c.discord_message_id = context_forget_journal.scope_id
+                   and c.content_state_reason in (
+                     'discord-deleted', 'locally-forgotten'
+                   )
+                 order by c.id desc limit 1),
+                'locally-forgotten'
+              ) as reason
        from context_forget_journal where payload_json = '{}'`,
     )
     .all() as {
     journalKey: string;
     occurredAt: number;
+    reason: 'discord-deleted' | 'locally-forgotten';
     scopeId: string;
     tombstoneKey: string;
   }[];
@@ -599,6 +613,7 @@ function backfillContextForgetJournals(database: Database.Database): void {
       documentIds: [] as number[],
       documentKeys: [] as string[],
       memoryIds: [] as number[],
+      reason: row.reason,
       sourceScopeIds: [row.scopeId],
       tombstoneKeys: [row.tombstoneKey],
     };

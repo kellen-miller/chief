@@ -261,3 +261,39 @@ Final second-correction verification passed with `pnpm verify`:
 
 No test uses a paid provider or network call. `git diff --check` is rerun
 immediately before the second-correction commit.
+
+## Final replay correction response
+
+Status: both remaining replay findings resolved.
+
+1. Authoritative replay now consumes the journal's numeric durable-memory IDs
+   directly through a synchronous, transaction-neutral hard-delete primitive
+   before cleaning up surviving source provenance. A partial recovery image
+   with no source event and an active memory whose `source_event_id` is null now
+   removes the canonical text, memory row, FTS row, and vector. The live shared
+   suppression transaction uses the same primitive before source-scope cleanup.
+2. Migration `0005_context_forgetting` now records the exact suppression reason
+   in every upgraded 0004 payload. It prefers the referenced source tombstone,
+   falls back to the matching scrubbed conversation source, and safely defaults
+   to `locally-forgotten` only when neither legacy signal is available. The 0005
+   migration checksum is advanced to `chief-0005-v4`. Both deterministic
+   Discord and local-forget journals upgrade, flush, and replay with their
+   original reason.
+
+The memory regression first retained one active memory in the partial restore.
+The migration regression first produced an upgraded payload with no reason.
+Both passed after the corresponding production change. The focused replay,
+memory-store, Discord-lifecycle, and database suite passed 63 tests; the three
+specific authoritative and 0004 replay probes also passed together.
+
+Final replay-correction verification passed with `pnpm verify`:
+
+- Prettier, ESLint, both TypeScript builds, and all 41 test files passed.
+- 362 tests passed.
+- Coverage was 91.59% statements, 84.31% branches, 94.17% functions, and
+  93.10% lines.
+- `ContextDeletionStore` coverage was 92.69% statements, 83.72% branches,
+  97.80% functions, and 94.05% lines.
+
+No test uses a paid provider or network call. `git diff --check` is rerun
+immediately before the final replay-correction commit.
