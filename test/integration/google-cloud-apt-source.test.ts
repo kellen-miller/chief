@@ -69,6 +69,24 @@ describe('Google Cloud apt source configuration', () => {
       'chief-google-cloud.list',
     );
   });
+
+  it('rejects a malformed generated source before replacement', async () => {
+    const fixture = await createFixture();
+    const malformedKeyring = `${fixture.keyring}]\nmalformed`;
+    const legacy = await readFile(
+      join(fixture.sources, 'google-cloud.list'),
+      'utf8',
+    );
+    await writeFile(malformedKeyring, 'test-keyring');
+
+    expect(await runConfigure(fixture, malformedKeyring)).not.toBe(0);
+    expect(
+      await readFile(join(fixture.sources, 'google-cloud.list'), 'utf8'),
+    ).toBe(legacy);
+    expect(await readdir(fixture.sources)).not.toContain(
+      'chief-google-cloud.list',
+    );
+  });
 });
 
 interface AptFixture {
@@ -115,12 +133,15 @@ ${prefix} google-cloud-ops-agent-bookworm-all main
 `;
 }
 
-async function runConfigure(fixture: AptFixture): Promise<number | null> {
+async function runConfigure(
+  fixture: AptFixture,
+  keyring = fixture.keyring,
+): Promise<number | null> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn('bash', [configureScript], {
       env: {
         ...process.env,
-        GOOGLE_CLOUD_APT_KEYRING: fixture.keyring,
+        GOOGLE_CLOUD_APT_KEYRING: keyring,
         GOOGLE_CLOUD_APT_SOURCES_DIR: fixture.sources,
       },
       stdio: ['ignore', 'ignore', 'ignore'],

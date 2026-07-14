@@ -45,12 +45,15 @@ boundaries and do not duplicate ordering or file-selection knowledge.
 - [x] (2026-07-14 00:12Z) Updated operations documentation and living-plan
       evidence.
 - [x] (2026-07-14 00:15Z) Ran the fresh-eyes recent-work review, confirmed the
-  Moby prune semantics, and corrected one operator-doc wording issue.
-- [ ] Run formal and adversarial implementation reviews.
+      Moby prune semantics, and corrected one operator-doc wording issue.
+- [x] (2026-07-14 00:22Z) Ran the formal Standards and Spec reviews; resolved
+      all standards findings and added the missing staged-source validation found by
+      the Spec axis.
+- [ ] Run the adversarial implementation review.
 - [x] (2026-07-14 00:16Z) Ran all local validation and created the reviewed
-  Conventional Commit.
+      Conventional Commit.
 - [ ] Push the explicit remote ref, open the PR, and verify the four required
-  GitHub checks.
+      GitHub checks.
 
 ## Surprises & Discoveries
 
@@ -88,7 +91,12 @@ set for option Signed-By`.
   its production change: missing tag/prune calls, non-best-effort cleanup
   failures, missing apt script, and absent Terraform/workflow wiring.
   Evidence: focused Vitest runs reported the expected assertions, followed by
-  11 passing repository-policy tests and 7 passing focused integration tests.
+  11 passing repository-policy tests and 8 passing focused integration tests.
+- Observation: The formal Spec review found that the implementation staged the
+  canonical apt file but did not validate its shape before replacement.
+  Evidence: The script now requires exactly the four expected signed lines, and
+  a focused malformed-keyring-path test proves validation fails before any
+  legacy source is removed.
 
 ## Decision Log
 
@@ -124,8 +132,9 @@ set for option Signed-By`.
 
 Implementation is complete at the planned seams. Review and full validation are
 partially complete. The recent-work pass found no code defect; formal and
-adversarial reviews remain. Completion depends on GitHub evidence, not the
-existence of this plan or local green tests.
+two-axis review findings are resolved, and the adversarial implementation review
+remains. Completion depends on GitHub evidence, not the existence of this plan
+or local green tests.
 
 ## Context and Orientation
 

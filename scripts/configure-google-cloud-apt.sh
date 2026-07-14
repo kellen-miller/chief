@@ -24,6 +24,22 @@ deb [signed-by=$KEYRING] $REPOSITORY_URL cloud-sdk-bookworm main
 deb [signed-by=$KEYRING] $REPOSITORY_URL google-cloud-packages-archive-keyring-bookworm-stable main
 deb [signed-by=$KEYRING] $REPOSITORY_URL google-cloud-ops-agent-bookworm-all main
 EOF
+valid_source=true
+for suite in \
+  google-compute-engine-bookworm-stable \
+  cloud-sdk-bookworm \
+  google-cloud-packages-archive-keyring-bookworm-stable \
+  google-cloud-ops-agent-bookworm-all; do
+  if ! grep -Fqx \
+    "deb [signed-by=$KEYRING] $REPOSITORY_URL $suite main" \
+    "$temporary_source"; then
+    valid_source=false
+  fi
+done
+if [[ "$(grep -c '^' "$temporary_source")" -ne 4 || "$valid_source" != true ]]; then
+  echo "Generated Google Cloud apt source is invalid" >&2
+  exit 1
+fi
 chmod 0644 "$temporary_source"
 mv -f "$temporary_source" "$CANONICAL_SOURCE"
 
