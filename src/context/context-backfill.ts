@@ -16,6 +16,7 @@ import {
   type ContextSummaryResult,
   type ContextSummarySource,
 } from './openai-context.js';
+import { hasSourceTombstone } from './source-scope.js';
 
 export interface ContextBackfillPricing {
   readonly embeddingInputPerMillionUsd: number;
@@ -951,16 +952,9 @@ export class ContextBackfillService {
   }
 
   #sourceTombstoned(messageId: string): boolean {
-    return (
-      this.#database
-        .prepare(
-          `select exists(
-             select 1 from context_tombstones
-             where scope_type = 'source' and scope_id = ?
-           )`,
-        )
-        .pluck()
-        .get(`${this.#scopeId()}/${messageId}`) === 1
+    return hasSourceTombstone(
+      this.#database,
+      `${this.#scopeId()}/${messageId}`,
     );
   }
 

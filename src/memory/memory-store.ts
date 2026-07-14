@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto';
 
 import type Database from 'better-sqlite3';
 
+import {
+  discordSourceSnowflake,
+  hasSourceTombstone,
+} from '../context/source-scope.js';
+
 export interface SourceObservation {
   readonly canModerateContext?: boolean;
   readonly content: string;
@@ -359,15 +364,7 @@ export class SqliteMemoryStore {
       const tombstoned =
         source !== undefined &&
         source.sourceScopeId !== '' &&
-        this.#database
-          .prepare(
-            `select exists(
-                   select 1 from context_tombstones
-                   where scope_type = 'source' and scope_id = ?
-                 )`,
-          )
-          .pluck()
-          .get(source.sourceScopeId) === 1;
+        hasSourceTombstone(this.#database, source.sourceScopeId);
       if (
         source === undefined ||
         tombstoned ||
@@ -577,16 +574,7 @@ export class SqliteMemoryStore {
    * outer transaction, so this method must not open or commit one itself.
    */
   public deleteContextSources(sourceScopeIds: readonly string[]): void {
-    const uniqueScopeIds = [...new Set(sourceScopeIds)];
-    if (uniqueScopeIds.length === 0) return;
-    const placeholders = uniqueScopeIds.map(() => '?').join(', ');
-    const sourceEventIds = this.#database
-      .prepare(
-        `select id from source_events
-         where source_scope_id in (${placeholders}) order by id`,
-      )
-      .pluck()
-      .all(...uniqueScopeIds) as number[];
+    const sourceEventIds = this.#sourceEventIds(sourceScopeIds);
     for (const sourceEventId of sourceEventIds) {
       this.#deleteSourceMemories(sourceEventId);
     }
@@ -643,32 +631,64 @@ export class SqliteMemoryStore {
    * identity while removing the private extraction snapshot and stale work.
    */
   public scrubContextSources(sourceScopeIds: readonly string[]): void {
-    const uniqueScopeIds = [...new Set(sourceScopeIds)];
-    if (uniqueScopeIds.length === 0) return;
-    const placeholders = uniqueScopeIds.map(() => '?').join(', ');
+    const sourceEventIds = this.#sourceEventIds(sourceScopeIds);
+    if (sourceEventIds.length === 0) return;
+    const placeholders = sourceEventIds.map(() => '?').join(', ');
     this.#database
       .prepare(
-        `delete from memory_jobs where source_event_id in (
-           select id from source_events
-           where source_scope_id in (${placeholders})
-         )`,
+        `delete from memory_jobs
+         where source_event_id in (${placeholders})`,
       )
-      .run(...uniqueScopeIds);
+      .run(...sourceEventIds);
     this.#database
       .prepare(
         `update source_events
          set content = '', extraction_status = 'completed'
-         where source_scope_id in (${placeholders})`,
+         where id in (${placeholders})`,
       )
-      .run(...uniqueScopeIds);
+      .run(...sourceEventIds);
+  }
+
+  #sourceEventIds(sourceScopeIds: readonly string[]): number[] {
+    const uniqueScopeIds = [...new Set(sourceScopeIds)].filter(
+      (scopeId) => scopeId !== '',
+    );
+    if (uniqueScopeIds.length === 0) return [];
+    const snowflakes = [
+      ...new Set(
+        uniqueScopeIds.flatMap((scopeId) => {
+          const snowflake = discordSourceSnowflake(scopeId);
+          return snowflake === null ? [] : [snowflake];
+        }),
+      ),
+    ];
+    const scopePlaceholders = uniqueScopeIds.map(() => '?').join(', ');
+    const snowflakePredicate =
+      snowflakes.length === 0
+        ? ''
+        : `or (medium = 'text' and platform_source_id in
+             (${snowflakes.map(() => '?').join(', ')}))`;
+    return this.#database
+      .prepare(
+        `select id from source_events
+         where source_scope_id in (${scopePlaceholders})
+           ${snowflakePredicate}
+         order by id`,
+      )
+      .pluck()
+      .all(...uniqueScopeIds, ...snowflakes) as number[];
   }
 
   #deleteSourceMemories(sourceEventId: number): void {
-    const ids = this.#database
-      .prepare('select id from memories where source_event_id = ?')
-      .pluck()
-      .all(sourceEventId) as number[];
-    for (const id of ids) this.#deleteIndexes(id);
+    const memories = this.#database
+      .prepare('select id, state from memories where source_event_id = ?')
+      .all(sourceEventId) as {
+      readonly id: number;
+      readonly state: string;
+    }[];
+    for (const { id, state } of memories) {
+      if (state === 'active') this.#deleteIndexes(id);
+    }
     this.#database
       .prepare('delete from memories where source_event_id = ?')
       .run(sourceEventId);
@@ -695,11 +715,14 @@ export class SqliteMemoryStore {
   } {
     const memory = this.#database
       .prepare(
-        'select source_event_id as sourceEventId from memories where id = ?',
+        `select source_event_id as sourceEventId, state
+         from memories where id = ?`,
       )
-      .get(memoryId) as { sourceEventId: number | null } | undefined;
+      .get(memoryId) as
+      | { readonly sourceEventId: number | null; readonly state: string }
+      | undefined;
     if (memory === undefined) return { deleted: false, sourceDeleted: false };
-    this.#deleteIndexes(memoryId);
+    if (memory.state === 'active') this.#deleteIndexes(memoryId);
     this.#database.prepare('delete from memories where id = ?').run(memoryId);
 
     let sourceDeleted = false;

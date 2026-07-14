@@ -3,11 +3,18 @@ import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { NormalizedTextSource } from '../../src/app/conversation-orchestrator.js';
+import { ChannelContextService } from '../../src/context/channel-context-service.js';
+import { ContextBackfillService } from '../../src/context/context-backfill.js';
 import type { ContextForgetJournalEntry } from '../../src/context/context-deletion-store.js';
 import { ContextDeletionStore } from '../../src/context/context-deletion-store.js';
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
+import type {
+  DiscordHistoryPage,
+  DiscordHistorySource,
+} from '../../src/discord/discord-reconciliation-service.js';
 import { backupChiefDatabase } from '../../src/memory/backup.js';
 import {
   CHANNEL_CONTEXT_MIGRATION_ID,
@@ -21,6 +28,8 @@ import {
   restorableDatabaseCapability,
   verifyRestorableDatabase,
 } from '../../src/memory/recovery.js';
+import { SqliteUsageLedger } from '../../src/usage/sqlite-usage-ledger.js';
+import { UsageBudget } from '../../src/usage/usage-budget.js';
 
 const directories: string[] = [];
 
@@ -238,8 +247,10 @@ describe('database recovery', () => {
     database.close();
   });
 
-  it('replays a real memory-only forget into a migration-0002 snapshot', () => {
+  it('replays a real memory-only forget into a migration-0002 snapshot', async () => {
     const sourceScopeId = '52345678901234567';
+    const guildId = '32345678901234567';
+    const channelId = '22345678901234567';
     const current = openChiefDatabase(':memory:');
     migrateChiefDatabase(current, '0002_conversation_events');
     const currentFixture = insertMigration0002Memory(current);
@@ -270,9 +281,9 @@ describe('database recovery', () => {
     ).toBe('');
     const currentMemory = new SqliteMemoryStore(current);
     const { journal: entry } = new ContextDeletionStore({
-      channelId: 'channel',
+      channelId,
       database: current,
-      guildId: 'guild',
+      guildId,
       memory: currentMemory,
       timeZone: 'America/New_York',
     }).delete({
@@ -285,18 +296,165 @@ describe('database recovery', () => {
     });
 
     expect(entry.payload.sourceScopeIds).toContain(sourceScopeId);
+    expect(
+      current
+        .prepare(
+          `select exists(
+             select 1 from context_tombstones
+             where scope_type = 'source' and scope_id = ?
+           )`,
+        )
+        .pluck()
+        .get(sourceScopeId),
+    ).toBe(1);
     expectMemoryRecoveryScrubbed(current);
 
     const restored = openChiefDatabase(':memory:');
     migrateChiefDatabase(restored, '0002_conversation_events');
     const restoredFixture = insertMigration0002Memory(restored);
     expect(restoredFixture).toEqual(currentFixture);
+    migrateChiefDatabase(restored);
 
     replayForgetJournals(restored, [entry], 10);
 
     expectMemoryRecoveryScrubbed(restored);
+    const restoredMemory = new SqliteMemoryStore(restored);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(restored),
+      database: restored,
+      guildId,
+      memory: restoredMemory,
+      now: () => 40 * 24 * 60 * 60 * 1_000,
+      timeZone: 'America/New_York',
+    });
+    expect(
+      service.apply({
+        content: 'must stay forgotten',
+        memoryExtraction: 'automatic',
+        messageId: sourceScopeId,
+        occurredAt: 1_000,
+        requestId: sourceScopeId,
+        role: 'human',
+        speakerId: 'speaker',
+        speakerName: 'President',
+        type: 'upsert',
+      }),
+    ).toEqual({ eventId: null, status: 'suppressed' });
+
+    const now = 40 * 24 * 60 * 60 * 1_000;
+    const oldSource = normalizedSource(
+      sourceScopeId,
+      'must stay forgotten in backfill',
+      1_000,
+    );
+    const summarize = vi.fn(() => {
+      throw new Error('tombstoned backfill source reached summarization');
+    });
+    const embed = vi.fn(() => {
+      throw new Error('tombstoned backfill source reached embedding');
+    });
+    const backfill = new ContextBackfillService({
+      budget: new UsageBudget({
+        ceilingUsd: 10,
+        indexingCeilingUsd: 5,
+        ledger: new SqliteUsageLedger(restored),
+        now: () => now,
+        warningUsd: 5,
+      }),
+      channelId,
+      database: restored,
+      embed,
+      guildId,
+      history: historyPage(oldSource),
+      now: () => now,
+      pricing: {
+        embeddingInputPerMillionUsd: 0,
+        summaryInputPerMillionUsd: 0,
+        summaryOutputPerMillionUsd: 0,
+      },
+      summarizer: { summarize },
+      timeZone: 'America/New_York',
+    });
+    await expect(backfill.dryRun({ replace: false })).resolves.toMatchObject({
+      eligibleCount: 1,
+      status: 'ready',
+    });
+    backfill.activate({ confirmGuildId: guildId, maximumUsageUsd: 1 });
+    backfill.attachHistorySource(historyPage(oldSource));
+    await expect(backfill.runNext(now)).resolves.toMatchObject({
+      status: 'completed',
+    });
+    expect(summarize).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
+    expectMemoryRecoveryScrubbed(restored);
+    expect(
+      restored
+        .prepare('select count(*) from conversation_events')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      restored.prepare('select count(*) from context_jobs').pluck().get(),
+    ).toBe(0);
+    expect(
+      restored.prepare('select count(*) from context_documents').pluck().get(),
+    ).toBe(0);
+    expect(
+      restored
+        .prepare('select count(*) from context_document_fts')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      restored
+        .prepare('select count(*) from context_document_vectors')
+        .pluck()
+        .get(),
+    ).toBe(0);
     restored.close();
     current.close();
+  });
+
+  it('does not alias source tombstones by position or suffix', () => {
+    const guildId = '32345678901234567';
+    const channelId = '22345678901234567';
+    const messageId = '52345678901234567';
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    insertSourceTombstone(
+      database,
+      `${messageId}/${channelId}/62345678901234567`,
+    );
+    insertSourceTombstone(
+      database,
+      `${guildId}/${messageId}/72345678901234567`,
+    );
+    insertSourceTombstone(database, 'legacy-message');
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      timeZone: 'America/New_York',
+    });
+
+    for (const candidate of [messageId, 'legacy-message']) {
+      expect(
+        service.apply({
+          content: `retained ${candidate}`,
+          memoryExtraction: 'none',
+          messageId: candidate,
+          occurredAt: 1_000,
+          requestId: candidate,
+          role: 'human',
+          speakerId: 'speaker',
+          speakerName: 'President',
+          type: 'upsert',
+        }),
+      ).toMatchObject({ status: 'applied' });
+    }
+    database.close();
   });
 
   it('replays current context by stable keys, not snapshot-local document IDs', () => {
@@ -591,6 +749,60 @@ function expectMemoryRecoveryScrubbed(
   expect(
     database.prepare('select count(*) from memory_vectors').pluck().get(),
   ).toBe(0);
+}
+
+function normalizedSource(
+  messageId: string,
+  content: string,
+  occurredAt: number,
+): NormalizedTextSource {
+  return {
+    attachmentMetadataJson: '[]',
+    authorKind: 'human',
+    canModerateContext: false,
+    content,
+    editedAt: null,
+    messageId,
+    occurredAt,
+    replyToMessageId: null,
+    requesterId: 'speaker',
+    revisionChecksum: `revision-${messageId}`,
+    speakerName: 'President',
+  };
+}
+
+function historyPage(source: NormalizedTextSource): DiscordHistorySource {
+  const page: DiscordHistoryPage = {
+    complete: true,
+    coverage: {
+      newestMessageId: source.messageId,
+      oldestMessageId: source.messageId,
+    },
+    items: [
+      {
+        messageId: source.messageId,
+        occurredAt: source.occurredAt,
+        revisionChecksum: source.revisionChecksum,
+        source,
+      },
+    ],
+    nextCursor: null,
+    rateLimited: false,
+  };
+  return { fetchPage: () => Promise.resolve(page) };
+}
+
+function insertSourceTombstone(
+  database: ReturnType<typeof openChiefDatabase>,
+  scopeId: string,
+): void {
+  database
+    .prepare(
+      `insert into context_tombstones
+         (tombstone_key, scope_type, scope_id, reason, occurred_at, checksum)
+       values (?, 'source', ?, 'locally-forgotten', 1, ?)`,
+    )
+    .run(`source:${scopeId}`, scopeId, `checksum-${scopeId}`);
 }
 
 function recordContextSource(

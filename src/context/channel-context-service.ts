@@ -27,6 +27,7 @@ import {
   type ContextSummaryResult,
   type ContextSummarySource,
 } from './openai-context.js';
+import { hasSourceTombstone } from './source-scope.js';
 import type {
   ContextCompleteness,
   ContextContentStateReason,
@@ -1960,17 +1961,7 @@ export class ChannelContextService {
   }
 
   #hasTombstone(scopeId: string): boolean {
-    return (
-      this.#database
-        .prepare(
-          `select exists(
-             select 1 from context_tombstones
-             where scope_type = 'source' and scope_id = ?
-           )`,
-        )
-        .pluck()
-        .get(scopeId) === 1
-    );
+    return hasSourceTombstone(this.#database, scopeId);
   }
 
   #sourceScopeId(messageId: string): string {

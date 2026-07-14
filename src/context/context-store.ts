@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 
+import { hasSourceTombstone } from './source-scope.js';
 import type { ContextCompleteness, ContextTier } from './context-types.js';
 
 export interface ContextDocumentRevisionInput {
@@ -196,20 +197,20 @@ export class ContextStore {
       throw new Error('context document source is unavailable');
     }
     if (allowRetentionExpiredSources) {
-      const sourceTombstoned = this.#database.prepare(
-        `select exists(
-           select 1 from conversation_events c
-           join context_tombstones t
-             on t.scope_type = 'source'
-            and t.scope_id = c.guild_id || '/' || c.channel_id || '/' ||
-                             c.discord_message_id
-           where c.id = ?
-         )`,
-      );
       if (
-        input.eventIds.some(
-          (eventId) => sourceTombstoned.pluck().get(eventId) === 1,
-        )
+        input.eventIds.some((eventId) => {
+          const scopeId = this.#database
+            .prepare(
+              `select guild_id || '/' || channel_id || '/' ||
+                        discord_message_id
+                 from conversation_events where id = ?`,
+            )
+            .pluck()
+            .get(eventId) as string | undefined;
+          return (
+            scopeId !== undefined && hasSourceTombstone(this.#database, scopeId)
+          );
+        })
       ) {
         throw new Error('context document source is tombstoned');
       }

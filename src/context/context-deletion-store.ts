@@ -10,6 +10,7 @@ import {
   extractLexicalTermSet,
   hasCompleteLexicalAnchor,
 } from './lexical-relevance.js';
+import { discordSourceSnowflake } from './source-scope.js';
 
 export interface ContextDeletionCandidates {
   readonly documentKeys: readonly string[];
@@ -719,10 +720,16 @@ export class ContextDeletionStore {
         ...this.#sourceDerivedMemoryIds(input.sourceScopeIds),
       ]),
     ];
+    const memorySourceScopeIds = input.hardDeleteMemorySources
+      ? []
+      : this.#affectedMemorySourceScopes(memoryIds);
     const tombstonedSourceScopes = input.tombstoneMissingSources
       ? input.sourceScopeIds
       : sources.map(({ scopeId }) => scopeId);
-    const tombstoneKeys = tombstonedSourceScopes.map((scopeId) =>
+    const allTombstonedSourceScopes = [
+      ...new Set([...tombstonedSourceScopes, ...memorySourceScopeIds]),
+    ];
+    const tombstoneKeys = allTombstonedSourceScopes.map((scopeId) =>
       this.#insertTombstone({
         now: input.now,
         reason: input.reason,
@@ -797,9 +804,7 @@ export class ContextDeletionStore {
         }),
       );
     }
-    let memorySourceScopeIds: readonly string[] = [];
     if (!input.hardDeleteMemorySources) {
-      memorySourceScopeIds = this.#memorySourceScopes(affectedMemoryIds);
       this.#memory.scrubContextSources([
         ...new Set([...input.sourceScopeIds, ...memorySourceScopeIds]),
       ]);
@@ -829,8 +834,17 @@ export class ContextDeletionStore {
   }
 
   #sourceRows(scopeIds: readonly string[]): SourceRow[] {
-    if (scopeIds.length === 0) return [];
-    const placeholders = scopeIds.map(() => '?').join(', ');
+    const uniqueScopeIds = [...new Set(scopeIds)].filter(
+      (scopeId) => scopeId !== '',
+    );
+    if (uniqueScopeIds.length === 0) return [];
+    const snowflakes = sourceSnowflakes(uniqueScopeIds);
+    const placeholders = uniqueScopeIds.map(() => '?').join(', ');
+    const snowflakePredicate =
+      snowflakes.length === 0
+        ? ''
+        : `or discord_message_id in
+             (${snowflakes.map(() => '?').join(', ')})`;
     return this.#database
       .prepare(
         `select id, occurred_at as occurredAt,
@@ -839,9 +853,10 @@ export class ContextDeletionStore {
          from conversation_events
          where guild_id || '/' || channel_id || '/' || discord_message_id
                  in (${placeholders})
+            ${snowflakePredicate}
          order by id`,
       )
-      .all(...scopeIds) as SourceRow[];
+      .all(...uniqueScopeIds, ...snowflakes) as SourceRow[];
   }
 
   #affectedDocuments(
@@ -1214,23 +1229,61 @@ export class ContextDeletionStore {
       .all(...memoryIds) as string[];
   }
 
-  #sourceDerivedMemoryIds(sourceScopeIds: readonly string[]): number[] {
-    if (sourceScopeIds.length === 0) return [];
-    const placeholders = sourceScopeIds.map(() => '?').join(', ');
+  #affectedMemorySourceScopes(memoryIds: readonly number[]): string[] {
+    if (memoryIds.length === 0) return [];
+    const placeholders = memoryIds.map(() => '?').join(', ');
     return this.#database
       .prepare(
-        `select m.id from memories m join source_events s
-           on s.id = m.source_event_id
+        `with recursive affected(id) as (
+           select id from memories where id in (${placeholders})
+           union
+           select m.id from memories m join affected a
+             on m.superseded_by = a.id
+         )
+         select coalesce(
+           nullif(s.source_scope_id, ''),
+           case when s.medium = 'text'
+             and length(s.platform_source_id) between 17 and 20
+             and s.platform_source_id not glob '*[^0-9]*'
+           then s.platform_source_id end
+         )
+         from affected a join memories m on m.id = a.id
+         join source_events s on s.id = m.source_event_id
          where coalesce(
            nullif(s.source_scope_id, ''),
            case when s.medium = 'text'
              and length(s.platform_source_id) between 17 and 20
              and s.platform_source_id not glob '*[^0-9]*'
            then s.platform_source_id end
-         ) in (${placeholders}) order by m.id`,
+         ) is not null
+         order by m.id`,
       )
       .pluck()
-      .all(...sourceScopeIds) as number[];
+      .all(...memoryIds) as string[];
+  }
+
+  #sourceDerivedMemoryIds(sourceScopeIds: readonly string[]): number[] {
+    const uniqueScopeIds = [...new Set(sourceScopeIds)].filter(
+      (scopeId) => scopeId !== '',
+    );
+    if (uniqueScopeIds.length === 0) return [];
+    const snowflakes = sourceSnowflakes(uniqueScopeIds);
+    const placeholders = uniqueScopeIds.map(() => '?').join(', ');
+    const snowflakePredicate =
+      snowflakes.length === 0
+        ? ''
+        : `or (s.medium = 'text' and s.platform_source_id in
+             (${snowflakes.map(() => '?').join(', ')}))`;
+    return this.#database
+      .prepare(
+        `select m.id from memories m join source_events s
+           on s.id = m.source_event_id
+         where s.source_scope_id in (${placeholders})
+            ${snowflakePredicate}
+         order by m.id`,
+      )
+      .pluck()
+      .all(...uniqueScopeIds, ...snowflakes) as number[];
   }
 
   #documentSourceScopes(documentKeys: readonly string[]): string[] {
@@ -1301,6 +1354,17 @@ export class ContextDeletionStore {
         .get(scopeId, requesterId) === 1
     );
   }
+}
+
+function sourceSnowflakes(scopeIds: readonly string[]): string[] {
+  return [
+    ...new Set(
+      scopeIds.flatMap((scopeId) => {
+        const snowflake = discordSourceSnowflake(scopeId);
+        return snowflake === null ? [] : [snowflake];
+      }),
+    ),
+  ];
 }
 
 function digest(value: unknown): string {
