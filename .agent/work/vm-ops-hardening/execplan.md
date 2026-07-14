@@ -54,8 +54,8 @@ boundaries and do not duplicate ordering or file-selection knowledge.
 - [x] (2026-07-14 00:32Z) Re-ran all local validation on the reviewed commits;
       28 files and 209 tests passed with all shell, workflow, Terraform, build, and
       diff gates green.
-- [ ] Push the explicit remote ref, open the PR, and verify the four required
-      GitHub checks.
+- [x] (2026-07-14 00:36Z) Pushed the explicit remote ref, opened ready-for-review
+      PR #16, and observed Format, Lint, Test, Build, and Terraform Plan passing.
 
 ## Surprises & Discoveries
 
@@ -136,8 +136,9 @@ Implementation is complete at the planned seams. Review and full validation are
 complete locally. The recent-work pass found no code defect, the formal two-axis
 review findings are resolved, the final bounded adversarial pass found no
 remaining serious issue, and refreshed validation is green. Completion now
-depends on GitHub evidence, not the existence of this plan or earlier green
-tests.
+includes ready-for-review PR #16 and green GitHub evidence. The change remains
+intentionally unmerged and undeployed; production convergence begins only if
+the user merges the PR.
 
 ## Context and Orientation
 
@@ -366,6 +367,15 @@ Post-implementation local evidence:
                 90.44% lines
     pnpm verify, bash -n, terraform fmt/init/validate, git diff --check,
     shellcheck, and actionlint exit 0
+
+GitHub delivery evidence:
+
+    PR          https://github.com/kellen-miller/chief/pull/16
+    Format      passed in 47s
+    Lint        passed in 1m0s
+    Test        passed in 47s
+    Build       passed in 1m45s
+    Terraform   passed in 19s
 
 ## Interfaces and Dependencies
 
