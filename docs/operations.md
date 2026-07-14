@@ -59,6 +59,38 @@ After a successful schema deployment, never start an older image against the
 newer database. Restore the matching verified pre-deploy database backup and
 prior image together.
 
+## Deployment housekeeping
+
+After a candidate passes readiness, the deployment tags the previously running
+digest as `chief:rollback` and runs a dangling-image prune. The active container
+protects the current digest and the tag protects one local rollback image; older
+Chief release images are reclaimed. Tagging and pruning are post-success,
+best-effort housekeeping. A failure emits a redacted
+`chief_image_cleanup_failed` warning to stderr but does not roll back a healthy
+candidate. If rollback tagging fails, pruning is skipped to preserve the prior
+digest.
+
+Inspect local retention and disk use with:
+
+```bash
+sudo docker image inspect chief:rollback --format '{{json .RepoDigests}}'
+sudo docker image ls --all --digests
+sudo docker system df
+```
+
+Do not use `docker image prune --all`: it broadens cleanup beyond dangling
+images and can remove the tagged rollback image. Artifact Registry retention is
+unchanged. The local tag is an operational convenience, not a replacement for
+the paired pre-deploy database backup required by rollback.
+
+Chief owns `/etc/apt/sources.list.d/chief-google-cloud.list`. The repository
+script `/opt/chief/configure-google-cloud-apt.sh` converges the Debian 12 Compute
+Engine, Cloud SDK, package-keyring, and Ops Agent suites on one signing key. It
+removes competing Google package definitions by repository URL while preserving
+`google_osconfig_managed.*`. Startup runs it before package installation and
+ordinary deployments run it before changing the Chief process, so a repair
+failure leaves the existing application available and fails the deployment.
+
 ## Routine changes
 
 - Rotate Discord/OpenAI secrets by adding a new Secret Manager version, then restart `chief.service`.

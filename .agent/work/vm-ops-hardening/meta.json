@@ -1,0 +1,26 @@
+{
+  "id": "vm-ops-hardening",
+  "title": "Harden Chief VM operations",
+  "stage": "implementation",
+  "state": "completed",
+  "created_at": "2026-07-13T23:38:11Z",
+  "updated_at": "2026-07-14T00:36:00Z",
+  "artifacts": {
+    "decision": "decision.md",
+    "execplan": "execplan.md",
+    "plan_review": "adversarial/plan-review.md",
+    "implementation_review": "adversarial/implementation-review.md"
+  },
+  "worktree": {
+    "path": "/Users/kellen/development/github/kellen-miller/chief/.worktrees/vm-ops-hardening",
+    "branch": "codex/vm-ops-hardening",
+    "base_ref": "origin/main",
+    "base_sha": "cdcc2e5e92c60bfab08406a1ec7dcc952f1e6969",
+    "upstream": "origin/main"
+  },
+  "delivery": {
+    "pull_request": "https://github.com/kellen-miller/chief/pull/16",
+    "head_branch": "codex/vm-ops-hardening",
+    "base_branch": "main"
+  }
+}

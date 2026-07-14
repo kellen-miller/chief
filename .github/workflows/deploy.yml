@@ -80,7 +80,7 @@ jobs:
 
       - name: Install deployment transaction
         run: |
-          gcloud compute scp scripts/deploy.sh scripts/run-container.sh \
+          gcloud compute scp scripts/configure-google-cloud-apt.sh scripts/deploy.sh scripts/run-container.sh \
             "chief:/tmp/" \
             --project="${{ vars.GCP_PROJECT_ID }}" \
             --zone="${{ vars.GCP_ZONE }}" \
@@ -89,7 +89,8 @@ jobs:
             --project="${{ vars.GCP_PROJECT_ID }}" \
             --zone="${{ vars.GCP_ZONE }}" \
             --tunnel-through-iap --quiet \
-            --command="for _ in \$(seq 1 60); do
+            --command="set -e
+            for _ in \$(seq 1 60); do
               sudo test -x /opt/chief/run-container.sh && break
               sleep 5
             done
@@ -97,6 +98,8 @@ jobs:
               sudo journalctl -u google-startup-scripts.service --no-pager --lines=100
               exit 1
             fi
+            sudo install -m 0750 /tmp/configure-google-cloud-apt.sh /opt/chief/configure-google-cloud-apt.sh
+            sudo /opt/chief/configure-google-cloud-apt.sh
             sudo install -m 0750 /tmp/run-container.sh /opt/chief/run-container.sh
             sudo install -m 0750 /tmp/deploy.sh /opt/chief/deploy.sh
             sudo /opt/chief/deploy.sh --image '${{ steps.image.outputs.reference }}'"

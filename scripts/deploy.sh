@@ -106,4 +106,18 @@ if [[ "$healthy" != true ]]; then
 fi
 
 trap - ERR
+cleanup_ready=true
+if [[ -n "$PREVIOUS_IMAGE" && "$PREVIOUS_IMAGE" != "$CANDIDATE_IMAGE" ]]; then
+  if ! docker image tag "$PREVIOUS_IMAGE" chief:rollback; then
+    printf '%s\n' \
+      '{"msg":"chief_image_cleanup_failed","stage":"rollback_tag"}' >&2
+    cleanup_ready=false
+  fi
+fi
+if [[ "$cleanup_ready" == true ]]; then
+  if ! docker image prune --force; then
+    printf '%s\n' \
+      '{"msg":"chief_image_cleanup_failed","stage":"prune"}' >&2
+  fi
+fi
 printf '{"msg":"chief_deploy_succeeded","image":"%s"}\n' "$CANDIDATE_IMAGE"

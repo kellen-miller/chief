@@ -240,13 +240,14 @@ resource "google_compute_instance" "chief" {
   metadata = {
     enable-oslogin = "TRUE"
     startup-script = templatefile("${path.module}/templates/startup.sh.tftpl", {
-      backup_bucket            = google_storage_bucket.backups.name
-      discord_application_id   = var.discord_application_id
-      discord_guild_id         = var.discord_guild_id
-      discord_text_channel_id  = var.discord_text_channel_id
-      discord_voice_channel_id = var.discord_voice_channel_id
-      project_id               = var.project_id
-      run_container_script     = file("${path.module}/../../scripts/run-container.sh")
+      backup_bucket                     = google_storage_bucket.backups.name
+      configure_google_cloud_apt_script = file("${path.module}/../../scripts/configure-google-cloud-apt.sh")
+      discord_application_id            = var.discord_application_id
+      discord_guild_id                  = var.discord_guild_id
+      discord_text_channel_id           = var.discord_text_channel_id
+      discord_voice_channel_id          = var.discord_voice_channel_id
+      project_id                        = var.project_id
+      run_container_script              = file("${path.module}/../../scripts/run-container.sh")
     })
   }
 

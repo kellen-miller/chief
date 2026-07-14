@@ -17,9 +17,12 @@ grep -qF '/swapfile none swap sw 0 0' /etc/fstab || printf '%s\n' '/swapfile non
 install -d -m 0755 /usr/share/keyrings
 curl --fail --silent --show-error https://packages.cloud.google.com/apt/doc/apt-key.gpg \
   | gpg --dearmor --yes --output /usr/share/keyrings/google-cloud.gpg
-cat >/etc/apt/sources.list.d/google-cloud-ops-agent.list <<'EOF'
-deb [signed-by=/usr/share/keyrings/google-cloud.gpg] https://packages.cloud.google.com/apt google-cloud-ops-agent-bookworm-all main
-EOF
+install -d -m 0750 /opt/chief
+cat >/opt/chief/configure-google-cloud-apt.sh <<'CHIEF_GOOGLE_APT_SCRIPT'
+${configure_google_cloud_apt_script}
+CHIEF_GOOGLE_APT_SCRIPT
+chmod 0750 /opt/chief/configure-google-cloud-apt.sh
+/opt/chief/configure-google-cloud-apt.sh
 apt-get update
 apt-get install --yes --no-install-recommends google-cloud-cli google-cloud-ops-agent
 

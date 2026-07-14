@@ -18,7 +18,7 @@ const deployScript = resolve('scripts/deploy.sh');
 
 describe('deploy transaction', () => {
   it('accepts a healthy immutable candidate', async () => {
-    const fixture = await createFixture(false);
+    const fixture = await createFixture();
     const result = await runDeploy(fixture);
 
     expect(result.code).toBe(0);
@@ -48,10 +48,14 @@ describe('deploy transaction', () => {
     await expect(access(dockerConfig)).rejects.toMatchObject({
       code: 'ENOENT',
     });
+    const rollbackTag = `docker image tag ${previous} chief:rollback`;
+    const prune = 'docker image prune --force';
+    expect(commands).toContain(rollbackTag);
+    expect(commands.indexOf(rollbackTag)).toBeLessThan(commands.indexOf(prune));
   });
 
   it('restores the old digest and database when candidate health fails', async () => {
-    const fixture = await createFixture(true);
+    const fixture = await createFixture({ failCandidate: true });
     const result = await runDeploy(fixture);
 
     expect(result.code).not.toBe(0);
@@ -61,14 +65,49 @@ describe('deploy transaction', () => {
     expect(await readFile(join(fixture.data, 'chief.db'), 'utf8')).toBe(
       'original',
     );
+    const commands = await readFile(fixture.commandLog, 'utf8');
+    expect(commands).not.toContain('docker image tag');
+    expect(commands).not.toContain('docker image prune');
+  });
+
+  it('keeps a healthy deploy when rollback tagging fails', async () => {
+    const fixture = await createFixture({ failTag: true });
+    const result = await runDeploy(fixture);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain('chief_image_cleanup_failed');
+    const commands = await readFile(fixture.commandLog, 'utf8');
+    expect(commands).toContain(`docker image tag ${previous} chief:rollback`);
+    expect(commands).not.toContain('docker image prune');
+  });
+
+  it('keeps the rollback tag when image pruning fails', async () => {
+    const fixture = await createFixture({ failPrune: true });
+    const result = await runDeploy(fixture);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain(
+      '{"msg":"chief_image_cleanup_failed","stage":"prune"}',
+    );
+    const commands = await readFile(fixture.commandLog, 'utf8');
+    expect(commands).toContain(`docker image tag ${previous} chief:rollback`);
+    expect(commands).toContain('docker image prune --force');
   });
 });
 
-async function createFixture(failCandidate: boolean): Promise<{
+interface FixtureOptions {
+  readonly failCandidate?: boolean;
+  readonly failPrune?: boolean;
+  readonly failTag?: boolean;
+}
+
+async function createFixture(options: FixtureOptions = {}): Promise<{
   readonly bin: string;
   readonly commandLog: string;
   readonly data: string;
   readonly failCandidate: boolean;
+  readonly failPrune: boolean;
+  readonly failTag: boolean;
   readonly runtime: string;
 }> {
   const root = await mkdtemp(join(tmpdir(), 'chief-deploy-test-'));
@@ -87,10 +126,15 @@ async function createFixture(failCandidate: boolean): Promise<{
 set -euo pipefail
 command_name="\${1:-}"
 shift || true
-printf 'docker %s config=%s\n' "$command_name" "\${DOCKER_CONFIG:-}" >>"$COMMAND_LOG"
+printf 'docker %s %s config=%s\n' "$command_name" "$*" "\${DOCKER_CONFIG:-}" >>"$COMMAND_LOG"
 case "$command_name" in
   login) cat >/dev/null; exit 0 ;;
   pull|stop) exit 0 ;;
+  image)
+    if [[ "\${1:-}" == tag && "\${FAIL_TAG:-0}" == 1 ]]; then exit 1; fi
+    if [[ "\${1:-}" == prune && "\${FAIL_PRUNE:-0}" == 1 ]]; then exit 1; fi
+    exit 0
+    ;;
   run)
     args=" $* "
     database=""
@@ -125,7 +169,15 @@ fi
 exit 0
 `,
   );
-  return { bin, commandLog, data, failCandidate, runtime };
+  return {
+    bin,
+    commandLog,
+    data,
+    failCandidate: options.failCandidate ?? false,
+    failPrune: options.failPrune ?? false,
+    failTag: options.failTag ?? false,
+    runtime,
+  };
 }
 
 async function executable(path: string, content: string): Promise<void> {
@@ -138,6 +190,8 @@ async function runDeploy(fixture: {
   readonly commandLog: string;
   readonly data: string;
   readonly failCandidate: boolean;
+  readonly failPrune: boolean;
+  readonly failTag: boolean;
   readonly runtime: string;
 }): Promise<{ readonly code: number | null; readonly stderr: string }> {
   return new Promise((resolvePromise, reject) => {
@@ -157,6 +211,8 @@ async function runDeploy(fixture: {
         COMMAND_LOG: fixture.commandLog,
         DOCKER_CONFIG: '',
         FAIL_CANDIDATE: fixture.failCandidate ? '1' : '0',
+        FAIL_PRUNE: fixture.failPrune ? '1' : '0',
+        FAIL_TAG: fixture.failTag ? '1' : '0',
         PATH: `${fixture.bin}:${process.env.PATH ?? ''}`,
       },
       stdio: ['ignore', 'ignore', 'pipe'],
