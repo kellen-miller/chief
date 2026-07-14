@@ -3,14 +3,20 @@ set -euo pipefail
 umask 077
 
 CANDIDATE_IMAGE=""
+BACKUP_BUCKET=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --image) CANDIDATE_IMAGE="${2:-}"; shift 2 ;;
+    --backup-bucket) BACKUP_BUCKET="${2:-}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 if [[ ! "$CANDIDATE_IMAGE" =~ @sha256:[0-9a-f]{64}$ ]]; then
   echo "--image must be an immutable sha256 digest" >&2
+  exit 2
+fi
+if [[ ! "$BACKUP_BUCKET" =~ ^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$ ]]; then
+  echo "--backup-bucket must be a valid bucket name" >&2
   exit 2
 fi
 REGISTRY="${CANDIDATE_IMAGE%%/*}"
@@ -19,6 +25,7 @@ DATA_DIR="${CHIEF_DATA_DIR:-/var/lib/chief}"
 DATA_UID="${CHIEF_DATA_UID:-1000}"
 DATA_GID="${CHIEF_DATA_GID:-1000}"
 RUNTIME_DIR="${CHIEF_RUNTIME_DIR:-/run/chief}"
+CONFIG_FILE="${CHIEF_CONFIG_FILE:-/etc/chief/chief.env}"
 STATE_FILE="$DATA_DIR/deploy.env"
 DATABASE="$DATA_DIR/chief.db"
 BACKUP_DIR="$DATA_DIR/pre-deploy"
@@ -47,6 +54,26 @@ prune_recovery_artifacts() {
     -mmin +43199 -delete
 }
 
+sync_backup_bucket() {
+  local temporary="$CONFIG_FILE.tmp"
+  [[ -f "$CONFIG_FILE" ]]
+  awk -v bucket="$BACKUP_BUCKET" '
+    BEGIN { found = 0 }
+    /^CHIEF_BACKUP_BUCKET=/ {
+      if (!found) print "CHIEF_BACKUP_BUCKET=" bucket
+      found = 1
+      next
+    }
+    { print }
+    END {
+      if (!found) print "CHIEF_BACKUP_BUCKET=" bucket
+    }
+  ' "$CONFIG_FILE" >"$temporary"
+  chmod 0640 "$temporary"
+  mv "$temporary" "$CONFIG_FILE"
+}
+
+sync_backup_bucket
 docker logout "$REGISTRY" >/dev/null 2>&1 || true
 install -d -m 0700 "$RUNTIME_DIR"
 DOCKER_CONFIG="$(mktemp -d "$RUNTIME_DIR/docker-config.XXXXXX")"
