@@ -153,6 +153,117 @@ describe('ChannelContextService rollups', () => {
     database.close();
   });
 
+  it('discards a provisional result that crosses the period boundary', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    let current = occurredAt + 1_000;
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const budget = new UsageBudget({
+      ceilingUsd: 10,
+      indexingCeilingUsd: 3,
+      ledger: new SqliteUsageLedger(database),
+      now: () => current,
+      warningUsd: 5,
+    });
+    let releaseSummary = (): void => undefined;
+    const summaryGate = new Promise<void>((resolve) => {
+      releaseSummary = resolve;
+    });
+    let announceSummary = (): void => undefined;
+    const summaryStarted = new Promise<void>((resolve) => {
+      announceSummary = resolve;
+    });
+    const service = new ChannelContextService({
+      budget,
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      embed: () =>
+        Promise.resolve({
+          embedding: new Float32Array(1_536).fill(0.25),
+          usageUsd: 0.001,
+        }),
+      estimateUsd: 0.05,
+      guildId,
+      now: () => current,
+      summarizer: {
+        summarize: async (input) => {
+          announceSummary();
+          await summaryGate;
+          return {
+            confidence: 0.9,
+            inputTokens: 20,
+            outputTokens: 8,
+            sourceIds: input.sources.map(({ id }) => id),
+            summary: 'Cross-boundary provisional summary.',
+            topicProposals: [],
+            usageUsd: 0.02,
+          };
+        },
+      },
+      timeZone,
+    });
+    service.apply({
+      content: 'Project Marigold crosses the hour.',
+      messageId: '52345678901234567',
+      occurredAt,
+      requestId: 'request-cross-boundary',
+      role: 'human',
+      speakerId: '42345678901234567',
+      speakerName: 'President Test',
+      type: 'upsert',
+    });
+    const hour = contextPeriod({
+      instant: occurredAt,
+      tier: 'hourly',
+      timeZone,
+    });
+    current = hour.end - 10_000;
+    const running = service.runNext(current);
+    await summaryStarted;
+    current = hour.end + 1;
+    releaseSummary();
+
+    await expect(running).resolves.toEqual({ status: 'idle' });
+    expect(
+      database.prepare('select count(*) from context_documents').pluck().get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare('select count(*) from context_document_fts')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare('select count(*) from context_document_vectors')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare(
+          `select completeness, status, usage_reservation_id as reservationId
+           from context_jobs order by completeness desc`,
+        )
+        .all(),
+    ).toEqual([
+      { completeness: 'provisional', reservationId: null, status: 'completed' },
+      { completeness: 'final', reservationId: null, status: 'pending' },
+    ]);
+    expect(
+      database.prepare('select actual_usd from usage_ledger').pluck().get(),
+    ).toBe(0.021);
+    expect(service.nextDeadline(current)).toBe(hour.end + 10 * 60 * 1_000);
+    expect(
+      database
+        .prepare("select count(*) from context_jobs where tier = 'daily'")
+        .pluck()
+        .get(),
+    ).toBe(0);
+    database.close();
+  });
+
   it('finalizes an hour and schedules its daily parent by deadline', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;

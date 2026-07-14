@@ -129,3 +129,23 @@ Final review verification passed with `pnpm verify`: formatting, lint,
 typecheck, all 36 test files and 299 tests, coverage thresholds (90.02%
 statements, 82.65% branches, 91.63% functions, and 91.69% lines), and the
 production build all passed.
+
+## Finality race re-review response
+
+The remaining cross-boundary provisional race was reproduced and resolved
+test-first.
+
+- RED: a fake-clock test leased provisional work ten seconds before the hourly
+  boundary, blocked the summarizer, advanced past period end, and then released
+  it. The result activated a provisional document after the hour had closed.
+- GREEN: after validating the exact current lease, the same document/job/usage
+  transaction rechecks period end and active-final dominance before any context
+  mutation or reconciliation. An obsolete result atomically completes the
+  provisional job and reconciles its actual USD 0.021 usage, while writing no
+  document, FTS row, vector, or downstream job. The final hourly job remains
+  pending and immediately eligible by its freshness deadline.
+- Focused verification passed for the cross-boundary race, normal provisional
+  completion, and late-source finality, followed by ESLint and TypeScript.
+- Final verification passed with `pnpm verify`: all 36 test files and 300 tests,
+  90.21% statement coverage, 82.84% branch coverage, 92.06% function coverage,
+  91.82% line coverage, and the production build passed.

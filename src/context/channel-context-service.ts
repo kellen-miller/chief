@@ -493,8 +493,14 @@ export class ChannelContextService {
         plan.visibleUsageUsd +
         embedded.usageUsd;
       let documentId = 0;
-      this.#database.transaction(() => {
-        this.#assertCurrentLease(job, reservation.id, this.#now());
+      const obsolete = this.#database.transaction((): boolean => {
+        const commitNow = this.#now();
+        this.#assertCurrentLease(job, reservation.id, commitNow);
+        if (this.#provisionalObsolete(job, commitNow)) {
+          this.#completeEmptyJob(job.id);
+          budget.reconcile(reservation.id, usageUsd);
+          return true;
+        }
         const documentKey = job.jobKey.replace(/:(?:final|provisional)$/u, '');
         const revision =
           ((this.#database
@@ -595,7 +601,9 @@ export class ChannelContextService {
           );
         }
         budget.reconcile(reservation.id, usageUsd);
+        return false;
       })();
+      if (obsolete) return { status: 'idle' };
       return {
         completeness: job.completeness,
         documentId,
