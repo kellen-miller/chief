@@ -108,6 +108,8 @@ interface ConversationSourceRow {
 
 const DEFAULT_MAX_MESSAGES = 30;
 const DEFAULT_MAX_APPROX_TOKENS = 6_000;
+const SOURCE_SEARCH_PAGE_SIZE = 24;
+const MAX_SOURCE_SCAN_MATCHES = 96;
 
 export class ConversationStore {
   readonly #database: Database.Database;
@@ -337,9 +339,10 @@ export class ConversationStore {
     );
     const groups: ConversationSourceGroup[] = [];
     const seen = new Set<string>();
-    const pageSize = Math.max(input.limit, 24);
+    const pageSize = Math.max(input.limit, SOURCE_SEARCH_PAGE_SIZE);
     let offset = 0;
-    while (groups.length < input.limit) {
+    while (groups.length < input.limit && offset < MAX_SOURCE_SCAN_MATCHES) {
+      const batchSize = Math.min(pageSize, MAX_SOURCE_SCAN_MATCHES - offset);
       const matches = search.all(
         input.lexicalQuery,
         input.guildId,
@@ -348,7 +351,7 @@ export class ConversationStore {
         input.beforeEventId ?? null,
         ...excludedEventIds,
         ...excludedResponseIds,
-        pageSize,
+        batchSize,
         offset,
       ) as ConversationSourceRow[];
       offset += matches.length;
@@ -401,7 +404,7 @@ export class ConversationStore {
         });
         if (groups.length === input.limit) break;
       }
-      if (matches.length < pageSize) break;
+      if (matches.length < batchSize) break;
     }
     return groups;
   }

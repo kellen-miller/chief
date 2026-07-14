@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import {
@@ -335,6 +335,68 @@ describe('ConversationStore', () => {
         logicalResponseId: null,
       }),
     );
+    database.close();
+  });
+
+  it('caps raw source matches while grouping responses', () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const store = new ConversationStore(database);
+    for (let index = 0; index < 97; index += 1) {
+      const eventId = store.record({
+        channelId: 'main',
+        content: 'ScanBeacon',
+        discordMessageId: String(52345678901235100n + BigInt(index)),
+        guildId: 'presidents',
+        logicalResponseId: 'scan-ceiling-response',
+        medium: 'text',
+        occurredAt: 1_000 - index,
+        platformEventId: `chief:scan:${String(index)}`,
+        requestId: 'scan-ceiling-request',
+        responseChunkIndex: index,
+        retentionDeadline: 2_000,
+        role: 'chief',
+        speakerId: null,
+        speakerName: 'Chief',
+      });
+      database
+        .prepare(
+          'insert into conversation_event_fts (rowid, content) values (?, ?)',
+        )
+        .run(eventId, 'ScanBeacon');
+    }
+    const searchWindows: { readonly limit: number; readonly offset: number }[] =
+      [];
+    const prepare = database.prepare.bind(database);
+    vi.spyOn(database, 'prepare').mockImplementation((source) => {
+      const statement = prepare(source);
+      if (!source.includes('from conversation_event_fts f')) return statement;
+      const all = statement.all.bind(statement);
+      vi.spyOn(statement, 'all').mockImplementation((...parameters) => {
+        const limit = parameters.at(-2);
+        const offset = parameters.at(-1);
+        if (typeof limit === 'number' && typeof offset === 'number') {
+          searchWindows.push({ limit, offset });
+        }
+        return all(...parameters);
+      });
+      return statement;
+    });
+
+    const groups = store.searchTextSourceGroups({
+      channelId: 'main',
+      guildId: 'presidents',
+      lexicalQuery: '"scanbeacon"',
+      lexicalTerms: ['scanbeacon'],
+      limit: 24,
+    });
+
+    expect(groups).toHaveLength(1);
+    expect(searchWindows).not.toEqual([]);
+    expect(
+      searchWindows.every(({ limit, offset }) => limit + offset <= 96),
+    ).toBe(true);
+    vi.restoreAllMocks();
     database.close();
   });
 

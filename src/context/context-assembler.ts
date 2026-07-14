@@ -21,6 +21,7 @@ const TOTAL_CONTEXT_TOKENS = 8_000;
 const MAX_RECENT_TOKENS = 6_000;
 const MAX_RECENT_MESSAGES = 30;
 const SEARCH_LIMIT = 24;
+const MAX_LEXICAL_SCAN_MATCHES = SEARCH_LIMIT * 4;
 const MAX_VECTOR_DISTANCE = 1.2;
 const TIER_ORDER = [
   'source',
@@ -341,7 +342,7 @@ export class ContextAssembler {
                      on e_link.document_id = l.id
                    join conversation_events e on e.id = e_link.event_id
                  )
-               order by bm25(context_document_fts)`,
+               order by bm25(context_document_fts) limit ?`,
               )
               .all(
                 lexicalQuery,
@@ -350,6 +351,7 @@ export class ContextAssembler {
                 this.#channelId,
                 beforeEventId ?? null,
                 beforeEventId ?? null,
+                MAX_LEXICAL_SCAN_MATCHES,
               ) as RollupSearchRow[]
           )
             .filter((row) =>

@@ -862,6 +862,129 @@ describe('ContextAssembler', () => {
     database.close();
   });
 
+  it('keeps named-term evidence when a generic modifier is absent', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const conversation = new ConversationStore(database);
+    const sourceId = recordEvent(conversation, {
+      content: 'Marigold ships Friday.',
+      messageId: '52345678901234636',
+      occurredAt: now - 3_000,
+      recentUntil: now - 1,
+    });
+    indexSource(database, sourceId, 'Marigold ships Friday.');
+    const rollupEventId = recordEvent(conversation, {
+      content: 'Marigold release lineage.',
+      messageId: '52345678901234637',
+      occurredAt: now - 2_000,
+      recentUntil: now - 1,
+    });
+    insertDocument(database, {
+      eventIds: [rollupEventId],
+      id: 1,
+      periodEnd: now,
+      periodStart: now - 24 * 60 * 60 * 1_000,
+      summary: 'Marigold release window is Friday.',
+      tier: 'daily',
+    });
+    database
+      .prepare('delete from context_document_vectors where document_id = 1')
+      .run();
+    database
+      .prepare(
+        'insert into context_document_vectors (document_id, embedding) values (1, ?)',
+      )
+      .run(JSON.stringify(Array.from(new Float32Array(1_536).fill(0.5))));
+    const assembler = new ContextAssembler({
+      channelId,
+      conversation,
+      database,
+      embed: () => Promise.resolve({ embedding: queryVector, usageUsd: 0.001 }),
+      guildId,
+      memory: new MemoryService({
+        budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
+        embed: vi.fn(),
+        estimateUsd: 0.1,
+        extract: vi.fn(),
+        store: new SqliteMemoryStore(database),
+      }),
+      timeZone: 'America/New_York',
+    });
+
+    const prepared = await assembler.assemble({
+      now,
+      prompt: 'Marigold update',
+    });
+
+    expect(
+      prepared.historicalContext.map((context) =>
+        context.evidenceForm === 'source' ? context.text : context.summary,
+      ),
+    ).toEqual(['Marigold ships Friday.', 'Marigold release window is Friday.']);
+    database.close();
+  });
+
+  it('caps rollup lexical matches before relevance filtering', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const conversation = new ConversationStore(database);
+    const lineageId = recordEvent(conversation, {
+      content: 'Bounded scan lineage.',
+      messageId: '52345678901234638',
+      occurredAt: now - 2_000,
+      recentUntil: now - 1,
+    });
+    for (let index = 0; index < 97; index += 1) {
+      insertDocument(database, {
+        eventIds: [lineageId],
+        id: index + 1,
+        periodEnd: now - index,
+        periodStart: now - 24 * 60 * 60 * 1_000,
+        summary: `Project update ${String(index)}`,
+        tier: 'daily',
+      });
+    }
+    database.prepare('delete from context_document_vectors').run();
+    const lexicalBatchSizes: number[] = [];
+    const prepare = database.prepare.bind(database);
+    vi.spyOn(database, 'prepare').mockImplementation((source) => {
+      const statement = prepare(source);
+      if (!source.includes('from context_document_fts f')) return statement;
+      const all = statement.all.bind(statement);
+      vi.spyOn(statement, 'all').mockImplementation((...parameters) => {
+        const rows = all(...parameters);
+        lexicalBatchSizes.push(rows.length);
+        return rows;
+      });
+      return statement;
+    });
+    const assembler = new ContextAssembler({
+      channelId,
+      conversation,
+      database,
+      embed: () => Promise.resolve({ embedding: queryVector, usageUsd: 0.001 }),
+      guildId,
+      memory: new MemoryService({
+        budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
+        embed: vi.fn(),
+        estimateUsd: 0.1,
+        extract: vi.fn(),
+        store: new SqliteMemoryStore(database),
+      }),
+      timeZone: 'America/New_York',
+    });
+
+    const prepared = await assembler.assemble({
+      now,
+      prompt: 'Marigold launch project',
+    });
+
+    expect(prepared.degraded).toBe(false);
+    expect(Math.max(...lexicalBatchSizes)).toBeLessThanOrEqual(96);
+    vi.restoreAllMocks();
+    database.close();
+  });
+
   it('does not retrieve rollups from another channel', async () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);

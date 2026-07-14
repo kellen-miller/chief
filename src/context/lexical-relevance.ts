@@ -40,6 +40,12 @@ const QUERY_STOP_WORDS = new Set([
   'with',
   'you',
 ]);
+const LOW_SIGNAL_QUERY_TERMS = new Set([
+  'project',
+  'status',
+  'update',
+  'updates',
+]);
 
 export function extractLexicalTerms(text: string): readonly string[] {
   const tokens = text.normalize('NFKC').match(/[\p{L}\p{N}]+/gu);
@@ -62,11 +68,14 @@ export function hasSufficientLexicalOverlap(
 ): boolean {
   if (queryTerms.length === 0) return false;
   const candidateTerms = new Set(extractLexicalTerms(candidate));
-  const overlap = queryTerms.reduce(
+  const selectiveTerms = queryTerms.filter(
+    (term) => !LOW_SIGNAL_QUERY_TERMS.has(term),
+  );
+  const requiredTerms =
+    selectiveTerms.length === 0 ? queryTerms : selectiveTerms;
+  const overlap = requiredTerms.reduce(
     (count, term) => count + (candidateTerms.has(term) ? 1 : 0),
     0,
   );
-  const requiredOverlap =
-    queryTerms.length === 1 ? 1 : Math.max(2, Math.ceil(queryTerms.length / 2));
-  return overlap >= requiredOverlap;
+  return overlap >= Math.ceil(requiredTerms.length / 2);
 }

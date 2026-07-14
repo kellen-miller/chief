@@ -83,12 +83,19 @@ The implementation followed RED-GREEN cycles with focused local tests:
   another relevant response, then source matches were paged, grouped, relevance
   checked, and limited in that order.
 - A common term in an OR query admitted unrelated source and rollup evidence,
-  then lexical candidates required both majority overlap and at least two
-  distinct meaningful terms for multi-term prompts. Single named-term and
-  valid lexical-only evidence remain supported.
+  then lexical candidates required majority overlap among selective terms.
+  Low-signal request modifiers cannot admit evidence when selective terms are
+  present, while generic-only and valid lexical-only queries remain supported.
 - Realtime trusted its instruction prompt to prevent greeting and one-character
   recall calls, then a deterministic pre-assembler guard rejected both while a
   short topical query on the same committed utterance still succeeded.
+- The first absolute lexical gate rejected `Marigold update` evidence that did
+  not repeat `update`, then selective-term matching retained both source and
+  rollup evidence outside the vector distance threshold while the original
+  `project`-only false-positive regression remained rejected.
+- Source FTS paging and rollup post-filtering could scan every match, then real
+  SQLite statement probes demonstrated and enforced a 96-match internal ceiling
+  while preserving the separate top-24 public result limit.
 
 No test makes a paid provider call. Embeddings, provider responses, clocks, and
 the retrieval corpus are deterministic and local.
@@ -120,22 +127,26 @@ the retrieval corpus are deterministic and local.
   replay exposed `source` in "Show the SourceBeacon source" as metadata rather
   than a topic term, so it joined the lexical stop-word set while the named
   beacon remained eligible.
+- Generic request terms are different from stop words: `project`, `status`, and
+  `update` still support generic-only queries, but do not outweigh unmatched
+  selective terms such as a named project or launch term.
 
 ## Verification
 
 `pnpm verify` passed:
 
 - Prettier, ESLint, and TypeScript checks passed.
-- 40 test files passed with 328 tests.
-- Coverage: 91.07% statements, 83.42% branches, 92.96% functions, and 92.69%
+- 40 test files passed with 331 tests.
+- Coverage: 91.10% statements, 83.37% branches, 92.97% functions, and 92.71%
   lines.
-- `ContextAssembler`: 98.71% statements, 88.09% branches, and 100% functions
+- `ContextAssembler`: 98.72% statements, 88.09% branches, and 100% functions
   and lines.
 - The production TypeScript build passed.
 
 Focused Task 4 verification also passed with 78 unit tests and two integration
 replays. Post-review verification passed 22 focused unit tests and 12 focused
-integration tests. `git diff --check` passed before the final commit.
+integration tests. Re-review verification passed 24 focused unit tests and 13
+focused integration tests. `git diff --check` passed before the final commit.
 
 ## Independent review response
 
@@ -167,16 +178,21 @@ substantiated Important findings were reproduced and resolved:
 11. Source FTS limits apply after Chief logical-response grouping and lexical
     relevance checks, so one multi-chunk response cannot crowd out distinct
     candidates.
-12. Lexical source and rollup candidates pass an absolute distinct-term overlap
-    gate before ranking; vector candidates still use their independent distance
-    threshold, and valid lexical-only evidence remains retrievable.
+12. Lexical source and rollup candidates require overlap among selective query
+    terms before ranking. Low-signal modifiers cannot admit unrelated evidence;
+    vector candidates retain their independent distance threshold, and valid
+    named-term lexical-only evidence remains retrievable.
 13. Realtime recall rejects committed greeting and one-character noise before
     claiming the per-utterance recall slot, preserving a subsequent short
     topical request on that utterance.
+14. Source and rollup lexical retrieval scan at most 96 FTS matches internally,
+    then apply grouping or relevance before the public top-24 limit.
 
 ## Concerns
 
 No known blocker. Tier-filtered scalar vector distance favors correctness and
 privacy with the current local SQLite scale. Retrieval latency should be
 measured as the index grows; a future schema migration could add a partitioned
-vector index without changing the assembler contract.
+vector index without changing the assembler contract. The explicit lexical
+scan ceiling bounds work but can omit a valid candidate ranked below the first
+96 raw FTS matches; telemetry should guide any future ceiling adjustment.
