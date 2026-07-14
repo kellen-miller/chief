@@ -78,6 +78,7 @@ describe('Chief database', () => {
       '0001_initial',
       '0002_conversation_events',
       '0003_channel_context',
+      '0004_discord_source_lifecycle',
     ]);
     expect(verifyContextDatabaseSchema(database)).toBe(true);
     database.close();

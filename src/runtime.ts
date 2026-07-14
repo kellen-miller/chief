@@ -13,6 +13,7 @@ import { ConversationOrchestrator } from './app/conversation-orchestrator.js';
 import type { ChiefConfig } from './config/config.js';
 import { ChannelContextService } from './context/channel-context-service.js';
 import { ConversationStore } from './conversation/conversation-store.js';
+import { DiscordReconciliationService } from './discord/discord-reconciliation-service.js';
 import { DiscordGateway } from './discord/gateway.js';
 import { HealthServer } from './health/health-server.js';
 import {
@@ -61,6 +62,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     conversation,
     database,
     guildId: config.discord.guildId,
+    memory,
     timeZone: 'America/New_York',
   });
   const budget = new UsageBudget({
@@ -171,11 +173,52 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     textChannelId: config.discord.textChannelId,
     voiceChannelId: config.discord.voiceChannelId,
   });
+  let reconciliation: DiscordReconciliationService | undefined;
+  let weeklyReconciliationRunning = false;
+  const scheduleWeeklyReconciliation = (): void => {
+    if (reconciliation === undefined || weeklyReconciliationRunning) return;
+    weeklyReconciliationRunning = true;
+    void reconciliation
+      .reconcileWeeklyIdentity()
+      .then((result) => {
+        logger.info(
+          { ...reconciliation?.diagnostics(), status: result.status },
+          'discord_reconciliation_health',
+        );
+      })
+      .catch((error: unknown) => {
+        logger.warn(
+          { errorName: error instanceof Error ? error.name : 'UnknownError' },
+          'discord_reconciliation_health_failed',
+        );
+      })
+      .finally(() => {
+        weeklyReconciliationRunning = false;
+      });
+  };
   const gateway = new DiscordGateway({
     channelId: config.discord.textChannelId,
     guildId: config.discord.guildId,
     logger,
     orchestrator,
+    reconciliation: ({ history }) => {
+      reconciliation = new DiscordReconciliationService({
+        channelId: config.discord.textChannelId,
+        database,
+        guildId: config.discord.guildId,
+        history,
+        lifecycle: orchestrator,
+      });
+      return {
+        reconcileAfterGap: async () => {
+          const result = await reconciliation?.reconcileAfterGap();
+          if (result?.status === 'completed') {
+            scheduleWeeklyReconciliation();
+          }
+          return result ?? { status: 'failed' };
+        },
+      };
+    },
     token: config.discord.token,
     voice,
     voiceChannelId: config.discord.voiceChannelId,
@@ -220,8 +263,35 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     },
     24 * 60 * 60 * 1_000,
   );
+  let gapReconciliationRunning = false;
+  const reconciliationTimer = setInterval(
+    () => {
+      if (reconciliation === undefined || gapReconciliationRunning) return;
+      gapReconciliationRunning = true;
+      void reconciliation
+        .reconcileAfterGap()
+        .then((result) => {
+          logger.info(
+            { ...reconciliation?.diagnostics(), status: result.status },
+            'discord_reconciliation_health',
+          );
+          if (result.status === 'completed') scheduleWeeklyReconciliation();
+        })
+        .catch((error: unknown) => {
+          logger.warn(
+            { errorName: error instanceof Error ? error.name : 'UnknownError' },
+            'discord_reconciliation_health_failed',
+          );
+        })
+        .finally(() => {
+          gapReconciliationRunning = false;
+        });
+    },
+    60 * 60 * 1_000,
+  );
   workerTimer.unref();
   maintenanceTimer.unref();
+  reconciliationTimer.unref();
 
   await health.start();
   try {
@@ -229,6 +299,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
   } catch (error) {
     clearInterval(workerTimer);
     clearInterval(maintenanceTimer);
+    clearInterval(reconciliationTimer);
     await health.stop();
     database.close();
     throw error;
@@ -239,6 +310,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     stop: async () => {
       clearInterval(workerTimer);
       clearInterval(maintenanceTimer);
+      clearInterval(reconciliationTimer);
       await gateway.stop();
       await health.stop();
       database.close();

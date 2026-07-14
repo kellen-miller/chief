@@ -79,12 +79,18 @@ describe('DiscordTextController', () => {
         .every(([chunk]) => !chunk.endsWith('Mr. President')),
     ).toBe(true);
     expect(recordDeliveredReply).toHaveBeenCalledTimes(reply.mock.calls.length);
-    for (const [index, [content]] of reply.mock.calls.entries()) {
+    for (const [index] of reply.mock.calls.entries()) {
       expect(recordDeliveredReply).toHaveBeenNthCalledWith(index + 1, {
-        chunks: [{ content, messageId: deliveredIds[index] }],
+        chunks: reply.mock.calls
+          .slice(0, index + 1)
+          .map(([sent], chunkIndex) => ({
+            content: sent,
+            messageId: deliveredIds[chunkIndex],
+          })),
         logicalResponseId: message('').id,
         replyToMessageId: message('').id,
         requestId: message('').id,
+        speakerId: allowed.botUserId,
       });
     }
   });
@@ -124,6 +130,7 @@ describe('DiscordTextController', () => {
       logicalResponseId: message('').id,
       replyToMessageId: message('').id,
       requestId: message('').id,
+      speakerId: allowed.botUserId,
     });
   });
 
@@ -212,5 +219,65 @@ describe('DiscordTextController', () => {
       expect.objectContaining({ content: 'Chief', kind: 'greeting' }),
     );
     expect(reply).toHaveBeenCalledWith('At your service, Mr. President');
+  });
+
+  it('ignores a live Chief create and applies edits and deletes without generation', async () => {
+    const applyTextSource = vi.fn(() => ({
+      eventId: 1,
+      memorySourceEventId: null,
+      status: 'applied' as const,
+    }));
+    const deleteTextSource = vi.fn(() => ({
+      eventId: 1,
+      status: 'suppressed' as const,
+    }));
+    const handleText = vi.fn(() => Promise.resolve(null));
+    const reply = vi.fn();
+    const controller = new DiscordTextController(allowed, {
+      applyTextSource,
+      deleteTextSource,
+      handleText,
+      now: () => 2_000,
+      recordDeliveredReply: vi.fn(),
+    });
+    const chiefMessage = {
+      ...message('Delivered answer.'),
+      attachments: [],
+      authorDisplayName: 'Chief',
+      authorId: allowed.botUserId,
+      authorIsBot: true,
+      canModerateContext: false,
+      editedAt: null,
+      occurredAt: 1_000,
+      replyToMessageId: '52345678901234566',
+    };
+
+    await controller.handle(chiefMessage, { reply, typing: vi.fn() });
+    controller.handleUpdate({
+      ...chiefMessage,
+      content: 'Corrected delivered answer.',
+      editedAt: 1_500,
+    });
+    controller.handleDelete({
+      channelId: allowed.channelId,
+      deletedAt: 1_750,
+      guildId: allowed.guildId,
+      messageId: chiefMessage.id,
+    });
+
+    expect(applyTextSource).toHaveBeenCalledOnce();
+    expect(applyTextSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authorKind: 'chief',
+        messageId: chiefMessage.id,
+        replyToMessageId: '52345678901234566',
+      }),
+    );
+    expect(deleteTextSource).toHaveBeenCalledWith({
+      deletedAt: 1_750,
+      messageId: chiefMessage.id,
+    });
+    expect(handleText).not.toHaveBeenCalled();
+    expect(reply).not.toHaveBeenCalled();
   });
 });

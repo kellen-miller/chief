@@ -493,6 +493,7 @@ describe('MemoryService', () => {
       store,
     });
     const forgetSource = {
+      canModerateContext: true,
       content: 'Chief forget that dinner is at seven',
       medium: 'text' as const,
       occurredAt: 100,
@@ -525,6 +526,73 @@ describe('MemoryService', () => {
     expect(
       database.prepare('select count(*) from memories').pluck().get(),
     ).toBe(0);
+    database.close();
+  });
+
+  it('requires source authorship or current moderation to forget', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const store = new SqliteMemoryStore(database);
+    const ownerSource = {
+      content: 'Dinner is at seven',
+      medium: 'text' as const,
+      occurredAt: 1,
+      platformSourceId: 'owner-source',
+      retentionDeadline: 1_000,
+      speakerId: 'president-owner',
+    };
+    const ownerSourceId = store.observeExplicit(ownerSource);
+    const memoryId = store.applyMemory({
+      canonicalText: 'Dinner is at seven',
+      confidence: 0.99,
+      embedding: vector,
+      kind: 'plan',
+      provenance: {},
+      sourceEventId: ownerSourceId,
+      timestamp: 1,
+    });
+    const service = new MemoryService({
+      budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
+      embed: vi.fn(),
+      estimateUsd: 0.1,
+      extract: vi.fn(),
+      store,
+    });
+    const request = {
+      canModerateContext: false,
+      content: 'Chief forget that dinner is at seven',
+      medium: 'text' as const,
+      occurredAt: 100,
+      platformSourceId: 'other-forget',
+      retentionDeadline: 1_000,
+      speakerId: 'president-other',
+    };
+
+    await expect(
+      service.applyExplicit({
+        intent: 'forget',
+        now: 110,
+        source: request,
+        sourceEventId: service.observeExplicit(request),
+      }),
+    ).resolves.toEqual({ status: 'ambiguous' });
+    expect(database.prepare('select id from memories').pluck().get()).toBe(
+      memoryId,
+    );
+
+    const moderated = {
+      ...request,
+      canModerateContext: true,
+      platformSourceId: 'admin-forget',
+    };
+    await expect(
+      service.applyExplicit({
+        intent: 'forget',
+        now: 120,
+        source: moderated,
+        sourceEventId: service.observeExplicit(moderated),
+      }),
+    ).resolves.toEqual({ memoryIds: [memoryId], status: 'forgotten' });
     database.close();
   });
 });

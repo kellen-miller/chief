@@ -5,6 +5,7 @@ import type {
 } from '../agent/chief-agent.js';
 import {
   ChannelContextService,
+  type ContextApplyResult,
   type DeliveredReplyInput,
 } from '../context/channel-context-service.js';
 import { ConversationStore } from '../conversation/conversation-store.js';
@@ -21,11 +22,30 @@ import type { UsageBudget } from '../usage/usage-budget.js';
 import type { HumanVoiceObservation } from '../voice/voice-session-manager.js';
 
 interface TextTurnBase {
+  readonly attachmentMetadataJson?: string;
+  readonly canModerateContext?: boolean;
   readonly content: string;
+  readonly editedAt?: number | null;
   readonly occurredAt: number;
   readonly platformSourceId: string;
+  readonly replyToMessageId?: string | null;
   readonly requestId: string;
+  readonly revisionChecksum?: string;
   readonly speakerId: string;
+  readonly speakerName: string;
+}
+
+export interface NormalizedTextSource {
+  readonly attachmentMetadataJson: string;
+  readonly authorKind: 'chief' | 'human';
+  readonly canModerateContext: boolean;
+  readonly content: string;
+  readonly editedAt: number | null;
+  readonly messageId: string;
+  readonly occurredAt: number;
+  readonly replyToMessageId: string | null;
+  readonly requesterId: string;
+  readonly revisionChecksum: string;
   readonly speakerName: string;
 }
 
@@ -138,40 +158,53 @@ export class ConversationOrchestrator {
         }
       | undefined;
     try {
+      const intent =
+        turn.kind === 'request'
+          ? detectExplicitMemoryIntent(turn.content)
+          : null;
       const applied = this.#context.apply({
-        attachmentMetadataJson: '[]',
+        attachmentMetadataJson: turn.attachmentMetadataJson ?? '[]',
+        canModerateContext: turn.canModerateContext ?? false,
         content: turn.content,
-        editedAt: null,
+        editedAt: turn.editedAt ?? null,
+        memoryExtraction: intent === null ? 'automatic' : 'explicit',
         messageId: turn.platformSourceId,
         occurredAt: turn.occurredAt,
-        platformEventId: `discord:text:${turn.platformSourceId}`,
-        replyToMessageId: null,
+        platformEventId: turn.platformSourceId,
+        replyToMessageId: turn.replyToMessageId ?? null,
         requestId: turn.requestId,
+        ...(turn.revisionChecksum === undefined
+          ? {}
+          : { revisionChecksum: turn.revisionChecksum }),
         role: 'human',
         speakerId: turn.speakerId,
         speakerName: turn.speakerName,
         type: 'upsert',
       });
-      if (applied.status === 'suppressed') return Promise.resolve(null);
+      if (applied.status !== 'applied') return Promise.resolve(null);
       eventId = applied.eventId;
       const source: SourceObservation = {
+        canModerateContext: turn.canModerateContext ?? false,
         content: turn.content,
         medium: 'text',
         occurredAt: turn.occurredAt,
         platformSourceId: turn.platformSourceId,
+        ...(turn.revisionChecksum === undefined
+          ? {}
+          : { revisionChecksum: turn.revisionChecksum }),
         retentionDeadline: turn.occurredAt + SOURCE_RETENTION_MS,
         speakerId: turn.speakerId,
       };
-      const intent =
-        turn.kind === 'request'
-          ? detectExplicitMemoryIntent(turn.content)
-          : null;
-      if (intent === null) this.#memory.observeAutomatic(source);
-      else {
+      if (intent === null) {
+        if (applied.memorySourceEventId === null) {
+          this.#memory.observeAutomatic(source);
+        }
+      } else {
         explicit = {
           intent,
           source,
-          sourceEventId: this.#memory.observeExplicit(source),
+          sourceEventId:
+            applied.memorySourceEventId ?? this.#memory.observeExplicit(source),
         };
       }
     } catch {
@@ -313,6 +346,38 @@ export class ConversationOrchestrator {
 
   public recordDeliveredReply(input: DeliveredReplyInput): void {
     this.#context.recordDeliveredReply(input);
+  }
+
+  public applyTextSource(source: NormalizedTextSource): ContextApplyResult {
+    return this.#context.apply({
+      attachmentMetadataJson: source.attachmentMetadataJson,
+      canModerateContext: source.canModerateContext,
+      content: source.content,
+      editedAt: source.editedAt,
+      memoryExtraction: source.authorKind === 'human' ? 'automatic' : 'none',
+      messageId: source.messageId,
+      occurredAt: source.occurredAt,
+      platformEventId: source.messageId,
+      replyToMessageId: source.replyToMessageId,
+      requestId: source.messageId,
+      revisionChecksum: source.revisionChecksum,
+      role: source.authorKind === 'chief' ? 'chief' : 'human',
+      speakerId: source.requesterId,
+      speakerName: source.speakerName,
+      type: 'upsert',
+    });
+  }
+
+  public deleteTextSource(input: {
+    readonly deletedAt: number;
+    readonly messageId: string;
+  }): ContextApplyResult {
+    return this.#context.apply({
+      deletedAt: input.deletedAt,
+      messageId: input.messageId,
+      reason: 'discord-deleted',
+      type: 'delete',
+    });
   }
 
   #lostThread(): ConversationResult {

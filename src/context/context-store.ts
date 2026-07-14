@@ -17,6 +17,7 @@ export interface ContextDocumentRevisionInput {
   readonly periodStart: number;
   readonly retentionDeadline: number | null;
   readonly revision: number;
+  readonly sourceRevisionChecksum?: string;
   readonly summary: string;
   readonly tier: ContextTier;
   readonly timeZone: string;
@@ -114,6 +115,26 @@ export class ContextStore {
     }
     if (input.tier !== 'hourly' && input.eventIds.length > 0) {
       throw new Error('higher context tier requires parent-only lineage');
+    }
+    if (input.sourceRevisionChecksum !== undefined && input.tier === 'hourly') {
+      const current = this.#database
+        .prepare(
+          `select exists(
+             select 1 from context_jobs
+             where tier = 'hourly' and period_start = ? and period_end = ?
+               and timezone = ? and source_revision_checksum = ?
+           )`,
+        )
+        .pluck()
+        .get(
+          input.periodStart,
+          input.periodEnd,
+          input.timeZone,
+          input.sourceRevisionChecksum,
+        );
+      if (current !== 1) {
+        throw new Error('context document source revision changed');
+      }
     }
     const sourceAvailable = this.#database.prepare(
       `select exists(

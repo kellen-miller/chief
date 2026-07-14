@@ -24,6 +24,7 @@ export interface ConversationEventInput {
   readonly recentUntil?: number;
   readonly replyToMessageId?: string | null;
   readonly requestId: string | null;
+  readonly revisionChecksum?: string;
   readonly retentionDeadline: number;
   readonly role: ConversationRole;
   readonly speakerId: string | null;
@@ -104,6 +105,7 @@ export class ConversationStore {
       logicalResponseId: event.logicalResponseId ?? null,
       recentUntil: event.recentUntil ?? event.retentionDeadline,
       replyToMessageId: event.replyToMessageId ?? null,
+      revisionChecksum: event.revisionChecksum ?? '',
     };
     this.#database
       .prepare(
@@ -112,36 +114,25 @@ export class ConversationStore {
             request_id, logical_response_id, role, speaker_id, speaker_name,
             medium, reply_to_message_id, content, attachment_metadata_json,
             occurred_at, edited_at, recent_until, retention_deadline,
-            content_state, content_state_reason)
+            content_state, content_state_reason, revision_checksum)
          values (@platformEventId, @discordMessageId, @guildId, @channelId,
                  @requestId, @logicalResponseId, @role, @speakerId,
                  @speakerName, @medium, @replyToMessageId, @content,
                  @attachmentMetadataJson, @occurredAt, @editedAt,
-                 @recentUntil, @retentionDeadline, 'available', 'retained')
+                 @recentUntil, @retentionDeadline, 'available', 'retained',
+                 @revisionChecksum)
          on conflict(guild_id, channel_id, discord_message_id) do update set
-           speaker_name = case
-             when excluded.edited_at is not null
-               and (conversation_events.edited_at is null
-                    or excluded.edited_at >= conversation_events.edited_at)
-             then excluded.speaker_name else conversation_events.speaker_name end,
-           edited_at = case
-             when excluded.edited_at is not null
-               and (conversation_events.edited_at is null
-                    or excluded.edited_at >= conversation_events.edited_at)
-             then excluded.edited_at else conversation_events.edited_at end,
-           content = case
-             when conversation_events.content_state = 'available'
-               and excluded.edited_at is not null
-               and (conversation_events.edited_at is null
-                    or excluded.edited_at >= conversation_events.edited_at)
+           speaker_name = excluded.speaker_name,
+           speaker_id = excluded.speaker_id,
+           edited_at = excluded.edited_at,
+           reply_to_message_id = excluded.reply_to_message_id,
+           content = case when conversation_events.content_state = 'available'
              then excluded.content else conversation_events.content end,
            attachment_metadata_json = case
              when conversation_events.content_state = 'available'
-               and excluded.edited_at is not null
-               and (conversation_events.edited_at is null
-                    or excluded.edited_at >= conversation_events.edited_at)
              then excluded.attachment_metadata_json
-             else conversation_events.attachment_metadata_json end`,
+             else conversation_events.attachment_metadata_json end,
+           revision_checksum = excluded.revision_checksum`,
       )
       .run(row);
     return this.#database

@@ -396,6 +396,52 @@ create virtual table context_document_vectors using vec0(
 export const CHANNEL_CONTEXT_MIGRATION_ID = '0003_channel_context';
 export const CHANNEL_CONTEXT_MIGRATION_CHECKSUM = 'chief-0003-v2';
 
+const DISCORD_SOURCE_LIFECYCLE_MIGRATION = `
+alter table conversation_events
+  add column revision_checksum text not null default '';
+alter table source_events
+  add column source_scope_id text not null default '';
+alter table source_events
+  add column revision_checksum text not null default '';
+alter table source_events
+  add column can_moderate_context integer not null default 0
+    check (can_moderate_context in (0, 1));
+alter table memory_jobs
+  add column revision_checksum text not null default '';
+
+update memory_jobs set revision_checksum = coalesce(
+  (select revision_checksum from source_events
+   where source_events.id = memory_jobs.source_event_id),
+  ''
+);
+
+create table discord_reconciliation_state (
+  scope_id text primary key,
+  high_water_message_id text,
+  phase text,
+  pass_key text,
+  cursor_message_id text,
+  covered_oldest_message_id text,
+  covered_newest_message_id text,
+  last_complete_at integer,
+  last_full_scan_at integer,
+  updated_at integer not null
+);
+
+create table discord_reconciliation_seen (
+  scope_id text not null,
+  pass_key text not null,
+  message_id text not null,
+  observed_at integer not null,
+  revision_checksum text not null,
+  primary key (scope_id, pass_key, message_id)
+);
+`;
+
+export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID =
+  '0004_discord_source_lifecycle';
+export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_CHECKSUM = 'chief-0004-v1';
+
 interface Migration {
   readonly checksum: string;
   readonly id: string;
@@ -422,6 +468,11 @@ const MIGRATIONS: readonly Migration[] = [
     id: CHANNEL_CONTEXT_MIGRATION_ID,
     sql: CHANNEL_CONTEXT_MIGRATION,
     validate: assertContentlessDeleteSupport,
+  },
+  {
+    checksum: DISCORD_SOURCE_LIFECYCLE_MIGRATION_CHECKSUM,
+    id: DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID,
+    sql: DISCORD_SOURCE_LIFECYCLE_MIGRATION,
   },
 ];
 
@@ -477,10 +528,19 @@ export function verifyContextDatabaseSchema(
       .pluck()
       .get(CHANNEL_CONTEXT_MIGRATION_ID);
     if (checksum !== CHANNEL_CONTEXT_MIGRATION_CHECKSUM) return false;
+    const lifecycleChecksum = database
+      .prepare('select checksum from schema_migrations where id = ?')
+      .pluck()
+      .get(DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID);
+    if (lifecycleChecksum !== DISCORD_SOURCE_LIFECYCLE_MIGRATION_CHECKSUM) {
+      return false;
+    }
     for (const table of [
       'conversation_event_fts',
       'context_document_fts',
       'context_document_vectors',
+      'discord_reconciliation_state',
+      'discord_reconciliation_seen',
     ]) {
       database.prepare(`select count(*) from ${table} where 0`).pluck().get();
     }

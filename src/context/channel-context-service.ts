@@ -6,6 +6,7 @@ import {
   ConversationStore,
   type ConversationRole,
 } from '../conversation/conversation-store.js';
+import type { SqliteMemoryStore } from '../memory/memory-store.js';
 import { contextPeriod, type ContextPeriod } from './context-period.js';
 import type { ContextContentStateReason } from './context-types.js';
 
@@ -15,13 +16,16 @@ const PROVISIONAL_DELAY_MS = 5 * 60 * 1_000;
 
 export interface ContextSourceUpsert {
   readonly attachmentMetadataJson?: string;
+  readonly canModerateContext?: boolean;
   readonly content: string;
   readonly editedAt?: number | null;
   readonly messageId: string;
+  readonly memoryExtraction?: 'automatic' | 'explicit' | 'none';
   readonly occurredAt: number;
   readonly platformEventId?: string;
   readonly replyToMessageId?: string | null;
   readonly requestId: string | null;
+  readonly revisionChecksum?: string;
   readonly role: ConversationRole;
   readonly speakerId: string | null;
   readonly speakerName: string | null;
@@ -42,10 +46,12 @@ export interface DeliveredReplyInput {
   readonly chunks: readonly {
     readonly content: string;
     readonly messageId: string;
+    readonly occurredAt?: number;
   }[];
   readonly logicalResponseId: string;
   readonly replyToMessageId: string;
   readonly requestId: string;
+  readonly speakerId?: string;
 }
 
 export interface ChannelContextServiceOptions {
@@ -53,12 +59,18 @@ export interface ChannelContextServiceOptions {
   readonly conversation: ConversationStore;
   readonly database: Database.Database;
   readonly guildId: string;
+  readonly memory?: SqliteMemoryStore;
   readonly now?: () => number;
   readonly timeZone: string;
 }
 
 export type ContextApplyResult =
-  | { readonly eventId: number; readonly status: 'applied' }
+  | {
+      readonly eventId: number;
+      readonly memorySourceEventId: number | null;
+      readonly status: 'applied';
+    }
+  | { readonly eventId: number; readonly status: 'unchanged' }
   | { readonly eventId: number | null; readonly status: 'suppressed' };
 
 interface SourceRevisionRow {
@@ -68,11 +80,19 @@ interface SourceRevisionRow {
   readonly id: number;
 }
 
+interface ExistingSourceRevision {
+  readonly editedAt: number | null;
+  readonly id: number;
+  readonly occurredAt: number;
+  readonly revisionChecksum: string;
+}
+
 export class ChannelContextService {
   readonly #channelId: string;
   readonly #conversation: ConversationStore;
   readonly #database: Database.Database;
   readonly #guildId: string;
+  readonly #memory: SqliteMemoryStore | undefined;
   readonly #now: () => number;
   readonly #timeZone: string;
 
@@ -81,6 +101,7 @@ export class ChannelContextService {
     this.#conversation = options.conversation;
     this.#database = options.database;
     this.#guildId = options.guildId;
+    this.#memory = options.memory;
     this.#now = options.now ?? Date.now;
     this.#timeZone = options.timeZone;
   }
@@ -110,25 +131,45 @@ export class ChannelContextService {
         .pluck()
         .get(this.#guildId, this.#channelId, input.logicalResponseId) as
         number | null;
-      const now = existingOccurredAt ?? this.#now();
+      const fallbackOccurredAt = existingOccurredAt ?? this.#now();
       for (const chunk of input.chunks) {
-        this.#applyUpsert(
+        const applied = this.#applyUpsert(
           {
             attachmentMetadataJson: '[]',
             content: chunk.content,
             editedAt: null,
             messageId: chunk.messageId,
-            occurredAt: now,
-            platformEventId: input.requestId,
+            occurredAt: chunk.occurredAt ?? fallbackOccurredAt,
+            platformEventId: chunk.messageId,
             replyToMessageId: input.replyToMessageId,
             requestId: input.requestId,
             role: 'chief',
-            speakerId: null,
+            speakerId: input.speakerId ?? null,
             speakerName: 'Chief',
             type: 'upsert',
           },
           input.logicalResponseId,
         );
+        if (applied.eventId !== null && applied.status !== 'suppressed') {
+          this.#database
+            .prepare(
+              `update conversation_events set
+                 request_id = case when logical_response_id is null
+                                   then ? else request_id end,
+                 reply_to_message_id = case when logical_response_id is null
+                                            then ? else reply_to_message_id end,
+                 logical_response_id = coalesce(logical_response_id, ?),
+                 platform_event_id = ?
+               where id = ? and role = 'chief'`,
+            )
+            .run(
+              input.requestId,
+              input.replyToMessageId,
+              input.logicalResponseId,
+              chunk.messageId,
+              applied.eventId,
+            );
+        }
       }
     })();
   }
@@ -162,6 +203,33 @@ export class ChannelContextService {
       return { eventId: existingId, status: 'suppressed' };
     }
 
+    const revisionChecksum =
+      change.revisionChecksum ??
+      digest({
+        attachmentMetadataJson: change.attachmentMetadataJson ?? '[]',
+        authorKind: change.role === 'chief' ? 'chief' : 'human',
+        content: change.content,
+        editedAt: change.editedAt ?? null,
+        messageId: change.messageId,
+        occurredAt: change.occurredAt,
+        replyToMessageId: change.replyToMessageId ?? null,
+        requesterId: change.speakerId,
+      });
+    const existing = this.#existingRevision(change.messageId);
+    if (
+      existing !== null &&
+      !isNewerRevision(
+        {
+          editedAt: change.editedAt ?? null,
+          occurredAt: change.occurredAt,
+          revisionChecksum,
+        },
+        existing,
+      )
+    ) {
+      return { eventId: existing.id, status: 'unchanged' };
+    }
+
     const eventId = this.#conversation.record({
       attachmentMetadataJson: change.attachmentMetadataJson ?? '[]',
       channelId: this.#channelId,
@@ -176,6 +244,7 @@ export class ChannelContextService {
       recentUntil: change.occurredAt + RECENT_RETENTION_MS,
       replyToMessageId: change.replyToMessageId ?? null,
       requestId: change.requestId,
+      revisionChecksum,
       retentionDeadline: change.occurredAt + RAW_RETENTION_MS,
       role: change.role,
       speakerId: change.speakerId,
@@ -205,7 +274,29 @@ export class ChannelContextService {
       )
       .run(eventId, canonical.content);
     this.#scheduleHourlyJobs(canonical.occurredAt);
-    return { eventId, status: 'applied' };
+    let memorySourceEventId: number | null = null;
+    const memoryExtraction =
+      change.role === 'chief'
+        ? 'none'
+        : (change.memoryExtraction ?? 'automatic');
+    if (this.#memory !== undefined && memoryExtraction !== 'none') {
+      const observation = {
+        canModerateContext: change.canModerateContext ?? false,
+        content: canonical.content,
+        medium: 'text' as const,
+        occurredAt: change.occurredAt,
+        platformSourceId: change.messageId,
+        retentionDeadline: change.occurredAt + RAW_RETENTION_MS,
+        revisionChecksum,
+        sourceScopeId: scopeId,
+        speakerId: change.speakerId ?? '',
+      };
+      memorySourceEventId =
+        memoryExtraction === 'explicit'
+          ? this.#memory.observeExplicit(observation)
+          : this.#memory.observe(observation);
+    }
+    return { eventId, memorySourceEventId, status: 'applied' };
   }
 
   #applySuppression(change: ContextSourceSuppression): ContextApplyResult {
@@ -248,6 +339,7 @@ export class ChannelContextService {
       );
 
     const eventId = this.#eventId(change.messageId);
+    this.#memory?.suppressSource(change.messageId);
     if (eventId === null) return { eventId, status: 'suppressed' };
     this.#database
       .prepare('delete from conversation_event_fts where rowid = ?')
@@ -422,6 +514,20 @@ export class ChannelContextService {
     );
   }
 
+  #existingRevision(messageId: string): ExistingSourceRevision | null {
+    return (
+      (this.#database
+        .prepare(
+          `select id, occurred_at as occurredAt, edited_at as editedAt,
+                  revision_checksum as revisionChecksum
+           from conversation_events
+           where guild_id = ? and channel_id = ? and discord_message_id = ?`,
+        )
+        .get(this.#guildId, this.#channelId, messageId) as
+        ExistingSourceRevision | undefined) ?? null
+    );
+  }
+
   #hasTombstone(scopeId: string): boolean {
     return (
       this.#database
@@ -443,4 +549,20 @@ export class ChannelContextService {
 
 function digest(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function isNewerRevision(
+  incoming: Pick<
+    ExistingSourceRevision,
+    'editedAt' | 'occurredAt' | 'revisionChecksum'
+  >,
+  existing: ExistingSourceRevision,
+): boolean {
+  const incomingTimestamp = incoming.editedAt ?? incoming.occurredAt;
+  const existingTimestamp = existing.editedAt ?? existing.occurredAt;
+  return (
+    incomingTimestamp > existingTimestamp ||
+    (incomingTimestamp === existingTimestamp &&
+      incoming.revisionChecksum > existing.revisionChecksum)
+  );
 }

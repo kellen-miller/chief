@@ -7,6 +7,7 @@ import {
   type ContextDocumentRevisionInput,
 } from '../../src/context/context-store.js';
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
+import { discordSourceRevisionChecksum } from '../../src/discord/source-message.js';
 import {
   migrateChiefDatabase,
   openChiefDatabase,
@@ -232,6 +233,50 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
+  it('rejects context output prepared against a stale source checksum', () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const { contextStore, database, service } = createHarness(
+      occurredAt + 1_000,
+    );
+    const created = service.apply(source(occurredAt));
+    if (created.status !== 'applied')
+      throw new Error('expected a source event');
+    const staleChecksum = database
+      .prepare(
+        `select source_revision_checksum from context_jobs
+         where completeness = 'provisional'`,
+      )
+      .pluck()
+      .get() as string;
+    service.apply(
+      source(occurredAt, {
+        content: 'Project Juniper launches Monday.',
+        editedAt: occurredAt + 2_000,
+      }),
+    );
+    const period = contextPeriod({
+      instant: occurredAt,
+      tier: 'hourly',
+      timeZone,
+    });
+
+    expect(() =>
+      contextStore.activateDocumentRevision({
+        ...documentInput({
+          createdAt: occurredAt + 3_000,
+          eventIds: [created.eventId],
+          periodEnd: period.end,
+          periodStart: period.start,
+        }),
+        sourceRevisionChecksum: staleChecksum,
+      }),
+    ).toThrow('context document source revision changed');
+    expect(
+      database.prepare('select count(*) from context_documents').pluck().get(),
+    ).toBe(0);
+    database.close();
+  });
+
   it('scrubs deletion descendants and blocks resurrection', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const { contextStore, database, service } = createHarness(
@@ -426,11 +471,19 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
-  it('records delivered chunks once with one captured timestamp', () => {
+  it('records delivered chunks once with Discord identity and time', () => {
     const { database, service, setNow } = createHarness(1_000);
     const chunks = [
-      { content: 'First chunk. ', messageId: '62345678901234567' },
-      { content: 'Second chunk.', messageId: '62345678901234568' },
+      {
+        content: 'First chunk. ',
+        messageId: '62345678901234567',
+        occurredAt: 1_100,
+      },
+      {
+        content: 'Second chunk.',
+        messageId: '62345678901234568',
+        occurredAt: 1_200,
+      },
     ];
     const [firstChunk, secondChunk] = chunks;
     if (firstChunk === undefined || secondChunk === undefined) {
@@ -442,6 +495,7 @@ describe('ChannelContextService', () => {
       logicalResponseId: 'response-1',
       replyToMessageId: '52345678901234567',
       requestId: '52345678901234567',
+      speakerId: '12345678901234567',
     });
     setNow(2_000);
     service.recordDeliveredReply({
@@ -449,6 +503,7 @@ describe('ChannelContextService', () => {
       logicalResponseId: 'response-1',
       replyToMessageId: '52345678901234567',
       requestId: '52345678901234567',
+      speakerId: '12345678901234567',
     });
 
     expect(
@@ -457,7 +512,10 @@ describe('ChannelContextService', () => {
           `select discord_message_id as discordMessageId, content, occurred_at as occurredAt,
                   recent_until as recentUntil, retention_deadline as retentionDeadline,
                   logical_response_id as logicalResponseId,
-                  reply_to_message_id as replyToMessageId
+                  platform_event_id as platformEventId,
+                  reply_to_message_id as replyToMessageId,
+                  revision_checksum as revisionChecksum,
+                  speaker_id as speakerId
            from conversation_events order by id`,
         )
         .all(),
@@ -466,10 +524,22 @@ describe('ChannelContextService', () => {
         content: chunk.content,
         discordMessageId: chunk.messageId,
         logicalResponseId: 'response-1',
-        occurredAt: 1_000,
-        recentUntil: 1_000 + sevenDays,
+        occurredAt: chunk.occurredAt,
+        platformEventId: chunk.messageId,
+        recentUntil: chunk.occurredAt + sevenDays,
         replyToMessageId: '52345678901234567',
-        retentionDeadline: 1_000 + thirtyDays,
+        revisionChecksum: discordSourceRevisionChecksum({
+          attachmentMetadataJson: '[]',
+          authorKind: 'chief',
+          content: chunk.content,
+          editedAt: null,
+          messageId: chunk.messageId,
+          occurredAt: chunk.occurredAt,
+          replyToMessageId: '52345678901234567',
+          requesterId: '12345678901234567',
+        }),
+        retentionDeadline: chunk.occurredAt + thirtyDays,
+        speakerId: '12345678901234567',
       })),
     );
 
@@ -479,6 +549,7 @@ describe('ChannelContextService', () => {
       logicalResponseId: 'response-1',
       replyToMessageId: '52345678901234567',
       requestId: 'retry-caller-key',
+      speakerId: '12345678901234567',
     });
     expect(
       database
@@ -488,10 +559,64 @@ describe('ChannelContextService', () => {
     ).toBe(2);
     expect(
       database
-        .prepare('select distinct occurred_at from conversation_events')
+        .prepare('select occurred_at from conversation_events order by id')
         .pluck()
         .all(),
-    ).toEqual([1_000]);
+    ).toEqual([1_100, 1_200]);
+    database.close();
+  });
+
+  it('attaches callback lineage when reconciliation won the source race', () => {
+    const { database, service } = createHarness(1_000);
+    const messageId = '62345678901234567';
+    const revisionChecksum = discordSourceRevisionChecksum({
+      attachmentMetadataJson: '[]',
+      authorKind: 'chief',
+      content: 'Delivered answer.',
+      editedAt: null,
+      messageId,
+      occurredAt: 1_100,
+      replyToMessageId: '52345678901234567',
+      requesterId: '12345678901234567',
+    });
+    service.apply({
+      attachmentMetadataJson: '[]',
+      content: 'Delivered answer.',
+      editedAt: null,
+      messageId,
+      occurredAt: 1_100,
+      platformEventId: messageId,
+      replyToMessageId: '52345678901234567',
+      requestId: messageId,
+      revisionChecksum,
+      role: 'chief',
+      speakerId: '12345678901234567',
+      speakerName: 'Chief',
+      type: 'upsert',
+    });
+
+    service.recordDeliveredReply({
+      chunks: [{ content: 'Delivered answer.', messageId, occurredAt: 1_100 }],
+      logicalResponseId: 'response-1',
+      replyToMessageId: '52345678901234567',
+      requestId: '52345678901234567',
+      speakerId: '12345678901234567',
+    });
+
+    expect(
+      database
+        .prepare(
+          `select count(*) as count,
+                  max(logical_response_id) as logicalResponseId,
+                  max(request_id) as requestId
+           from conversation_events where discord_message_id = ?`,
+        )
+        .get(messageId),
+    ).toEqual({
+      count: 1,
+      logicalResponseId: 'response-1',
+      requestId: '52345678901234567',
+    });
     database.close();
   });
 });

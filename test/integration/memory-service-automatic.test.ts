@@ -203,6 +203,7 @@ describe('MemoryService automatic extraction', () => {
       timestamp: 1,
     });
     store.observe({
+      canModerateContext: true,
       content: 'Chief, forget that dinner is at seven',
       medium: 'text',
       occurredAt: 2,

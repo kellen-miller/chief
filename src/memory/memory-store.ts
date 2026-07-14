@@ -1,11 +1,16 @@
+import { createHash } from 'node:crypto';
+
 import type Database from 'better-sqlite3';
 
 export interface SourceObservation {
+  readonly canModerateContext?: boolean;
   readonly content: string;
   readonly medium: 'text' | 'voice';
   readonly occurredAt: number;
   readonly platformSourceId: string;
+  readonly revisionChecksum?: string;
   readonly retentionDeadline: number;
+  readonly sourceScopeId?: string;
   readonly speakerId: string;
 }
 
@@ -16,11 +21,13 @@ export interface ExtractionJob {
 }
 
 export interface ExtractionSource {
+  readonly canModerateContext: boolean;
   readonly content: string;
   readonly id: number;
   readonly medium: 'text' | 'voice';
   readonly occurredAt: number;
   readonly platformSourceId: string;
+  readonly revisionChecksum: string;
   readonly speakerId: string;
 }
 
@@ -102,16 +109,46 @@ export class SqliteMemoryStore {
 
   #observe(source: SourceObservation, createJob: boolean): number {
     return this.#database.transaction(() => {
+      const normalized = {
+        ...source,
+        canModerateContext: source.canModerateContext ? 1 : 0,
+        revisionChecksum:
+          source.revisionChecksum ?? sourceObservationChecksum(source),
+        sourceScopeId: source.sourceScopeId ?? '',
+      };
+      const existing = this.#database
+        .prepare(
+          `select id, revision_checksum as revisionChecksum
+           from source_events where platform_source_id = ?`,
+        )
+        .get(source.platformSourceId) as
+        { id: number; revisionChecksum: string } | undefined;
+      if (
+        existing !== undefined &&
+        existing.revisionChecksum !== normalized.revisionChecksum
+      ) {
+        this.#deleteSourceMemories(existing.id);
+        this.#database
+          .prepare('delete from memory_jobs where source_event_id = ?')
+          .run(existing.id);
+      }
       this.#database
         .prepare(
           `insert into source_events
-             (platform_source_id, speaker_id, medium, content, occurred_at, retention_deadline)
-           values (@platformSourceId, @speakerId, @medium, @content, @occurredAt, @retentionDeadline)
+             (platform_source_id, source_scope_id, revision_checksum,
+              can_moderate_context, speaker_id, medium, content, occurred_at,
+              retention_deadline)
+           values (@platformSourceId, @sourceScopeId, @revisionChecksum,
+                   @canModerateContext, @speakerId, @medium, @content,
+                   @occurredAt, @retentionDeadline)
            on conflict(platform_source_id) do update set
              content = excluded.content,
+             source_scope_id = excluded.source_scope_id,
+             revision_checksum = excluded.revision_checksum,
+             can_moderate_context = excluded.can_moderate_context,
              retention_deadline = excluded.retention_deadline`,
         )
-        .run(source);
+        .run(normalized);
       const sourceEventId = this.#database
         .prepare('select id from source_events where platform_source_id = ?')
         .pluck()
@@ -119,13 +156,19 @@ export class SqliteMemoryStore {
       if (createJob) {
         this.#database
           .prepare(
-            `insert into memory_jobs (source_event_id, not_before)
-             select ?, ? where not exists (
+            `insert into memory_jobs
+               (source_event_id, revision_checksum, not_before)
+             select ?, ?, ? where not exists (
                select 1 from memory_jobs
                where source_event_id = ? and status in ('pending', 'leased')
              )`,
           )
-          .run(sourceEventId, source.occurredAt, sourceEventId);
+          .run(
+            sourceEventId,
+            normalized.revisionChecksum,
+            source.occurredAt,
+            sourceEventId,
+          );
       }
       return sourceEventId;
     })();
@@ -172,16 +215,43 @@ export class SqliteMemoryStore {
   }
 
   public getJobSource(jobId: number): ExtractionSource | null {
+    const row = this.#database
+      .prepare(
+        `select s.id, s.content, s.medium, s.occurred_at as occurredAt,
+                s.platform_source_id as platformSourceId,
+                s.revision_checksum as revisionChecksum,
+                s.can_moderate_context as canModerateContext,
+                s.speaker_id as speakerId
+         from memory_jobs j join source_events s on s.id = j.source_event_id
+         where j.id = ?`,
+      )
+      .get(jobId) as
+      | (Omit<ExtractionSource, 'canModerateContext'> & {
+          canModerateContext: 0 | 1;
+        })
+      | undefined;
+    return row === undefined
+      ? null
+      : { ...row, canModerateContext: row.canModerateContext === 1 };
+  }
+
+  public canRequesterForget(
+    memoryId: number,
+    requesterId: string,
+    canModerateContext: boolean,
+  ): boolean {
+    if (canModerateContext) return true;
     return (
-      (this.#database
+      this.#database
         .prepare(
-          `select s.id, s.content, s.medium, s.occurred_at as occurredAt,
-                  s.platform_source_id as platformSourceId,
-                  s.speaker_id as speakerId
-           from memory_jobs j join source_events s on s.id = j.source_event_id
-           where j.id = ?`,
+          `select exists(
+             select 1 from memories m join source_events s
+               on s.id = m.source_event_id
+             where m.id = ? and s.speaker_id = ?
+           )`,
         )
-        .get(jobId) as ExtractionSource | undefined) ?? null
+        .pluck()
+        .get(memoryId, requesterId) === 1
     );
   }
 
@@ -248,11 +318,53 @@ export class SqliteMemoryStore {
 
   public applyPreparedMutationBatch(input: {
     readonly completedAt: number;
+    readonly expectedRevisionChecksum?: string;
     readonly jobId?: number;
     readonly mutations: readonly PreparedMemoryMutation[];
     readonly sourceEventId: number;
   }): readonly AppliedMemoryMutation[] {
     return this.#database.transaction(() => {
+      const source = this.#database
+        .prepare(
+          `select revision_checksum as revisionChecksum,
+                  source_scope_id as sourceScopeId
+           from source_events where id = ?`,
+        )
+        .get(input.sourceEventId) as
+        { revisionChecksum: string; sourceScopeId: string } | undefined;
+      const jobRevision =
+        input.jobId === undefined
+          ? undefined
+          : (this.#database
+              .prepare(
+                `select revision_checksum from memory_jobs
+                 where id = ? and source_event_id = ?`,
+              )
+              .pluck()
+              .get(input.jobId, input.sourceEventId) as string | undefined);
+      const tombstoned =
+        source !== undefined &&
+        source.sourceScopeId !== '' &&
+        this.#database
+          .prepare(
+            `select exists(
+                   select 1 from context_tombstones
+                   where scope_type = 'source' and scope_id = ?
+                 )`,
+          )
+          .pluck()
+          .get(source.sourceScopeId) === 1;
+      if (
+        source === undefined ||
+        tombstoned ||
+        (input.expectedRevisionChecksum !== undefined &&
+          source.revisionChecksum !== input.expectedRevisionChecksum) ||
+        (input.jobId !== undefined &&
+          (jobRevision === undefined ||
+            jobRevision !== source.revisionChecksum))
+      ) {
+        return [];
+      }
       const applied: AppliedMemoryMutation[] = [];
       for (const mutation of input.mutations) {
         if (mutation.action === 'forget') {
@@ -381,6 +493,31 @@ export class SqliteMemoryStore {
       .run(BigInt(memoryId));
   }
 
+  public suppressSource(platformSourceId: string): void {
+    this.#database.transaction(() => {
+      const sourceEventId = this.#database
+        .prepare('select id from source_events where platform_source_id = ?')
+        .pluck()
+        .get(platformSourceId) as number | undefined;
+      if (sourceEventId === undefined) return;
+      this.#deleteSourceMemories(sourceEventId);
+      this.#database
+        .prepare('delete from source_events where id = ?')
+        .run(sourceEventId);
+    })();
+  }
+
+  #deleteSourceMemories(sourceEventId: number): void {
+    const ids = this.#database
+      .prepare('select id from memories where source_event_id = ?')
+      .pluck()
+      .all(sourceEventId) as number[];
+    for (const id of ids) this.#deleteIndexes(id);
+    this.#database
+      .prepare('delete from memories where source_event_id = ?')
+      .run(sourceEventId);
+  }
+
   #completeJob(jobId: number): void {
     this.#database
       .prepare(
@@ -500,4 +637,18 @@ export class SqliteMemoryStore {
     })();
     return consolidated;
   }
+}
+
+function sourceObservationChecksum(source: SourceObservation): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        content: source.content,
+        medium: source.medium,
+        occurredAt: source.occurredAt,
+        platformSourceId: source.platformSourceId,
+        speakerId: source.speakerId,
+      }),
+    )
+    .digest('hex');
 }

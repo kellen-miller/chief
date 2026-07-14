@@ -132,11 +132,21 @@ export class MemoryService {
             ? undefined
             : this.#options.store.findLexical(target, 1)[0];
         const mutations: PreparedMemoryMutation[] =
-          candidate === undefined
+          candidate === undefined ||
+          !this.#options.store.canRequesterForget(
+            candidate.id,
+            input.source.speakerId,
+            input.source.canModerateContext ?? false,
+          )
             ? []
             : [{ action: 'forget', targetMemoryId: candidate.id }];
         const applied = this.#options.store.applyPreparedMutationBatch({
           completedAt: input.now,
+          ...(input.source.revisionChecksum === undefined
+            ? {}
+            : {
+                expectedRevisionChecksum: input.source.revisionChecksum,
+              }),
           mutations,
           sourceEventId: input.sourceEventId,
         });
@@ -156,6 +166,11 @@ export class MemoryService {
       if (extractionContent === null) {
         this.#options.store.applyPreparedMutationBatch({
           completedAt: input.now,
+          ...(input.source.revisionChecksum === undefined
+            ? {}
+            : {
+                expectedRevisionChecksum: input.source.revisionChecksum,
+              }),
           mutations: [],
           sourceEventId: input.sourceEventId,
         });
@@ -178,6 +193,11 @@ export class MemoryService {
       ) {
         this.#options.store.applyPreparedMutationBatch({
           completedAt: input.now,
+          ...(input.source.revisionChecksum === undefined
+            ? {}
+            : {
+                expectedRevisionChecksum: input.source.revisionChecksum,
+              }),
           mutations: [],
           sourceEventId: input.sourceEventId,
         });
@@ -194,6 +214,9 @@ export class MemoryService {
       );
       const applied = this.#options.store.applyPreparedMutationBatch({
         completedAt: input.now,
+        ...(input.source.revisionChecksum === undefined
+          ? {}
+          : { expectedRevisionChecksum: input.source.revisionChecksum }),
         mutations: prepared.mutations,
         sourceEventId: input.sourceEventId,
       });
@@ -251,9 +274,15 @@ export class MemoryService {
         const candidate = this.#options.store.findLexical(forgetTarget, 1)[0];
         this.#options.store.applyPreparedMutationBatch({
           completedAt: now,
+          expectedRevisionChecksum: source.revisionChecksum,
           jobId: job.id,
           mutations:
-            candidate === undefined
+            candidate === undefined ||
+            !this.#options.store.canRequesterForget(
+              candidate.id,
+              source.speakerId,
+              source.canModerateContext,
+            )
               ? []
               : [{ action: 'forget', targetMemoryId: candidate.id }],
           sourceEventId: source.id,
@@ -275,6 +304,7 @@ export class MemoryService {
       );
       this.#options.store.applyPreparedMutationBatch({
         completedAt: now,
+        expectedRevisionChecksum: source.revisionChecksum,
         jobId: job.id,
         mutations: prepared.mutations,
         sourceEventId: source.id,
@@ -300,7 +330,7 @@ export class MemoryService {
     proposals: readonly MemoryProposal[],
     source: Pick<
       SourceObservation,
-      'occurredAt' | 'platformSourceId' | 'speakerId'
+      'canModerateContext' | 'occurredAt' | 'platformSourceId' | 'speakerId'
     >,
     sourceEventId: number,
     now: number,
@@ -315,7 +345,14 @@ export class MemoryService {
       if (!isAccepted(proposal, explicit)) continue;
       if (proposal.action === 'no-op') continue;
       if (proposal.action === 'forget') {
-        if (proposal.targetMemoryId !== null) {
+        if (
+          proposal.targetMemoryId !== null &&
+          this.#options.store.canRequesterForget(
+            proposal.targetMemoryId,
+            source.speakerId,
+            source.canModerateContext ?? false,
+          )
+        ) {
           mutations.push({
             action: 'forget',
             targetMemoryId: proposal.targetMemoryId,
