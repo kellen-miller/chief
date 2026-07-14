@@ -18,7 +18,7 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 - [x] (2026-07-14 03:51Z) Ran two adversarial planning passes, resolved every verified critical/high issue, and incorporated the final medium/low recovery and implementation seams.
 - [x] (2026-07-14 04:58Z) Obtained explicit user approval of the adversarially revised written planning packet and activated implementation.
 - [x] (2026-07-14 05:08Z) Task 1 created migration 0003, DST-safe context periods, canonical source/FTS writes, hourly job records, retention separation, delivered-snowflake identity, and transactional document invariants; 233 tests and `pnpm verify` passed, and the task review approved the five-commit range with no findings.
-- [ ] Milestone 2: ingest live Discord creates, edits, deletes, and Chief replies.
+- [x] (2026-07-14 06:41Z) Task 2 normalized live Discord creates, edits, partials, single/bulk deletes, and delivered Chief chunks; synchronized edit/delete effects across source, memory, and context state; added resumable gap and weekly identity reconciliation with persisted coverage proof; and passed 267 tests plus a clean final review after three correction loops.
 - [ ] Milestone 3: generate resumable hierarchical rollups under a protected background budget.
 - [ ] Milestone 4: assemble cross-tier context with one embedding per retrieval query.
 - [ ] Milestone 5: implement authorized correction, confirmation, forgetting, and lineage rebuild.
@@ -60,6 +60,10 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
   Evidence: Task 1 review drove incremental persistence immediately after each successful Discord send, using one logical response ID and stable snowflake per chunk.
 - Observation: final-child hierarchy needs both positive and negative constraints: higher tiers require final parents and must reject raw event lineage even when a valid parent is also present.
   Evidence: successive Task 1 review regressions closed parentless and mixed-lineage bypasses before document, FTS, vector, or lineage mutation.
+- Observation: a full-channel deletion scan cannot bound coverage by the newest surviving message. The deleted source may itself have been the newest indexed identity, including after raw content expires.
+  Evidence: Task 2 review reproduced a retained source `201` missing above surviving source `200`; the final design persists a scan-start snowflake ceiling, begins before that ceiling, and resumes with the same upper bound.
+- Observation: durable deletion and self-forget need minimal provenance after raw retention, while the raw content must still be erased.
+  Evidence: Task 2 review reproduced loss of authorization and deletion linkage when `source_events` rows were removed; maintenance now retains scope identity with empty content only while a durable memory still depends on it.
 
 ## Decision Log
 
