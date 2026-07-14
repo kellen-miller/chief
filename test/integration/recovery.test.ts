@@ -63,6 +63,16 @@ describe('database recovery', () => {
     database.close();
   });
 
+  it('rejects unsupported explicit restore targets', () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+
+    expect(verifyRestorableDatabase(database, '0002_conversation_events')).toBe(
+      false,
+    );
+    database.close();
+  });
+
   it('checks context FTS/vector consistency in explicit context mode', () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
@@ -566,6 +576,35 @@ describe('database recovery', () => {
     await expect(readForgetJournalDirectory(directory)).rejects.toThrow(
       /malformed/u,
     );
+    await rm(join(directory, 'contains-text.json'));
+    await writeFile(join(directory, 'invalid-json.json'), '{');
+    await expect(readForgetJournalDirectory(directory)).rejects.toThrow(
+      /malformed/u,
+    );
+  });
+
+  it('defaults legacy journal reasons and requires a migrated database', () => {
+    const entry = journal({ omitReason: true });
+    const unmigrated = openChiefDatabase(':memory:');
+    expect(() => {
+      replayForgetJournals(unmigrated, [entry], 10);
+    }).toThrow('forget journal recovery requires a migrated database');
+    unmigrated.close();
+
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    replayForgetJournals(database, [entry], 10);
+
+    expect(
+      database
+        .prepare(
+          `select reason from context_tombstones
+           where tombstone_key = 'source:guild/channel/message-1'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe('locally-forgotten');
+    database.close();
   });
 
   it('creates backup recovery artifacts mode 0600', async () => {
@@ -591,15 +630,18 @@ function journal(
     readonly documentIds?: readonly number[];
     readonly documentKeys?: readonly string[];
     readonly memoryIds?: readonly number[];
+    readonly omitReason?: boolean;
   } = {},
 ): ContextForgetJournalEntry {
   const journalKey = 'forget:guild/channel/message-1';
   const occurredAt = 5;
-  const payload = {
+  const payload: ContextForgetJournalEntry['payload'] = {
     documentIds: input.documentIds ?? [],
     documentKeys: input.documentKeys ?? [],
     memoryIds: input.memoryIds ?? [],
-    reason: 'locally-forgotten' as const,
+    ...(input.omitReason === true
+      ? {}
+      : { reason: 'locally-forgotten' as const }),
     sourceScopeIds: ['guild/channel/message-1'],
     tombstoneKeys: ['source:guild/channel/message-1'],
   };

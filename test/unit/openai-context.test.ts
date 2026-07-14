@@ -1,4 +1,10 @@
+import { run } from '@openai/agents';
 import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('@openai/agents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@openai/agents')>()),
+  run: vi.fn(),
+}));
 
 import { createOpenAiContextSummarizer } from '../../src/context/openai-context.js';
 
@@ -79,5 +85,57 @@ describe('createOpenAiContextSummarizer', () => {
         tier: 'hourly',
       }),
     ).rejects.toThrow('context summary referenced an unknown source');
+  });
+
+  it('rejects a missing structured provider result', async () => {
+    const summarizer = createOpenAiContextSummarizer({
+      apiKey: 'test-key',
+      dependencies: {
+        runAgent: () =>
+          Promise.resolve({
+            finalOutput: undefined,
+            state: { usage: { inputTokens: 0, outputTokens: 0 } },
+          }),
+      },
+      model: 'configured-memory-model',
+      pricing: { inputPerMillionUsd: 2, outputPerMillionUsd: 4 },
+    });
+
+    await expect(
+      summarizer.summarize({
+        completeness: 'final',
+        sources: [{ id: 'event:1', text: 'Public source.' }],
+        tier: 'hourly',
+      }),
+    ).rejects.toThrow('context summarization returned no structured output');
+  });
+
+  it('uses the SDK runner when no injected runner is supplied', async () => {
+    vi.mocked(run).mockResolvedValueOnce({
+      finalOutput: {
+        confidence: 0.8,
+        sourceIds: ['event:1'],
+        summary: 'The group discussed the supplied source.',
+        topicProposals: [],
+      },
+      state: { usage: { inputTokens: 4, outputTokens: 2 } },
+    } as never);
+    const summarizer = createOpenAiContextSummarizer({
+      apiKey: 'test-key',
+      model: 'configured-memory-model',
+      pricing: { inputPerMillionUsd: 0, outputPerMillionUsd: 0 },
+    });
+
+    await expect(
+      summarizer.summarize({
+        completeness: 'final',
+        sources: [{ id: 'event:1', text: 'Public source.' }],
+        tier: 'hourly',
+      }),
+    ).resolves.toMatchObject({
+      sourceIds: ['event:1'],
+      usageUsd: 0,
+    });
+    expect(run).toHaveBeenCalledOnce();
   });
 });
