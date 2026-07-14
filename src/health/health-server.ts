@@ -1,8 +1,86 @@
 import { createServer, type Server } from 'node:http';
 
+export type ContextDiagnosticReason =
+  'backlog' | 'indexing-budget' | 'overall-budget' | 'provider' | 'run-budget';
+
+export interface ContextHealthDiagnostics {
+  readonly ageSecondsByTier: Readonly<
+    Record<'daily' | 'hourly' | 'long-term' | 'weekly', number>
+  >;
+  readonly backfillCounts: Readonly<
+    Record<'active' | 'failed' | 'paused', number>
+  >;
+  readonly degraded: boolean;
+  readonly failedJobs: number;
+  readonly pendingJobs: number;
+  readonly reason: ContextDiagnosticReason | null;
+  readonly reconciliationAgeSeconds: number | null;
+}
+
+export interface HealthCriticalChecks {
+  readonly database: boolean;
+  readonly discord: boolean;
+  readonly disk: boolean;
+  readonly maintenance: boolean;
+}
+
+export interface HealthDiagnostics {
+  readonly context?: ContextHealthDiagnostics;
+}
+
+interface ContextStatusInput {
+  readonly backfillCounts: ContextHealthDiagnostics['backfillCounts'];
+  readonly degraded: boolean;
+  readonly failedJobs: number;
+  readonly lagMsByTier: Readonly<
+    Record<'daily' | 'hourly' | 'long-term' | 'weekly', number>
+  >;
+  readonly pendingJobs: number;
+  readonly reason: string | null;
+}
+
+export function contextHealthDiagnostics(
+  status: ContextStatusInput,
+  reconciliationAgeMs: number | null,
+): ContextHealthDiagnostics {
+  return {
+    ageSecondsByTier: Object.fromEntries(
+      Object.entries(status.lagMsByTier).map(([tier, ageMs]) => [
+        tier,
+        Math.floor(ageMs / 1_000),
+      ]),
+    ) as ContextHealthDiagnostics['ageSecondsByTier'],
+    backfillCounts: status.backfillCounts,
+    degraded: status.degraded,
+    failedJobs: status.failedJobs,
+    pendingJobs: status.pendingJobs,
+    reason: publicContextReason(status.reason),
+    reconciliationAgeSeconds:
+      reconciliationAgeMs === null
+        ? null
+        : Math.floor(reconciliationAgeMs / 1_000),
+  };
+}
+
+function publicContextReason(
+  reason: string | null,
+): ContextDiagnosticReason | null {
+  switch (reason) {
+    case 'indexing-budget':
+    case 'overall-budget':
+    case 'provider':
+    case 'run-budget':
+      return reason;
+    case null:
+      return null;
+    default:
+      return 'backlog';
+  }
+}
+
 export interface HealthServerOptions {
-  readonly check: () => Promise<Readonly<Record<string, boolean>>>;
-  readonly diagnostics?: () => Promise<Readonly<Record<string, unknown>>>;
+  readonly check: () => Promise<HealthCriticalChecks>;
+  readonly diagnostics?: () => Promise<HealthDiagnostics>;
   readonly host?: string;
   readonly port: number;
 }
@@ -60,14 +138,14 @@ export class HealthServer {
       return;
     }
     try {
-      const checks = await this.#options.check();
+      const criticalChecks = await this.#options.check();
       const diagnostics = await this.#options.diagnostics?.();
-      const ready = Object.values(checks).every(Boolean);
+      const ready = Object.values(criticalChecks).every(Boolean);
       response
         .writeHead(ready ? 200 : 503, { 'content-type': 'application/json' })
         .end(
           JSON.stringify({
-            checks,
+            criticalChecks,
             ...(diagnostics === undefined ? {} : { diagnostics }),
             ready,
           }),
@@ -75,7 +153,7 @@ export class HealthServer {
     } catch {
       response
         .writeHead(503, { 'content-type': 'application/json' })
-        .end(JSON.stringify({ checks: {}, ready: false }));
+        .end(JSON.stringify({ criticalChecks: {}, ready: false }));
     }
   }
 }

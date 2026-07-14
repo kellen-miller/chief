@@ -18,7 +18,10 @@ import { createOpenAiContextSummarizer } from './context/openai-context.js';
 import { ConversationStore } from './conversation/conversation-store.js';
 import { DiscordReconciliationService } from './discord/discord-reconciliation-service.js';
 import { DiscordGateway } from './discord/gateway.js';
-import { HealthServer } from './health/health-server.js';
+import {
+  contextHealthDiagnostics,
+  HealthServer,
+} from './health/health-server.js';
 import {
   migrateChiefDatabase,
   openChiefDatabase,
@@ -105,7 +108,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
         outputPerMillionUsd: config.pricing.memoryOutput,
       },
     }),
-    timeZone: 'America/New_York',
+    timeZone: config.contextTimeZone,
     uploadForgetJournal: createGcsForgetJournalUploader({
       bucketName: config.backupBucket,
     }),
@@ -138,7 +141,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     embed,
     guildId: config.discord.guildId,
     memory: memoryService,
-    timeZone: 'America/New_York',
+    timeZone: config.contextTimeZone,
   });
   const agent = new OpenAiChiefAgent({
     apiKey: config.openAiApiKey,
@@ -283,7 +286,13 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
       disk: await checkDisk(config.dataDirectory),
       maintenance: Date.now() - maintenanceAt < 26 * 60 * 60 * 1_000,
     }),
-    diagnostics: () => Promise.resolve({ context: context.status(Date.now()) }),
+    diagnostics: () =>
+      Promise.resolve({
+        context: contextHealthDiagnostics(
+          context.status(Date.now()),
+          reconciliation?.diagnostics().lagMs ?? null,
+        ),
+      }),
     host: '0.0.0.0',
     port: config.healthPort,
   });

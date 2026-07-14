@@ -8,6 +8,36 @@ import { describe, expect, it } from 'vitest';
 const read = (path: string): Promise<string> => readFile(path, 'utf8');
 
 describe('repository policy', () => {
+  it('packages context policy without exposing retention or tier knobs', async () => {
+    const environment = await read('.env.example');
+    const variables = await read('infra/app/variables.tf');
+    const application = await read('infra/app/main.tf');
+    for (const setting of [
+      'CHIEF_CONTEXT_TIME_ZONE=America/New_York',
+      'CHIEF_USAGE_INDEXING_CEILING_USD=3',
+    ]) {
+      expect(environment).toContain(setting);
+    }
+    expect(variables).toContain('variable "context_time_zone"');
+    expect(variables).toContain('default     = "America/New_York"');
+    expect(variables).toContain('variable "usage_indexing_ceiling_usd"');
+    expect(variables).toContain('default     = 3');
+    expect(application).toContain(
+      'context_time_zone          = var.context_time_zone',
+    );
+    expect(application).toContain(
+      'usage_indexing_ceiling_usd = var.usage_indexing_ceiling_usd',
+    );
+    for (const forbidden of [
+      'CHIEF_CONTEXT_RETENTION',
+      'CHIEF_CONTEXT_TOKEN_LIMIT',
+      'context_retention',
+      'context_token_limit',
+    ]) {
+      expect(`${environment}\n${variables}`).not.toContain(forbidden);
+    }
+  });
+
   it('keeps the four stable pull-request checks', async () => {
     const workflow = await read('.github/workflows/ci.yml');
     for (const name of ['Format', 'Lint', 'Test', 'Build']) {
@@ -109,6 +139,10 @@ describe('repository policy', () => {
       'context.flushForgetJournal(startupMaintenanceAt)',
     );
     expect(startup).toContain('CHIEF_BACKUP_BUCKET=${backup_bucket}');
+    expect(startup).toContain('CHIEF_CONTEXT_TIME_ZONE=${context_time_zone}');
+    expect(startup).toContain(
+      'CHIEF_USAGE_INDEXING_CEILING_USD=${usage_indexing_ceiling_usd}',
+    );
     expect(startup).not.toContain('docker login');
     expect(deployScript).toContain('DOCKER_CONFIG');
     expect(deployScript).toContain('docker-config.XXXXXX');
@@ -120,6 +154,12 @@ describe('repository policy', () => {
     expect(startup).toContain('${configure_google_cloud_apt_script}');
     expect(startup).toContain('/opt/chief/configure-google-cloud-apt.sh');
     expect(aptScript).toContain('chief-google-cloud.list');
+    expect(runContainerScript).toContain('RECOVERY_IMAGE');
+    expect(runContainerScript).toContain('recover-forget-journals');
+    expect(runContainerScript).toContain('forget-journal');
+    expect(runContainerScript.indexOf('recover-forget-journals')).toBeLessThan(
+      runContainerScript.indexOf('DISCORD_TOKEN='),
+    );
   });
 
   it('uses short-lived scoped WIF without secret or plan artifacts', async () => {
@@ -183,6 +223,10 @@ describe('repository policy', () => {
     expect(app).toContain('roles/storage.objectCreator');
     expect(app).toContain('roles/storage.objectViewer');
     expect(app).not.toContain('roles/storage.objectAdmin');
+    expect(app).toContain('matches_prefix = ["backups/"]');
+    expect(app).toContain('matches_prefix = ["forget-journal/"]');
+    expect(app).toContain('matches_suffix = [".db"]');
+    expect(app).toContain('days_since_noncurrent_time = 60');
     expect(app).toContain(
       'resource "google_service_account_iam_member" "deploy_act_as"',
     );

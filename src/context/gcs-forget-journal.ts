@@ -32,9 +32,9 @@ export function createGcsForgetJournalUploader(
     if (!/^[0-9a-f]{64}$/u.test(entry.checksum)) {
       throw new Error('forget journal checksum must be SHA-256');
     }
-    const content = Buffer.from(JSON.stringify(entry));
+    const content = Buffer.from(JSON.stringify({ ...entry, schemaVersion: 1 }));
     const object = bucket.file(
-      `context-forget-journal/${String(entry.occurredAt)}-${entry.checksum}.json`,
+      `forget-journal/${String(entry.occurredAt)}-${entry.checksum}.json`,
     );
     try {
       await object.save(content, {

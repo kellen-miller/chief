@@ -16,6 +16,7 @@ describe('loadConfig', () => {
   it('loads allowlist and pinned model defaults', () => {
     expect(loadConfig(validEnvironment)).toMatchObject({
       backupBucket: 'chief-backups',
+      contextTimeZone: 'America/New_York',
       discord: {
         applicationId: validEnvironment.DISCORD_APPLICATION_ID,
         guildId: validEnvironment.DISCORD_GUILD_ID,
@@ -70,5 +71,17 @@ describe('loadConfig', () => {
         CHIEF_USAGE_WARNING_USD: '2',
       }),
     ).toThrow(/CHIEF_USAGE_INDEXING_CEILING_USD/u);
+  });
+
+  it('accepts an IANA context timezone and rejects an unknown one', () => {
+    expect(
+      loadConfig({ ...validEnvironment, CHIEF_CONTEXT_TIME_ZONE: 'UTC' }),
+    ).toMatchObject({ contextTimeZone: 'UTC' });
+    expect(() =>
+      loadConfig({
+        ...validEnvironment,
+        CHIEF_CONTEXT_TIME_ZONE: 'Mars/Olympus_Mons',
+      }),
+    ).toThrow(/CHIEF_CONTEXT_TIME_ZONE/u);
   });
 });

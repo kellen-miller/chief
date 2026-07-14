@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 CANDIDATE_IMAGE=""
 while [[ $# -gt 0 ]]; do
@@ -29,6 +30,23 @@ if [[ -f "$STATE_FILE" ]]; then
   PREVIOUS_IMAGE="$(sed -n 's/^IMAGE=//p' "$STATE_FILE")"
 fi
 
+write_state() {
+  local image="$1"
+  local recovery_image="$2"
+  printf 'IMAGE=%s\nRECOVERY_IMAGE=%s\n' "$image" "$recovery_image" \
+    >"$STATE_FILE.tmp"
+  chmod 0600 "$STATE_FILE.tmp"
+  mv "$STATE_FILE.tmp" "$STATE_FILE"
+}
+
+prune_recovery_artifacts() {
+  if [[ -d "$BACKUP_DIR" ]]; then
+    find "$BACKUP_DIR" -type f -name '*.db' -mmin +43199 -delete
+  fi
+  find "$DATA_DIR" -maxdepth 1 -type f -name 'chief.db.failed.*' \
+    -mmin +43199 -delete
+}
+
 docker logout "$REGISTRY" >/dev/null 2>&1 || true
 install -d -m 0700 "$RUNTIME_DIR"
 DOCKER_CONFIG="$(mktemp -d "$RUNTIME_DIR/docker-config.XXXXXX")"
@@ -57,17 +75,22 @@ rollback() {
   local failed_database
   systemctl stop chief.service || true
   docker stop --time 5 chief >/dev/null 2>&1 || true
-  if [[ "$MIGRATED" == true && -n "$BACKUP" ]]; then
+  if [[ "$MIGRATED" == true ]]; then
     failed_database="$DATABASE.failed.$(date -u +%Y%m%dT%H%M%SZ)"
-    [[ -f "$DATABASE" ]] && mv "$DATABASE" "$failed_database"
-    cp "$BACKUP" "$DATABASE.restore"
-    mv "$DATABASE.restore" "$DATABASE"
-    chown "$DATA_UID:$DATA_GID" "$DATABASE"
+    if [[ -f "$DATABASE" ]]; then
+      mv "$DATABASE" "$failed_database"
+      chmod 0600 "$failed_database"
+    fi
     rm -f "$DATABASE-wal" "$DATABASE-shm"
+    if [[ -n "$BACKUP" ]]; then
+      install -m 0600 "$BACKUP" "$DATABASE.restore"
+      mv "$DATABASE.restore" "$DATABASE"
+      chown "$DATA_UID:$DATA_GID" "$DATABASE"
+    fi
   fi
   if [[ -n "$PREVIOUS_IMAGE" ]]; then
-    printf 'IMAGE=%s\n' "$PREVIOUS_IMAGE" >"$STATE_FILE.tmp"
-    mv "$STATE_FILE.tmp" "$STATE_FILE"
+    write_state "$PREVIOUS_IMAGE" "$CANDIDATE_IMAGE"
+    prune_recovery_artifacts
     systemctl start chief.service
     for _ in $(seq 1 60); do
       curl --fail --silent --max-time 3 http://127.0.0.1:8080/healthz >/dev/null && return 0
@@ -88,8 +111,11 @@ docker run --rm --user "$DATA_UID:$DATA_GID" \
   --volume "$DATA_DIR:$DATA_DIR" \
   "$CANDIDATE_IMAGE" migrate --database "$DATABASE"
 MIGRATED=true
-printf 'IMAGE=%s\n' "$CANDIDATE_IMAGE" >"$STATE_FILE.tmp"
-mv "$STATE_FILE.tmp" "$STATE_FILE"
+docker run --rm --user "$DATA_UID:$DATA_GID" \
+  --volume "$DATA_DIR:$DATA_DIR" \
+  "$CANDIDATE_IMAGE" verify-restore --backup "$DATABASE" \
+  --require-migration 0003_channel_context
+write_state "$CANDIDATE_IMAGE" "$CANDIDATE_IMAGE"
 systemctl start chief.service
 
 healthy=false
@@ -120,4 +146,5 @@ if [[ "$cleanup_ready" == true ]]; then
       '{"msg":"chief_image_cleanup_failed","stage":"prune"}' >&2
   fi
 fi
+prune_recovery_artifacts
 printf '{"msg":"chief_deploy_succeeded","image":"%s"}\n' "$CANDIDATE_IMAGE"

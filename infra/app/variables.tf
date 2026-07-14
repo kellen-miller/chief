@@ -24,6 +24,30 @@ variable "backup_bucket_name" {
   nullable    = false
 }
 
+variable "context_time_zone" {
+  description = "IANA timezone for context periods and labels."
+  type        = string
+  default     = "America/New_York"
+  nullable    = false
+
+  validation {
+    condition     = length(trimspace(var.context_time_zone)) > 0
+    error_message = "context_time_zone must not be empty."
+  }
+}
+
+variable "usage_indexing_ceiling_usd" {
+  description = "Monthly USD sub-ceiling for context indexing."
+  type        = number
+  default     = 3
+  nullable    = false
+
+  validation {
+    condition     = var.usage_indexing_ceiling_usd > 0
+    error_message = "usage_indexing_ceiling_usd must be positive."
+  }
+}
+
 variable "alert_email" {
   description = "Email address for Chief operational alerts."
   type        = string

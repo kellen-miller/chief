@@ -9,7 +9,8 @@ Chief replies in the configured text channel only when directly mentioned or inv
 - Node.js 24, TypeScript, discord.js, and `@discordjs/voice`
 - OpenAI Agents SDK for text/web work and server-side Realtime WebSocket voice
 - SQLite in WAL mode with a seven-day cross-text/voice conversation timeline,
-  plus FTS5 and sqlite-vec for durable communal memory
+  plus FTS5 and sqlite-vec for durable communal memory and provenance-backed
+  hourly, daily, weekly, and long-term historical context
 - One serialized paid-generation queue and a persistent UTC-month usage ledger
 - One GCP `e2-micro` VM with a durable standard disk, Artifact Registry, Secret Manager, GCS backups, and GitHub WIF deployment
 
@@ -35,6 +36,23 @@ model, reasoning, latency, and token counts; it is never part of pull-request CI
 
 ## Cost controls
 
-The default warning is USD 5 and the default hard application ceiling is USD 10 per UTC calendar month. Text, search, Realtime, transcription, embeddings, memory extraction, and the one-time persisted voice-suffix clip all reserve budget before starting and reconcile returned usage. Model aliases and unit prices are environment-configurable.
+The default warning is USD 5 and the default hard application ceiling is USD
+10 per UTC calendar month. Context indexing has a USD 3 monthly sub-ceiling and
+always leaves conservative headroom for an interaction. Text, search, Realtime,
+transcription, embeddings, memory extraction, and the one-time persisted
+voice-suffix clip all reserve budget before starting and reconcile returned
+usage. Model aliases and unit prices are environment-configurable.
+
+`CHIEF_CONTEXT_TIME_ZONE` defaults to `America/New_York` and controls calendar
+rollups and human-readable time labels. `CHIEF_USAGE_INDEXING_CEILING_USD`
+defaults to `3`, must be positive, and cannot exceed
+`CHIEF_USAGE_CEILING_USD`. Retention periods, tier token limits, and retrieval
+allocations are fixed product policy rather than deployment knobs.
+
+Historical context reports what the group discussed; it is not accepted truth.
+Raw eligible text and hourly context are retained for 30 days, daily context for
+one year, and weekly/long-term context indefinitely until an authorized forget.
+When raw evidence has expired, Chief labels the result summary-only and cannot
+use it for quotations or precise source claims.
 
 See [Discord setup](docs/discord-setup.md), [GCP bootstrap](docs/gcp-bootstrap.md), [operations](docs/operations.md), and [manual acceptance](docs/manual-acceptance.md).

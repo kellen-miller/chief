@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises';
+import { chmod, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { openChiefDatabase } from './database.js';
@@ -16,6 +16,7 @@ export async function backupChiefDatabase(
   const database = openChiefDatabase(databasePath);
   try {
     await new SqliteMemoryStore(database).backup(destination);
+    await chmod(destination, 0o600);
   } finally {
     database.close();
   }

@@ -23,7 +23,7 @@ describe('deploy transaction', () => {
 
     expect(result.code).toBe(0);
     expect(await readFile(join(fixture.data, 'deploy.env'), 'utf8')).toBe(
-      `IMAGE=${candidate}\n`,
+      `IMAGE=${candidate}\nRECOVERY_IMAGE=${candidate}\n`,
     );
     expect(await readFile(join(fixture.data, 'chief.db'), 'utf8')).toBe(
       'migrated',
@@ -36,6 +36,11 @@ describe('deploy transaction', () => {
     expect(commands.indexOf('docker login')).toBeGreaterThanOrEqual(0);
     expect(commands.indexOf('docker login')).toBeLessThan(
       commands.indexOf('docker pull'),
+    );
+    expect(commands).toContain(
+      'verify-restore --backup ' +
+        join(fixture.data, 'chief.db') +
+        ' --require-migration 0003_channel_context',
     );
     const login = commands
       .split('\n')
@@ -60,7 +65,7 @@ describe('deploy transaction', () => {
 
     expect(result.code).not.toBe(0);
     expect(await readFile(join(fixture.data, 'deploy.env'), 'utf8')).toBe(
-      `IMAGE=${previous}\n`,
+      `IMAGE=${previous}\nRECOVERY_IMAGE=${candidate}\n`,
     );
     expect(await readFile(join(fixture.data, 'chief.db'), 'utf8')).toBe(
       'original',
@@ -92,6 +97,25 @@ describe('deploy transaction', () => {
     const commands = await readFile(fixture.commandLog, 'utf8');
     expect(commands).toContain(`docker image tag ${previous} chief:rollback`);
     expect(commands).toContain('docker image prune --force');
+  });
+
+  it('never starts the old image against a new database without a backup', async () => {
+    const fixture = await createFixture(true);
+    await (
+      await import('node:fs/promises')
+    ).unlink(join(fixture.data, 'chief.db'));
+
+    const result = await runDeploy(fixture);
+
+    expect(result.code).not.toBe(0);
+    await expect(access(join(fixture.data, 'chief.db'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect(
+      (await (await import('node:fs/promises')).readdir(fixture.data)).some(
+        (name) => name.startsWith('chief.db.failed.'),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -163,7 +187,7 @@ esac
     join(bin, 'curl'),
     `#!/usr/bin/env bash
 set -euo pipefail
-if [[ "\${FAIL_CANDIDATE:-0}" == 1 ]] && grep -qF '${candidate}' "\${CHIEF_DATA_DIR}/deploy.env"; then
+if [[ "\${FAIL_CANDIDATE:-0}" == 1 ]] && grep -qF 'IMAGE=${candidate}' "\${CHIEF_DATA_DIR}/deploy.env"; then
   exit 1
 fi
 exit 0

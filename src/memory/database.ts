@@ -700,6 +700,28 @@ const MIGRATIONS: readonly Migration[] = [
   },
 ];
 
+export function verifyRecordedMigrationSet(
+  database: Database.Database,
+): boolean {
+  try {
+    const rows = database
+      .prepare('select id, checksum from schema_migrations')
+      .all() as { readonly checksum: string; readonly id: string }[];
+    if (rows.length === 0) return false;
+    const recorded = new Map(rows.map((row) => [row.id, row.checksum]));
+    const appliedIndexes = MIGRATIONS.flatMap((migration, index) =>
+      recorded.has(migration.id) ? [index] : [],
+    );
+    const lastIndex = Math.max(...appliedIndexes);
+    if (recorded.size !== lastIndex + 1) return false;
+    return MIGRATIONS.slice(0, lastIndex + 1).every(
+      (migration) => recorded.get(migration.id) === migration.checksum,
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function openChiefDatabase(path: string): Database.Database {
   const database = new Database(path);
   sqliteVec.load(database);

@@ -44,6 +44,8 @@ cat >/etc/chief/chief.env <<'EOF'
 CHIEF_DATA_DIR=/var/lib/chief
 CHIEF_HEALTH_PORT=8080
 CHIEF_BACKUP_BUCKET=${backup_bucket}
+CHIEF_CONTEXT_TIME_ZONE=${context_time_zone}
+CHIEF_USAGE_INDEXING_CEILING_USD=${usage_indexing_ceiling_usd}
 DISCORD_APPLICATION_ID=${discord_application_id}
 DISCORD_GUILD_ID=${discord_guild_id}
 DISCORD_MAIN_TEXT_CHANNEL_ID=${discord_text_channel_id}
@@ -69,8 +71,8 @@ if ! docker inspect chief >/dev/null 2>&1; then
   exit 1
 fi
 backup="$(docker exec chief node dist/cli.js backup --database /var/lib/chief/chief.db --destination /var/lib/chief/backups)"
-docker exec chief node dist/cli.js verify-restore --backup "$backup"
-gcloud storage cp "$backup" 'gs://${backup_bucket}/'
+docker exec chief node dist/cli.js verify-restore --backup "$backup" --require-migration 0003_channel_context
+gcloud storage cp "$backup" 'gs://${backup_bucket}/backups/'
 trap - ERR
 EOF
 chmod 0750 /opt/chief/backup.sh

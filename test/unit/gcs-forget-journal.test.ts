@@ -32,6 +32,14 @@ describe('GCS forget journal uploader', () => {
     });
     await expect(restartedProcess(entry)).resolves.toBeUndefined();
     expect(storage.objects.size).toBe(1);
+    const [objectName, content] = [...storage.objects.entries()][0] ?? [];
+    expect(objectName).toMatch(
+      /^chief-backups\/forget-journal\/\d+-[0-9a-f]{64}\.json$/u,
+    );
+    expect(JSON.parse(content?.toString('utf8') ?? '')).toEqual({
+      ...entry,
+      schemaVersion: 1,
+    });
   });
 
   it('refuses an immutable object with conflicting content', async () => {

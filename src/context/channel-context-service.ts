@@ -162,6 +162,9 @@ export type ContextJobResult =
   | { readonly notBefore: number; readonly status: 'retry' };
 
 export interface ContextStatus {
+  readonly backfillCounts: Readonly<
+    Record<'active' | 'failed' | 'paused', number>
+  >;
   readonly degraded: boolean;
   readonly failedJobs: number;
   readonly lagMsByTier: Readonly<Record<ContextTier, number>>;
@@ -703,6 +706,18 @@ export class ChannelContextService {
   }
 
   public status(now: number): ContextStatus {
+    const backfillRows = this.#database
+      .prepare(
+        `select status, count(*) as count from context_backfills
+         where status in ('active', 'failed', 'paused') group by status`,
+      )
+      .all() as { readonly count: number; readonly status: string }[];
+    const backfillCounts = { active: 0, failed: 0, paused: 0 };
+    for (const row of backfillRows) {
+      if (row.status in backfillCounts) {
+        backfillCounts[row.status as keyof typeof backfillCounts] = row.count;
+      }
+    }
     const pendingJobs = Number(
       this.#database
         .prepare(
@@ -763,6 +778,7 @@ export class ChannelContextService {
             this.#summarizer !== undefined && this.#embed !== undefined,
           );
     return {
+      backfillCounts,
       degraded:
         journalPending ||
         accountingHeld ||
