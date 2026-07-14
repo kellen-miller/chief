@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config/config.js';
 
 const validEnvironment = {
+  CHIEF_BACKUP_BUCKET: 'chief-backups',
   DISCORD_APPLICATION_ID: '123456789012345678',
   DISCORD_GUILD_ID: '223456789012345678',
   DISCORD_MAIN_TEXT_CHANNEL_ID: '323456789012345678',
@@ -14,6 +15,7 @@ const validEnvironment = {
 describe('loadConfig', () => {
   it('loads allowlist and pinned model defaults', () => {
     expect(loadConfig(validEnvironment)).toMatchObject({
+      backupBucket: 'chief-backups',
       discord: {
         applicationId: validEnvironment.DISCORD_APPLICATION_ID,
         guildId: validEnvironment.DISCORD_GUILD_ID,
@@ -44,6 +46,13 @@ describe('loadConfig', () => {
     expect(() => loadConfig(environment)).toThrow(
       /DISCORD_MAIN_TEXT_CHANNEL_ID/u,
     );
+  });
+
+  it('requires a durable forget-journal bucket', () => {
+    const environment = { ...validEnvironment } as Record<string, string>;
+    delete environment.CHIEF_BACKUP_BUCKET;
+
+    expect(() => loadConfig(environment)).toThrow(/CHIEF_BACKUP_BUCKET/u);
   });
 
   it('never includes secret values in a validation error', () => {

@@ -7,6 +7,7 @@ const snowflake = z
   .regex(/^\d{17,20}$/u, 'must be a Discord snowflake');
 
 const environmentSchema = z.object({
+  CHIEF_BACKUP_BUCKET: z.string().min(1),
   CHIEF_DATA_DIR: z.string().min(1).default('/var/lib/chief'),
   CHIEF_HEALTH_PORT: z.coerce.number().int().min(1).max(65_535).default(8_080),
   CHIEF_MODEL_EMBEDDING: z.string().min(1).default('text-embedding-3-small'),
@@ -58,6 +59,7 @@ const environmentSchema = z.object({
 });
 
 export interface ChiefConfig {
+  readonly backupBucket: string;
   readonly dataDirectory: string;
   readonly discord: {
     readonly applicationId: string;
@@ -123,6 +125,7 @@ export function loadConfig(
     );
   }
   return {
+    backupBucket: value.CHIEF_BACKUP_BUCKET,
     dataDirectory: value.CHIEF_DATA_DIR,
     discord: {
       applicationId: value.DISCORD_APPLICATION_ID,

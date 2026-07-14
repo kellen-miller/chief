@@ -1541,4 +1541,283 @@ describe('ChannelContextService rollups', () => {
     ).toBe('completed');
     database.close();
   });
+
+  it('rebuilds every parent when the forgotten hour becomes empty', async () => {
+    const firstAt = Date.parse('2026-07-14T15:37:00Z');
+    const secondAt = firstAt + 60 * 60 * 1_000;
+    let current = firstAt + 1_000;
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      budget: new UsageBudget({
+        ceilingUsd: 10,
+        indexingCeilingUsd: 3,
+        ledger: new SqliteUsageLedger(database),
+        now: () => current,
+        warningUsd: 5,
+      }),
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      embed: () =>
+        Promise.resolve({
+          embedding: new Float32Array(1_536).fill(0.25),
+          usageUsd: 0.001,
+        }),
+      estimateUsd: 0.05,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      now: () => current,
+      summarizer: {
+        summarize: (input) =>
+          Promise.resolve({
+            confidence: 0.9,
+            inputTokens: 20,
+            outputTokens: 8,
+            sourceIds: input.sources.map(({ id }) => id),
+            summary:
+              input.tier === 'daily'
+                ? 'Daily combined context.'
+                : input.sources.map(({ text }) => text).join(' '),
+            topicProposals:
+              input.tier === 'daily'
+                ? [
+                    {
+                      label: 'Sibling context topic',
+                      sourceIds: input.sources.map(({ id }) => id),
+                    },
+                  ]
+                : [],
+            usageUsd: 0.02,
+          }),
+      },
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    service.apply({
+      content: 'FirstHourSecret is removed entirely.',
+      messageId: '52345678901234670',
+      occurredAt: firstAt,
+      requestId: 'first-hour',
+      role: 'human',
+      speakerId: '42345678901234567',
+      speakerName: 'President Test',
+      type: 'upsert',
+    });
+    service.apply({
+      content: 'SiblingHourContext must remain available.',
+      messageId: '52345678901234671',
+      occurredAt: secondAt,
+      requestId: 'second-hour',
+      role: 'human',
+      speakerId: '42345678901234567',
+      speakerName: 'President Test',
+      type: 'upsert',
+    });
+    const day = contextPeriod({ instant: firstAt, tier: 'daily', timeZone });
+    current = day.end;
+    for (let index = 0; index < 12; index += 1) {
+      await service.runNext(current);
+    }
+    expect(
+      database
+        .prepare(
+          `select count(*) from context_documents
+           where tier = 'daily' and state = 'active'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(1);
+    const week = contextPeriod({ instant: firstAt, tier: 'weekly', timeZone });
+    current = week.end;
+    for (let index = 0; index < 16; index += 1) {
+      await service.runNext(current);
+    }
+    expect(
+      database
+        .prepare(
+          `select tier, status from context_jobs
+           where tier in ('daily', 'weekly', 'long-term') order by tier`,
+        )
+        .all(),
+    ).toEqual([
+      { status: 'completed', tier: 'daily' },
+      { status: 'completed', tier: 'long-term' },
+      { status: 'completed', tier: 'weekly' },
+    ]);
+
+    await expect(
+      service.forget({
+        canModerateContext: false,
+        content: 'Chief, forget FirstHourSecret',
+        now: current + 1,
+        requestMessageId: '62345678901234670',
+        requesterId: '42345678901234567',
+      }),
+    ).resolves.toMatchObject({ status: 'forgotten' });
+    expect(
+      database
+        .prepare(
+          `select tier, status from context_jobs
+           where tier in ('daily', 'weekly', 'long-term') order by tier`,
+        )
+        .all(),
+    ).toEqual([
+      { status: 'pending', tier: 'daily' },
+      { status: 'pending', tier: 'long-term' },
+      { status: 'pending', tier: 'weekly' },
+    ]);
+
+    current += 5_000;
+    for (let index = 0; index < 20; index += 1) {
+      await service.runNext(current);
+    }
+    const rebuiltParents = database
+      .prepare(
+        `select parent.summary from context_documents daily
+         join context_document_parents link on link.document_id = daily.id
+         join context_documents parent on parent.id = link.parent_document_id
+         where daily.tier = 'daily' and daily.state = 'active'
+         order by parent.id`,
+      )
+      .pluck()
+      .all() as string[];
+    expect(rebuiltParents).toEqual([
+      expect.stringContaining('SiblingHourContext'),
+    ]);
+    expect(JSON.stringify(rebuiltParents)).not.toContain('FirstHourSecret');
+    expect(
+      database
+        .prepare(
+          `select tier, status from context_jobs
+           where tier in ('daily', 'weekly', 'long-term') order by tier`,
+        )
+        .all(),
+    ).toEqual([
+      { status: 'completed', tier: 'daily' },
+      { status: 'completed', tier: 'long-term' },
+      { status: 'completed', tier: 'weekly' },
+    ]);
+    database.close();
+  });
+
+  it('reconciles an in-flight reservation after forget and restart', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    let current = occurredAt + 1_000;
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const ledger = new SqliteUsageLedger(database);
+    let announceStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      announceStarted = resolve;
+    });
+    const first = new ChannelContextService({
+      budget: new UsageBudget({
+        ceilingUsd: 10,
+        indexingCeilingUsd: 3,
+        ledger,
+        now: () => current,
+        warningUsd: 5,
+      }),
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      embed: vi.fn(),
+      estimateUsd: 0.05,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      now: () => current,
+      summarizer: {
+        summarize: async () => {
+          announceStarted?.();
+          await new Promise(() => undefined);
+          throw new Error('unreachable');
+        },
+      },
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    first.apply({
+      content: 'ReservationForgetMarker is in flight.',
+      messageId: '52345678901234680',
+      occurredAt,
+      requestId: 'reservation-forget',
+      role: 'human',
+      speakerId: '42345678901234567',
+      speakerName: 'President Test',
+      type: 'upsert',
+    });
+    current += 5 * 60 * 1_000;
+    void first.runNext(current);
+    await started;
+    const reservationId = database
+      .prepare(
+        `select usage_reservation_id from context_jobs
+         where status = 'leased'`,
+      )
+      .pluck()
+      .get() as string;
+
+    await first.forget({
+      canModerateContext: false,
+      content: 'Chief, forget ReservationForgetMarker',
+      now: current + 1,
+      requestMessageId: '62345678901234680',
+      requesterId: '42345678901234567',
+    });
+    expect(
+      database
+        .prepare(
+          `select status, usage_reservation_id as usageReservationId
+           from context_jobs where id = 1`,
+        )
+        .get(),
+    ).toEqual({ status: 'pending', usageReservationId: reservationId });
+    expect(
+      database
+        .prepare('select actual_usd from usage_ledger where id = ?')
+        .pluck()
+        .get(reservationId),
+    ).toBeNull();
+
+    current += 2;
+    const restarted = new ChannelContextService({
+      budget: new UsageBudget({
+        ceilingUsd: 10,
+        indexingCeilingUsd: 3,
+        ledger,
+        now: () => current,
+        warningUsd: 5,
+      }),
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      embed: vi.fn(),
+      estimateUsd: 0.05,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      now: () => current,
+      summarizer: { summarize: vi.fn() },
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    await expect(restarted.runNext(current)).resolves.toEqual({
+      status: 'idle',
+    });
+    expect(
+      database
+        .prepare(
+          `select actual_usd as actualUsd, reservation_usd as reservationUsd
+           from usage_ledger where id = ?`,
+        )
+        .get(reservationId),
+    ).toEqual({ actualUsd: 0.05, reservationUsd: 0.05 });
+    expect(
+      database
+        .prepare('select usage_reservation_id from context_jobs where id = 1')
+        .pluck()
+        .get(),
+    ).toBeNull();
+    database.close();
+  });
 });

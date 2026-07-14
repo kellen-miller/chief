@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 
@@ -479,11 +481,12 @@ alter table context_forget_journal
 `;
 
 export const CONTEXT_FORGETTING_MIGRATION_ID = '0005_context_forgetting';
-export const CONTEXT_FORGETTING_MIGRATION_CHECKSUM = 'chief-0005-v2';
+export const CONTEXT_FORGETTING_MIGRATION_CHECKSUM = 'chief-0005-v3';
 
 interface Migration {
   readonly checksum: string;
   readonly id: string;
+  readonly migrate?: (database: Database.Database) => void;
   readonly sql: string;
   readonly validate?: (database: Database.Database) => void;
 }
@@ -516,6 +519,7 @@ const MIGRATIONS: readonly Migration[] = [
   {
     checksum: CONTEXT_FORGETTING_MIGRATION_CHECKSUM,
     id: CONTEXT_FORGETTING_MIGRATION_ID,
+    migrate: backfillContextForgetJournals,
     sql: CONTEXT_FORGETTING_MIGRATION,
   },
 ];
@@ -536,7 +540,16 @@ export function openChiefDatabase(path: string): Database.Database {
   return database;
 }
 
-export function migrateChiefDatabase(database: Database.Database): void {
+export function migrateChiefDatabase(
+  database: Database.Database,
+  throughMigrationId?: string,
+): void {
+  if (
+    throughMigrationId !== undefined &&
+    !MIGRATIONS.some(({ id }) => id === throughMigrationId)
+  ) {
+    throw new Error(`unknown migration target: ${throughMigrationId}`);
+  }
   database.exec(
     'create table if not exists schema_migrations (id text primary key, checksum text not null, applied_at integer not null)',
   );
@@ -548,18 +561,57 @@ export function migrateChiefDatabase(database: Database.Database): void {
       if (applied.checksum !== migration.checksum) {
         throw new Error(`migration checksum mismatch for ${migration.id}`);
       }
-      continue;
+    } else {
+      database.transaction(() => {
+        database.exec(migration.sql);
+        migration.migrate?.(database);
+        migration.validate?.(database);
+        database
+          .prepare(
+            'insert into schema_migrations (id, checksum, applied_at) values (?, ?, ?)',
+          )
+          .run(migration.id, migration.checksum, Date.now());
+      })();
     }
+    if (migration.id === throughMigrationId) break;
+  }
+}
 
-    database.transaction(() => {
-      database.exec(migration.sql);
-      migration.validate?.(database);
-      database
-        .prepare(
-          'insert into schema_migrations (id, checksum, applied_at) values (?, ?, ?)',
-        )
-        .run(migration.id, migration.checksum, Date.now());
-    })();
+function backfillContextForgetJournals(database: Database.Database): void {
+  const rows = database
+    .prepare(
+      `select journal_key as journalKey, occurred_at as occurredAt,
+              scope_id as scopeId, tombstone_key as tombstoneKey
+       from context_forget_journal where payload_json = '{}'`,
+    )
+    .all() as {
+    journalKey: string;
+    occurredAt: number;
+    scopeId: string;
+    tombstoneKey: string;
+  }[];
+  const update = database.prepare(
+    `update context_forget_journal
+     set payload_json = ?, checksum = ? where journal_key = ?`,
+  );
+  for (const row of rows) {
+    const payload = {
+      documentIds: [] as number[],
+      documentKeys: [] as string[],
+      memoryIds: [] as number[],
+      sourceScopeIds: [row.scopeId],
+      tombstoneKeys: [row.tombstoneKey],
+    };
+    const checksum = createHash('sha256')
+      .update(
+        JSON.stringify({
+          journalKey: row.journalKey,
+          occurredAt: row.occurredAt,
+          payload,
+        }),
+      )
+      .digest('hex');
+    update.run(JSON.stringify(payload), checksum, row.journalKey);
   }
 }
 

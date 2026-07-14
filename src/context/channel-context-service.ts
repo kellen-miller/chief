@@ -336,6 +336,13 @@ export class ChannelContextService {
       target.scope === 'member'
         ? deletion.discoverMember(target.target, excludedScopeId)
         : deletion.discover(target.target, excludedScopeId);
+    if (!candidates.complete) {
+      return {
+        status: request.canModerateContext
+          ? 'clarification-required'
+          : 'unauthorized',
+      };
+    }
     if (
       candidates.sourceScopeIds.length === 0 &&
       candidates.documentKeys.length === 0 &&
@@ -356,7 +363,9 @@ export class ChannelContextService {
         request.canModerateContext,
       )
     ) {
-      return { status: 'unauthorized' };
+      return {
+        status: target.broad ? 'unauthorized' : 'clarification-required',
+      };
     }
     const narrowSelfSource = deletion.isNarrowSelfSource(
       candidates,
@@ -1489,6 +1498,7 @@ export class ChannelContextService {
       .all(change.messageId) as number[];
     const payload = {
       documentIds: [] as number[],
+      documentKeys: [] as string[],
       memoryIds,
       sourceScopeIds: [scopeId],
       tombstoneKeys: [tombstoneKey],

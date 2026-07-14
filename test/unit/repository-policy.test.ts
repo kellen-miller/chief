@@ -104,6 +104,11 @@ describe('repository policy', () => {
     expect(deploy).not.toContain("--image='");
     expect(health).toContain("this.#options.host ?? '127.0.0.1'");
     expect(runtime).toContain("host: '0.0.0.0'");
+    expect(runtime).toContain('createGcsForgetJournalUploader');
+    expect(runtime).toContain(
+      'context.flushForgetJournal(startupMaintenanceAt)',
+    );
+    expect(startup).toContain('CHIEF_BACKUP_BUCKET=${backup_bucket}');
     expect(startup).not.toContain('docker login');
     expect(deployScript).toContain('DOCKER_CONFIG');
     expect(deployScript).toContain('docker-config.XXXXXX');

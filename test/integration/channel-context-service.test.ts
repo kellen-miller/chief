@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,6 +16,7 @@ import {
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import { discordSourceRevisionChecksum } from '../../src/discord/source-message.js';
 import {
+  DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID,
   migrateChiefDatabase,
   openChiefDatabase,
 } from '../../src/memory/database.js';
@@ -616,6 +618,102 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
+  it('upgrades a pending 0004 journal through flush and replay', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database, DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      timeZone,
+    });
+    service.apply(source(occurredAt));
+    const scopeId = `${guildId}/${channelId}/${source(occurredAt).messageId}`;
+    const tombstoneKey = `source:${scopeId}`;
+    const legacyChecksum = createHash('sha256')
+      .update(
+        JSON.stringify({
+          occurredAt: occurredAt + 1_000,
+          reason: 'discord-deleted',
+          scopeId,
+          scopeType: 'source',
+        }),
+      )
+      .digest('hex');
+    database
+      .prepare(
+        `insert into context_tombstones
+           (tombstone_key, scope_type, scope_id, reason, occurred_at, checksum)
+         values (?, 'source', ?, 'discord-deleted', ?, ?)`,
+      )
+      .run(tombstoneKey, scopeId, occurredAt + 1_000, legacyChecksum);
+    database
+      .prepare(
+        `insert into context_forget_journal
+           (journal_key, scope_id, tombstone_key, occurred_at, checksum)
+         values (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        `forget:${scopeId}`,
+        scopeId,
+        tombstoneKey,
+        occurredAt + 1_000,
+        legacyChecksum,
+      );
+
+    migrateChiefDatabase(database);
+    let captured: ContextForgetJournalEntry | undefined;
+    const upgraded = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal: (entry) => {
+        captured = entry;
+        return Promise.resolve();
+      },
+    });
+    await expect(
+      upgraded.flushForgetJournal(occurredAt + 2_000),
+    ).resolves.toEqual({ status: 'uploaded' });
+    if (captured === undefined) throw new Error('expected upgraded journal');
+    expect(captured.payload).toEqual({
+      documentIds: [],
+      documentKeys: [],
+      memoryIds: [],
+      sourceScopeIds: [scopeId],
+      tombstoneKeys: [tombstoneKey],
+    });
+
+    const restored = openChiefDatabase(':memory:');
+    try {
+      migrateChiefDatabase(restored);
+      const restoredService = new ChannelContextService({
+        channelId,
+        conversation: new ConversationStore(restored),
+        database: restored,
+        guildId,
+        memory: new SqliteMemoryStore(restored),
+        timeZone,
+      });
+      restoredService.apply(source(occurredAt));
+      restoredService.replayForgetJournal(captured, occurredAt + 3_000);
+      expect(
+        restored
+          .prepare('select content_state from conversation_events')
+          .pluck()
+          .get(),
+      ).toBe('scrubbed');
+    } finally {
+      restored.close();
+      database.close();
+    }
+  });
+
   it('forgets one authored source across every active store', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
@@ -974,11 +1072,28 @@ describe('ChannelContextService', () => {
     });
     service.apply({
       ...source(occurredAt, {
-        content: 'The launch is still scheduled for Friday.',
+        content: 'HiddenNarrowMarker remains scheduled for Friday.',
       }),
       speakerId: '42345678901234568',
       speakerName: 'Another Member',
     });
+
+    const hiddenNarrow = await service.forget({
+      canModerateContext: false,
+      content: 'Chief, forget HiddenNarrowMarker',
+      now: occurredAt + 4_000,
+      requestMessageId: '62345678901234589',
+      requesterId: '42345678901234567',
+    });
+    const absentNarrow = await service.forget({
+      canModerateContext: false,
+      content: 'Chief, forget AbsentNarrowMarker',
+      now: occurredAt + 4_000,
+      requestMessageId: '62345678901234590',
+      requesterId: '42345678901234567',
+    });
+    expect(hiddenNarrow).toEqual(absentNarrow);
+    expect(hiddenNarrow).toEqual({ status: 'clarification-required' });
 
     await expect(
       service.forget({
@@ -1066,6 +1181,61 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
+  it('refuses a member label shared by different Discord identities', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    for (const [index, speakerId] of [
+      '42345678901234567',
+      '42345678901234568',
+    ].entries()) {
+      service.apply({
+        ...source(occurredAt + index, {
+          content: `SharedLabelMarker source ${String(index)}.`,
+          messageId: String(52345678901234640n + BigInt(index)),
+          platformEventId: `shared-label-${String(index)}`,
+        }),
+        speakerId,
+        speakerName: 'Shared Display',
+      });
+    }
+
+    await expect(
+      service.forget({
+        canModerateContext: true,
+        content: 'Chief, forget every message from Shared Display',
+        now: occurredAt + 5_000,
+        requestMessageId: '62345678901234640',
+        requesterId: '72345678901234567',
+      }),
+    ).resolves.toEqual({ status: 'clarification-required' });
+    expect(
+      database
+        .prepare(
+          `select count(*) from conversation_events
+           where content_state = 'available'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(2);
+    expect(
+      database
+        .prepare('select count(*) from context_deletion_requests')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    database.close();
+  });
+
   it('clarifies ambiguous narrow matches before offering broad confirmation', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
@@ -1129,6 +1299,177 @@ describe('ChannelContextService', () => {
       sourceCount: 2,
       status: 'confirmation-required',
     });
+    database.close();
+  });
+
+  it('anchors broad deletion to the complete named subject', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    for (const [index, project] of ['Marigold', 'Juniper'].entries()) {
+      service.apply(
+        source(occurredAt + index, {
+          content: `Project ${project} launches Friday.`,
+          messageId: String(52345678901234600n + BigInt(index)),
+          platformEventId: `project-${project.toLowerCase()}`,
+        }),
+      );
+    }
+
+    const requested = await service.forget({
+      canModerateContext: false,
+      content: 'Chief, forget every message about Project Marigold',
+      now: occurredAt + 5_000,
+      requestMessageId: '62345678901234600',
+      requesterId: source(occurredAt).speakerId,
+    });
+    expect(requested).toMatchObject({
+      sourceCount: 1,
+      status: 'confirmation-required',
+    });
+    if (requested.status !== 'confirmation-required') {
+      throw new Error('expected broad subject confirmation');
+    }
+    await service.forget({
+      canModerateContext: false,
+      confirmationNonce: requested.confirmationNonce,
+      content: `Chief, confirm forget ${requested.confirmationNonce}`,
+      now: occurredAt + 6_000,
+      requestMessageId: '62345678901234601',
+      requesterId: source(occurredAt).speakerId,
+    });
+    expect(
+      database
+        .prepare(
+          `select content, content_state as contentState
+           from conversation_events order by id`,
+        )
+        .all(),
+    ).toEqual([
+      { content: '', contentState: 'scrubbed' },
+      {
+        content: 'Project Juniper launches Friday.',
+        contentState: 'available',
+      },
+    ]);
+    database.close();
+  });
+
+  it('discovers every exact broad match before acknowledging deletion', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    for (let index = 0; index < 21; index += 1) {
+      service.apply(
+        source(occurredAt + index, {
+          content: `ExactBatchMarker source ${String(index)}.`,
+          messageId: String(52345678901234610n + BigInt(index)),
+          platformEventId: `exact-batch-${String(index)}`,
+        }),
+      );
+    }
+
+    const requested = await service.forget({
+      canModerateContext: false,
+      content: 'Chief, forget every message about ExactBatchMarker',
+      now: occurredAt + 5_000,
+      requestMessageId: '62345678901234610',
+      requesterId: source(occurredAt).speakerId,
+    });
+    expect(requested).toMatchObject({
+      sourceCount: 21,
+      status: 'confirmation-required',
+    });
+    if (requested.status !== 'confirmation-required') {
+      throw new Error('expected complete broad confirmation');
+    }
+    await expect(
+      service.forget({
+        canModerateContext: false,
+        confirmationNonce: requested.confirmationNonce,
+        content: `Chief, confirm forget ${requested.confirmationNonce}`,
+        now: occurredAt + 6_000,
+        requestMessageId: '62345678901234611',
+        requesterId: source(occurredAt).speakerId,
+      }),
+    ).resolves.toMatchObject({ sourceCount: 21, status: 'forgotten' });
+    expect(
+      database
+        .prepare(
+          `select count(*) from conversation_events
+           where content_state = 'scrubbed'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(21);
+    database.close();
+  });
+
+  it('refuses broad deletion beyond its complete discovery ceiling', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const service = new ChannelContextService({
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      guildId,
+      memory: new SqliteMemoryStore(database),
+      timeZone,
+      uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+    });
+    for (let index = 0; index < 1_001; index += 1) {
+      service.apply(
+        source(occurredAt + index, {
+          content: `CeilingMarker source ${String(index)}.`,
+          messageId: String(52345678901235000n + BigInt(index)),
+          platformEventId: `ceiling-${String(index)}`,
+        }),
+      );
+    }
+
+    await expect(
+      service.forget({
+        canModerateContext: true,
+        content: 'Chief, forget every message about CeilingMarker',
+        now: occurredAt + 5_000,
+        requestMessageId: '62345678901235000',
+        requesterId: '72345678901234567',
+      }),
+    ).resolves.toEqual({ status: 'clarification-required' });
+    expect(
+      database
+        .prepare('select count(*) from context_deletion_requests')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare(
+          `select count(*) from conversation_events
+           where content_state = 'available'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(1_001);
     database.close();
   });
 
@@ -1351,6 +1692,231 @@ describe('ChannelContextService', () => {
       1,
     ]);
     database.close();
+  });
+
+  it('scrubs every descendant revision and stable document identity', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'chief-revisions-'));
+    const backupPath = join(directory, 'after-revision-forget.db');
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const database = openChiefDatabase(':memory:');
+    try {
+      migrateChiefDatabase(database);
+      const service = new ChannelContextService({
+        channelId,
+        conversation: new ConversationStore(database),
+        database,
+        guildId,
+        memory: new SqliteMemoryStore(database),
+        timeZone,
+        uploadForgetJournal: vi.fn().mockResolvedValue(undefined),
+      });
+      const created = service.apply(
+        source(occurredAt, {
+          content: 'RevisionLeakMarker source evidence.',
+        }),
+      );
+      if (created.eventId === null) throw new Error('expected source event');
+      const store = new ContextStore(database);
+      const hourlyOne = store.activateDocumentRevision({
+        ...sourceJobInput(database, 'final'),
+        completeness: 'final',
+        confidence: 0.9,
+        createdAt: occurredAt + 1_000,
+        documentKey: 'revision-leak-hourly',
+        embedding: embedding(0.2),
+        eventIds: [created.eventId],
+        generationInputTokens: 10,
+        generationOutputTokens: 5,
+        generationUsageUsd: 0.01,
+        isInternal: true,
+        parentDocumentIds: [],
+        retentionDeadline: null,
+        revision: 1,
+        summary: 'RevisionLeakMarker superseded hourly summary.',
+        tier: 'hourly',
+        topicKey: null,
+        topicLabel: 'RevisionLeakTopicLabel',
+      });
+      const hourlyTwo = store.activateDocumentRevision({
+        ...sourceJobInput(database, 'final'),
+        completeness: 'final',
+        confidence: 0.9,
+        createdAt: occurredAt + 2_000,
+        documentKey: 'revision-leak-hourly',
+        embedding: embedding(0.3),
+        eventIds: [created.eventId],
+        generationInputTokens: 10,
+        generationOutputTokens: 5,
+        generationUsageUsd: 0.01,
+        parentDocumentIds: [],
+        retentionDeadline: null,
+        revision: 2,
+        summary: 'RevisionLeakMarker active hourly summary.',
+        tier: 'hourly',
+        topicKey: null,
+        topicLabel: 'RevisionLeakTopicLabel',
+      });
+      const dailyOne = store.activateDocumentRevision({
+        completeness: 'final',
+        confidence: 0.9,
+        createdAt: occurredAt + 3_000,
+        documentKey: 'revision-leak-daily',
+        embedding: embedding(0.4),
+        eventIds: [],
+        generationInputTokens: 10,
+        generationOutputTokens: 5,
+        generationUsageUsd: 0.01,
+        parentDocumentIds: [hourlyTwo],
+        periodEnd: occurredAt + 24 * 60 * 60 * 1_000,
+        periodStart: occurredAt - 24 * 60 * 60 * 1_000,
+        retentionDeadline: null,
+        revision: 1,
+        summary: 'RevisionLeakMarker superseded daily summary.',
+        tier: 'daily',
+        timeZone,
+        topicKey: null,
+        topicLabel: 'RevisionLeakTopicLabel',
+      });
+      const dailyTwo = store.activateDocumentRevision({
+        completeness: 'final',
+        confidence: 0.9,
+        createdAt: occurredAt + 4_000,
+        documentKey: 'revision-leak-daily',
+        embedding: embedding(0.5),
+        eventIds: [],
+        generationInputTokens: 10,
+        generationOutputTokens: 5,
+        generationUsageUsd: 0.01,
+        isInternal: true,
+        parentDocumentIds: [hourlyTwo],
+        periodEnd: occurredAt + 24 * 60 * 60 * 1_000,
+        periodStart: occurredAt - 24 * 60 * 60 * 1_000,
+        retentionDeadline: null,
+        revision: 2,
+        summary: 'RevisionLeakMarker internal daily summary.',
+        tier: 'daily',
+        timeZone,
+        topicKey: null,
+        topicLabel: 'RevisionLeakTopicLabel',
+      });
+      database
+        .prepare(
+          `insert into context_jobs
+             (job_key, tier, period_start, period_end, timezone, topic_key,
+              topic_label, completeness, source_revision_checksum,
+              source_document_ids_json, not_before, freshness_deadline)
+           values ('revision-leak-topic', 'long-term', ?, null, ?,
+                   'revision-leak-topic', 'RevisionLeakTopicLabel', 'final',
+                   'old', ?, ?, ?)`,
+        )
+        .run(
+          occurredAt,
+          timeZone,
+          JSON.stringify([dailyOne, dailyTwo]),
+          occurredAt,
+          occurredAt,
+        );
+
+      await expect(
+        service.forget({
+          canModerateContext: false,
+          content: 'Chief, forget RevisionLeakMarker',
+          now: occurredAt + 5_000,
+          requestMessageId: '62345678901234650',
+          requesterId: source(occurredAt).speakerId,
+        }),
+      ).resolves.toMatchObject({ documentCount: 4, status: 'forgotten' });
+      expect(
+        database
+          .prepare(
+            `select id, state, content_state as contentState, summary,
+                    topic_label as topicLabel
+             from context_documents order by id`,
+          )
+          .all(),
+      ).toEqual(
+        [hourlyOne, hourlyTwo, dailyOne, dailyTwo].map((id) => ({
+          contentState: 'scrubbed',
+          id,
+          state: 'suppressed',
+          summary: '',
+          topicLabel: null,
+        })),
+      );
+      expect(
+        database
+          .prepare(
+            `select topic_label from context_jobs
+             where job_key = 'revision-leak-topic'`,
+          )
+          .pluck()
+          .get(),
+      ).toBeNull();
+      expect(
+        database
+          .prepare(
+            `select scope_id from context_tombstones
+             where scope_type = 'document' order by scope_id`,
+          )
+          .pluck()
+          .all(),
+      ).toEqual(['revision-leak-hourly']);
+
+      await database.backup(backupPath);
+      const backup = openChiefDatabase(backupPath);
+      try {
+        expect(
+          backup
+            .prepare(
+              `select
+                 (select count(*) from context_documents
+                  where summary like '%RevisionLeak%'
+                     or topic_label like '%RevisionLeak%') +
+                 (select count(*) from context_jobs
+                  where topic_label like '%RevisionLeak%')`,
+            )
+            .pluck()
+            .get(),
+        ).toBe(0);
+      } finally {
+        backup.close();
+      }
+
+      const replacement = service.apply(
+        source(occurredAt + 6_000, {
+          content: 'Unrelated retained evidence.',
+          messageId: '52345678901234651',
+          platformEventId: 'replacement-evidence',
+        }),
+      );
+      if (replacement.eventId === null) {
+        throw new Error('expected replacement source');
+      }
+      const replacementEventId = replacement.eventId;
+      expect(() =>
+        store.activateDocumentRevision({
+          ...sourceJobInput(database, 'final'),
+          completeness: 'final',
+          confidence: 0.9,
+          createdAt: occurredAt + 7_000,
+          documentKey: 'revision-leak-hourly',
+          embedding: embedding(0.6),
+          eventIds: [replacementEventId],
+          generationInputTokens: 10,
+          generationOutputTokens: 5,
+          generationUsageUsd: 0.01,
+          parentDocumentIds: [],
+          retentionDeadline: null,
+          revision: 3,
+          summary: 'Reintroduced summary.',
+          tier: 'hourly',
+          topicKey: null,
+        }),
+      ).toThrow('context document is tombstoned');
+    } finally {
+      database.close();
+      await rm(directory, { force: true, recursive: true });
+    }
   });
 
   it('withholds acknowledgement until a failed journal upload retries', async () => {
@@ -1682,6 +2248,15 @@ describe('ChannelContextService', () => {
         expect(
           restored.prepare('select state from context_documents').pluck().get(),
         ).toBe('suppressed');
+        expect(
+          restored
+            .prepare(
+              `select scope_id from context_tombstones
+               where scope_type = 'document'`,
+            )
+            .pluck()
+            .get(),
+        ).toBe('restore-marigold');
         expect(
           restored
             .prepare('select count(*) from context_document_vectors')

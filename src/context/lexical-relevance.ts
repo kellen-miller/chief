@@ -91,6 +91,15 @@ export function hasSufficientLexicalOverlap(
   return overlap >= Math.ceil(relevanceTerms.length / 2);
 }
 
+export function hasCompleteLexicalAnchor(
+  relevanceTerms: readonly string[],
+  candidate: string,
+): boolean {
+  if (relevanceTerms.length === 0) return false;
+  const candidateTerms = new Set(extractLexicalTermSet(candidate).all);
+  return relevanceTerms.every((term) => candidateTerms.has(term));
+}
+
 function preservedLexicalTerms(text: string): readonly PreservedLexicalTerm[] {
   const matches = [...text.normalize('NFKC').matchAll(/[\p{L}\p{N}]+/gu)];
   const seen = new Set<string>();

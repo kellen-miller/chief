@@ -139,3 +139,66 @@ preflight, bucket lifecycle policy, and operational health exposure remain in
 the planned operational milestone. Task 5 provides the content-free upload,
 retry, degradation, and replay seams those integrations consume. No live data,
 Discord messages, paid API, deployment, push, or backfill was touched.
+
+## Correction review response
+
+Status: all requested changes resolved. This section supersedes the earlier
+production-uploader concern: the immutable GCS adapter and runtime drain are now
+part of Task 5.
+
+1. Broad discovery now uses the same shared lexical normalization as retrieval
+   and requires every relevance anchor to occur in each candidate. Discovery is
+   paginated across sources, documents, and memories, has no per-store top-20
+   truncation, and refuses rather than acknowledges when the complete stable-ID
+   set exceeds 1,000 entries. Project Marigold no longer captures Project
+   Juniper; 21 exact matches cross a page boundary; 1,001 matches fail closed
+   without a request or mutation.
+2. Deletion expands from every stable document key to all revisions, then walks
+   every descendant. It scrubs superseded and internal summaries, clears
+   document and matching job topic labels, removes active indexes, and leaves no
+   sensitive summary or label in a post-purge SQLite backup.
+3. Migration `0005_context_forgetting` now translates pre-0005 pending
+   authoritative journals into the content-free payload and recomputes their
+   checksum in the migration transaction. A database stopped after migration
+   0004 upgrades, flushes the old row, and replays it into a restored database.
+4. Production constructs a real create-only GCS uploader from the required
+   `CHIEF_BACKUP_BUCKET`, provisioned from the existing Terraform backup bucket.
+   Runtime drains once before optional paid startup work and before ordinary
+   background work. Immutable-object retries compare bytes, so a persisted write
+   followed by a lost acknowledgement succeeds safely after process restart.
+5. Forgetting requeues hourly, daily, weekly, and long-term topic work using
+   checksums recomputed from remaining active lineage. An end-to-end regression
+   removes an entire hour, then rebuilds every completed parent tier from the
+   surviving sibling hour without reintroducing the forgotten marker.
+6. Rebuild invalidation no longer clears a leased usage reservation. A
+   crash-shaped regression forgets while summarization is in flight, restarts
+   the service, conservatively reconciles the durable ledger reservation, and
+   only then clears the job reference.
+7. Hidden and absent narrow matches now return the same clarification response;
+   hidden and absent broad matches retain the same refusal response. Neither
+   path persists a deletion request.
+8. Member lookup groups exact display-name matches by stable Discord speaker ID
+   and refuses when one display name maps to multiple identities.
+
+Document tombstones now store the stable `documentKey` used by activation
+guards, not a revision row ID. The direct-delete regression rejects a later
+revision with the same key, while restore replay recreates that same stable key.
+The shared synchronous document scrubber is used by both delete and replay.
+
+Focused RED-GREEN evidence included the original unrelated Juniper deletion,
+the 20-row truncation, active-only revision leakage, stranded downstream jobs,
+an empty migration payload checksum failure, a missing production uploader, and
+an orphaned leased reservation. The correction suite uses only local SQLite,
+fake provider functions, and an in-memory GCS protocol fake; it performs no paid
+or network calls.
+
+Final correction verification passed with `pnpm verify`:
+
+- Prettier, ESLint, both TypeScript builds, and all 41 test files passed.
+- 356 tests passed.
+- Coverage was 91.78% statements, 84.36% branches, 94.28% functions, and
+  93.25% lines.
+- `ContextDeletionStore` coverage was 93.33% statements, 83.54% branches,
+  97.43% functions, and 93.93% lines.
+
+`git diff --check` is run again immediately before the correction commit.

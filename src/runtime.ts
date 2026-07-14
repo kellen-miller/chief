@@ -13,6 +13,7 @@ import { ConversationOrchestrator } from './app/conversation-orchestrator.js';
 import type { ChiefConfig } from './config/config.js';
 import { ChannelContextService } from './context/channel-context-service.js';
 import { ContextAssembler } from './context/context-assembler.js';
+import { createGcsForgetJournalUploader } from './context/gcs-forget-journal.js';
 import { createOpenAiContextSummarizer } from './context/openai-context.js';
 import { ConversationStore } from './conversation/conversation-store.js';
 import { DiscordReconciliationService } from './discord/discord-reconciliation-service.js';
@@ -100,7 +101,17 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
       },
     }),
     timeZone: 'America/New_York',
+    uploadForgetJournal: createGcsForgetJournalUploader({
+      bucketName: config.backupBucket,
+    }),
   });
+  const startupMaintenanceAt = Date.now();
+  memory.maintain(startupMaintenanceAt);
+  context.maintain(startupMaintenanceAt);
+  const startupJournal = await context.flushForgetJournal(startupMaintenanceAt);
+  if (startupJournal.status === 'failed') {
+    logger.warn('context_forget_journal_upload_failed');
+  }
   const memoryService = new MemoryService({
     budget,
     embed,
@@ -258,9 +269,6 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     voice,
     voiceChannelId: config.discord.voiceChannelId,
   });
-  const startupMaintenanceAt = Date.now();
-  memory.maintain(startupMaintenanceAt);
-  context.maintain(startupMaintenanceAt);
   let maintenanceAt = startupMaintenanceAt;
   const health = new HealthServer({
     check: async () => ({
@@ -289,8 +297,17 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
   const workerTimer = setInterval(() => {
     if (workerRunning) return;
     workerRunning = true;
-    void background
-      .runBackgroundOne(Date.now())
+    const now = Date.now();
+    void context
+      .flushForgetJournal(now)
+      .then(async (journal) => {
+        if (journal.status === 'failed') {
+          logger.warn('context_forget_journal_upload_failed');
+        }
+        if (journal.status === 'idle') {
+          await background.runBackgroundOne(now);
+        }
+      })
       .catch((error: unknown) => {
         logger.error({ err: error }, 'background_worker_failed');
       })

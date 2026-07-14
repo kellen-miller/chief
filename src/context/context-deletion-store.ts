@@ -4,11 +4,20 @@ import type Database from 'better-sqlite3';
 
 import type { SqliteMemoryStore } from '../memory/memory-store.js';
 import { contextPeriod } from './context-period.js';
+import {
+  buildLexicalQuery,
+  extractLexicalTermSet,
+  hasCompleteLexicalAnchor,
+} from './lexical-relevance.js';
 
 export interface ContextDeletionCandidates {
   readonly documentKeys: readonly string[];
   readonly memoryIds: readonly number[];
   readonly sourceScopeIds: readonly string[];
+}
+
+export interface ContextDeletionDiscovery extends ContextDeletionCandidates {
+  readonly complete: boolean;
 }
 
 export interface ContextForgetJournalEntry {
@@ -17,6 +26,7 @@ export interface ContextForgetJournalEntry {
   readonly occurredAt: number;
   readonly payload: {
     readonly documentIds: readonly number[];
+    readonly documentKeys: readonly string[];
     readonly memoryIds: readonly number[];
     readonly sourceScopeIds: readonly string[];
     readonly tombstoneKeys: readonly string[];
@@ -53,9 +63,21 @@ interface SourceRow {
 }
 
 interface DocumentRow {
+  readonly contentState: string;
   readonly documentKey: string;
   readonly id: number;
+  readonly isInternal: number;
+  readonly periodEnd: number | null;
+  readonly periodStart: number;
+  readonly state: string;
+  readonly tier: 'daily' | 'hourly' | 'long-term' | 'weekly';
+  readonly timeZone: string;
+  readonly topicKey: string | null;
+  readonly topicLabel: string | null;
 }
+
+const DELETION_DISCOVERY_PAGE_SIZE = 20;
+const MAX_DELETION_CANDIDATES = 1_000;
 
 export class ContextDeletionStore {
   readonly #channelId: string;
@@ -81,43 +103,86 @@ export class ContextDeletionStore {
   public discover(
     target: string,
     excludedSourceScopeId: string,
-  ): ContextDeletionCandidates {
-    const lexicalQuery = buildLexicalQuery(target);
-    if (lexicalQuery === null) {
-      return { documentKeys: [], memoryIds: [], sourceScopeIds: [] };
+  ): ContextDeletionDiscovery {
+    const lexicalTerms = extractLexicalTermSet(target);
+    const lexicalQuery = buildLexicalQuery(lexicalTerms.all);
+    if (lexicalQuery === undefined) {
+      return {
+        complete: true,
+        documentKeys: [],
+        memoryIds: [],
+        sourceScopeIds: [],
+      };
     }
-    const directSources = this.#database
-      .prepare(
-        `select c.guild_id || '/' || c.channel_id || '/' ||
-                  c.discord_message_id as scopeId
+    const sourceMatches = collectCompleteLexicalRows(
+      (limit, offset) =>
+        this.#database
+          .prepare(
+            `select c.guild_id || '/' || c.channel_id || '/' ||
+                  c.discord_message_id as scopeId, c.content as text
          from conversation_event_fts f
          join conversation_events c on c.id = f.rowid
          where conversation_event_fts match ?
            and c.guild_id = ? and c.channel_id = ?
            and c.content_state = 'available'
-         order by bm25(conversation_event_fts), c.id desc limit 20`,
-      )
-      .pluck()
-      .all(lexicalQuery, this.#guildId, this.#channelId) as string[];
-    const documents = this.#database
-      .prepare(
-        `select distinct d.document_key as documentKey
+         order by bm25(conversation_event_fts), c.id desc limit ? offset ?`,
+          )
+          .all(lexicalQuery, this.#guildId, this.#channelId, limit, offset) as {
+          readonly scopeId: string;
+          readonly text: string;
+        }[],
+      lexicalTerms.relevance,
+    );
+    const documentMatches = collectCompleteLexicalRows(
+      (limit, offset) =>
+        this.#database
+          .prepare(
+            `select distinct d.document_key as documentKey, d.summary as text
          from context_document_fts f
          join context_documents d on d.id = f.rowid
          where context_document_fts match ? and d.state = 'active'
            and d.content_state = 'available' and d.is_internal = 0
-         order by bm25(context_document_fts), d.updated_at desc limit 20`,
-      )
-      .pluck()
-      .all(lexicalQuery) as string[];
-    const memories = this.#database
-      .prepare(
-        `select m.id from memory_fts f join memories m on m.id = f.rowid
+         order by bm25(context_document_fts), d.updated_at desc
+         limit ? offset ?`,
+          )
+          .all(lexicalQuery, limit, offset) as {
+          readonly documentKey: string;
+          readonly text: string;
+        }[],
+      lexicalTerms.relevance,
+    );
+    const memoryMatches = collectCompleteLexicalRows(
+      (limit, offset) =>
+        this.#database
+          .prepare(
+            `select m.id, m.canonical_text as text
+         from memory_fts f join memories m on m.id = f.rowid
          where memory_fts match ? and m.state = 'active'
-         order by bm25(memory_fts), m.updated_at desc limit 20`,
-      )
-      .pluck()
-      .all(lexicalQuery) as number[];
+         order by bm25(memory_fts), m.updated_at desc limit ? offset ?`,
+          )
+          .all(lexicalQuery, limit, offset) as {
+          readonly id: number;
+          readonly text: string;
+        }[],
+      lexicalTerms.relevance,
+    );
+    if (
+      !sourceMatches.complete ||
+      !documentMatches.complete ||
+      !memoryMatches.complete
+    ) {
+      return {
+        complete: false,
+        documentKeys: [],
+        memoryIds: [],
+        sourceScopeIds: [],
+      };
+    }
+    const directSources = sourceMatches.rows.map(({ scopeId }) => scopeId);
+    const documents = documentMatches.rows.map(
+      ({ documentKey }) => documentKey,
+    );
+    const memories = memoryMatches.rows.map(({ id }) => id);
     const sourceScopeIds = new Set(
       directSources.filter((scopeId) => scopeId !== excludedSourceScopeId),
     );
@@ -127,35 +192,55 @@ export class ContextDeletionStore {
     for (const scopeId of this.#documentSourceScopes(documents)) {
       if (scopeId !== excludedSourceScopeId) sourceScopeIds.add(scopeId);
     }
-    return {
+    const result = {
+      complete: true,
       documentKeys: [...new Set(documents)].sort(),
       memoryIds: [...new Set(memories)].sort((left, right) => left - right),
       sourceScopeIds: [...sourceScopeIds].sort(),
     };
+    return candidateCount(result) > MAX_DELETION_CANDIDATES
+      ? {
+          complete: false,
+          documentKeys: [],
+          memoryIds: [],
+          sourceScopeIds: [],
+        }
+      : result;
   }
 
   public discoverMember(
     memberLabel: string,
     excludedSourceScopeId: string,
-  ): ContextDeletionCandidates {
-    const sourceScopeIds = this.#database
+  ): ContextDeletionDiscovery {
+    const matches = this.#database
       .prepare(
         `select guild_id || '/' || channel_id || '/' || discord_message_id
-           as scopeId
+                  as scopeId,
+                speaker_id as speakerId
          from conversation_events
          where guild_id = ? and channel_id = ? and role = 'human'
            and content_state_reason not in ('discord-deleted', 'locally-forgotten')
            and lower(trim(speaker_name)) = lower(trim(?))
          order by id`,
       )
-      .pluck()
-      .all(this.#guildId, this.#channelId, memberLabel) as string[];
+      .all(this.#guildId, this.#channelId, memberLabel) as {
+      readonly scopeId: string;
+      readonly speakerId: string | null;
+    }[];
+    const sourceScopeIds = matches.map(({ scopeId }) => scopeId);
+    const ambiguousIdentity =
+      new Set(matches.map(({ speakerId }) => speakerId)).size > 1;
     return {
+      complete:
+        !ambiguousIdentity && sourceScopeIds.length <= MAX_DELETION_CANDIDATES,
       documentKeys: [],
       memoryIds: [],
-      sourceScopeIds: sourceScopeIds.filter(
-        (scopeId) => scopeId !== excludedSourceScopeId,
-      ),
+      sourceScopeIds:
+        ambiguousIdentity || sourceScopeIds.length > MAX_DELETION_CANDIDATES
+          ? []
+          : sourceScopeIds.filter(
+              (scopeId) => scopeId !== excludedSourceScopeId,
+            ),
     };
   }
 
@@ -341,12 +426,12 @@ export class ContextDeletionStore {
           }),
         );
       }
-      for (const document of documents) {
+      for (const documentKey of input.candidates.documentKeys) {
         tombstoneKeys.push(
           this.#insertTombstone({
             now: input.now,
             reason: 'locally-forgotten',
-            scopeId: String(document.id),
+            scopeId: documentKey,
             scopeType: 'document',
           }),
         );
@@ -369,25 +454,7 @@ export class ContextDeletionStore {
           )
           .run(input.now, ...sources.map(({ id }) => id));
       }
-      for (const document of documents) {
-        this.#database
-          .prepare('delete from context_document_fts where rowid = ?')
-          .run(document.id);
-        this.#database
-          .prepare('delete from context_document_vectors where document_id = ?')
-          .run(BigInt(document.id));
-      }
-      if (documents.length > 0) {
-        const placeholders = documents.map(() => '?').join(', ');
-        this.#database
-          .prepare(
-            `update context_documents
-             set state = 'suppressed', content_state = 'scrubbed',
-                 content_state_reason = 'locally-forgotten', summary = '',
-                 updated_at = ? where id in (${placeholders})`,
-          )
-          .run(input.now, ...documents.map(({ id }) => id));
-      }
+      this.#scrubDocuments(documents, input.now);
       const supersededMemoryIds = this.#memory.supersedeForContextDeletion(
         memoryIds,
         input.now,
@@ -407,10 +474,13 @@ export class ContextDeletionStore {
       this.#memory.scrubContextSources([
         ...new Set([...allSourceScopeIds, ...memorySourceScopeIds]),
       ]);
-      this.#enqueueRebuilds(sources, input.now);
+      this.#enqueueRebuilds(sources, documents, input.now);
 
       const payload = {
         documentIds: documents.map(({ id }) => id),
+        documentKeys: [
+          ...new Set(documents.map(({ documentKey }) => documentKey)),
+        ],
         memoryIds: supersededMemoryIds,
         sourceScopeIds: sources.map(({ scopeId }) => scopeId),
         tombstoneKeys,
@@ -527,7 +597,7 @@ export class ContextDeletionStore {
       const sources = this.#sourceRows(entry.payload.sourceScopeIds);
       const restoredDocumentKeys =
         entry.payload.documentIds.length === 0
-          ? []
+          ? entry.payload.documentKeys
           : (this.#database
               .prepare(
                 `select document_key from context_documents
@@ -537,7 +607,7 @@ export class ContextDeletionStore {
               .all(...entry.payload.documentIds) as string[]);
       const documents = this.#affectedDocuments(
         sources.map(({ id }) => id),
-        restoredDocumentKeys,
+        [...new Set([...entry.payload.documentKeys, ...restoredDocumentKeys])],
       );
       const tombstoneKeys = entry.payload.tombstoneKeys.map((tombstoneKey) => {
         const scope = parseTombstoneKey(tombstoneKey);
@@ -575,35 +645,7 @@ export class ContextDeletionStore {
           )
           .run(entry.occurredAt, ...sources.map(({ id }) => id));
       }
-      for (const documentId of entry.payload.documentIds) {
-        tombstoneKeys.push(
-          this.#insertTombstone({
-            now: entry.occurredAt,
-            reason: 'locally-forgotten',
-            scopeId: String(documentId),
-            scopeType: 'document',
-          }),
-        );
-      }
-      for (const document of documents) {
-        this.#database
-          .prepare('delete from context_document_fts where rowid = ?')
-          .run(document.id);
-        this.#database
-          .prepare('delete from context_document_vectors where document_id = ?')
-          .run(BigInt(document.id));
-      }
-      if (documents.length > 0) {
-        const placeholders = documents.map(() => '?').join(', ');
-        this.#database
-          .prepare(
-            `update context_documents
-             set state = 'suppressed', content_state = 'scrubbed',
-                 content_state_reason = 'locally-forgotten', summary = '',
-                 updated_at = ? where id in (${placeholders})`,
-          )
-          .run(now, ...documents.map(({ id }) => id));
-      }
+      this.#scrubDocuments(documents, now);
       const memoryIds = [
         ...new Set([
           ...entry.payload.memoryIds,
@@ -629,7 +671,7 @@ export class ContextDeletionStore {
       this.#memory.scrubContextSources([
         ...new Set([...entry.payload.sourceScopeIds, ...memorySourceScopeIds]),
       ]);
-      this.#enqueueRebuilds(sources, now);
+      this.#enqueueRebuilds(sources, documents, now);
       const primaryTombstone =
         tombstoneKeys[0] ?? entry.payload.tombstoneKeys[0];
       if (primaryTombstone === undefined) {
@@ -697,7 +739,7 @@ export class ContextDeletionStore {
         ...(this.#database
           .prepare(
             `select id from context_documents
-             where document_key in (${placeholders}) and state = 'active'`,
+             where document_key in (${placeholders})`,
           )
           .pluck()
           .all(...documentKeys) as number[]),
@@ -711,14 +753,85 @@ export class ContextDeletionStore {
         `with recursive roots(id) as (values ${values}), affected(id) as (
            select id from roots
            union
+           select sibling.id from context_documents current
+           join context_documents sibling
+             on sibling.document_key = current.document_key
+           join affected a on current.id = a.id
+           union
            select p.document_id from context_document_parents p
            join affected a on p.parent_document_id = a.id
          )
-         select d.id, d.document_key as documentKey
+         select d.id, d.document_key as documentKey, d.state,
+                d.content_state as contentState, d.is_internal as isInternal,
+                d.tier, d.period_start as periodStart,
+                d.period_end as periodEnd, d.timezone as timeZone,
+                d.topic_key as topicKey, d.topic_label as topicLabel
          from context_documents d join affected a on a.id = d.id
-         where d.state = 'active' order by d.id`,
+         order by d.id`,
       )
       .all(...uniqueRoots) as DocumentRow[];
+  }
+
+  #scrubDocuments(documents: readonly DocumentRow[], now: number): void {
+    for (const document of documents) {
+      if (
+        document.state !== 'active' ||
+        document.contentState !== 'available' ||
+        document.isInternal === 1
+      ) {
+        continue;
+      }
+      this.#database
+        .prepare('delete from context_document_fts where rowid = ?')
+        .run(document.id);
+      this.#database
+        .prepare('delete from context_document_vectors where document_id = ?')
+        .run(BigInt(document.id));
+    }
+    if (documents.length === 0) return;
+    const ids = documents.map(({ id }) => id);
+    const placeholders = ids.map(() => '?').join(', ');
+    const topicKeys = [
+      ...new Set(
+        documents.flatMap(({ topicKey }) =>
+          topicKey === null ? [] : [topicKey],
+        ),
+      ),
+    ];
+    const topicLabels = [
+      ...new Set(
+        documents.flatMap(({ topicLabel }) =>
+          topicLabel === null ? [] : [topicLabel],
+        ),
+      ),
+    ];
+    this.#database
+      .prepare(
+        `update context_documents
+         set state = 'suppressed', content_state = 'scrubbed',
+             content_state_reason = 'locally-forgotten', summary = '',
+             topic_label = null, updated_at = ?
+         where id in (${placeholders})`,
+      )
+      .run(now, ...ids);
+    const jobPredicates = [
+      topicKeys.length === 0
+        ? null
+        : `topic_key in (${topicKeys.map(() => '?').join(', ')})`,
+      topicLabels.length === 0
+        ? null
+        : `topic_label in (${topicLabels.map(() => '?').join(', ')})`,
+      `exists (
+         select 1 from json_each(context_jobs.source_document_ids_json)
+         where cast(json_each.value as integer) in (${placeholders})
+       )`,
+    ].filter((predicate): predicate is string => predicate !== null);
+    this.#database
+      .prepare(
+        `update context_jobs set topic_label = null
+         where ${jobPredicates.join(' or ')}`,
+      )
+      .run(...topicKeys, ...topicLabels, ...ids);
   }
 
   #insertTombstone(input: {
@@ -752,7 +865,11 @@ export class ContextDeletionStore {
     return tombstoneKey;
   }
 
-  #enqueueRebuilds(sources: readonly SourceRow[], now: number): void {
+  #enqueueRebuilds(
+    sources: readonly SourceRow[],
+    documents: readonly DocumentRow[],
+    now: number,
+  ): void {
     const periods = new Map<
       string,
       { readonly end: number; readonly start: number }
@@ -764,6 +881,13 @@ export class ContextDeletionStore {
         timeZone: this.#timeZone,
       });
       periods.set(period.key, { end: period.end, start: period.start });
+    }
+    for (const document of documents) {
+      if (document.tier !== 'hourly' || document.periodEnd === null) continue;
+      periods.set(`${document.timeZone}:${String(document.periodStart)}`, {
+        end: document.periodEnd,
+        start: document.periodStart,
+      });
     }
     for (const period of periods.values()) {
       const rows = this.#database
@@ -781,12 +905,112 @@ export class ContextDeletionStore {
           `update context_jobs
            set source_revision_checksum = ?, status = 'pending',
                not_before = ?, freshness_deadline = ?, lease_expires_at = null,
-               usage_reservation_id = null, last_error_category = 'rebuild'
+               last_error_category = 'rebuild'
            where tier = 'hourly' and timezone = ?
              and period_start = ? and period_end = ?`,
         )
         .run(digest(rows), now, now, this.#timeZone, period.start, period.end);
     }
+    const derived = new Map<
+      string,
+      Pick<DocumentRow, 'periodEnd' | 'periodStart' | 'tier' | 'timeZone'>
+    >();
+    for (const document of documents) {
+      if (
+        (document.tier !== 'daily' && document.tier !== 'weekly') ||
+        document.periodEnd === null
+      ) {
+        continue;
+      }
+      derived.set(
+        `${document.tier}:${document.timeZone}:${String(document.periodStart)}`,
+        document,
+      );
+    }
+    for (const document of derived.values()) {
+      const childTier = document.tier === 'daily' ? 'hourly' : 'daily';
+      const rows = this.#database
+        .prepare(
+          `select id, revision from context_documents
+           where tier = ? and completeness = 'final' and state = 'active'
+             and content_state = 'available' and is_internal = 0
+             and period_start >= ? and period_end <= ?
+           order by period_start, id`,
+        )
+        .all(childTier, document.periodStart, document.periodEnd);
+      this.#database
+        .prepare(
+          `update context_jobs
+           set source_revision_checksum = ?, status = 'pending',
+               not_before = ?, freshness_deadline = ?, lease_expires_at = null,
+               last_error_category = 'rebuild'
+           where tier = ? and timezone = ?
+             and period_start = ? and period_end = ?`,
+        )
+        .run(
+          digest(rows),
+          now,
+          now,
+          document.tier,
+          document.timeZone,
+          document.periodStart,
+          document.periodEnd,
+        );
+    }
+    const topicKeys = new Set(
+      documents.flatMap(({ tier, topicKey }) =>
+        tier === 'long-term' && topicKey !== null ? [topicKey] : [],
+      ),
+    );
+    for (const topicKey of topicKeys) {
+      const jobs = this.#database
+        .prepare(
+          `select id, source_document_ids_json as sourceDocumentIdsJson
+           from context_jobs where tier = 'long-term' and topic_key = ?`,
+        )
+        .all(topicKey) as {
+        readonly id: number;
+        readonly sourceDocumentIdsJson: string;
+      }[];
+      for (const job of jobs) {
+        const configuredIds = parseNumberIds(job.sourceDocumentIdsJson);
+        const activeIds = this.#activeDocumentIds(configuredIds);
+        const rows = this.#documentRevisionRows(activeIds);
+        this.#database
+          .prepare(
+            `update context_jobs
+             set source_revision_checksum = ?, source_document_ids_json = ?,
+                 status = 'pending', not_before = ?, freshness_deadline = ?,
+                 lease_expires_at = null, last_error_category = 'rebuild'
+             where id = ?`,
+          )
+          .run(digest(rows), JSON.stringify(activeIds), now, now, job.id);
+      }
+    }
+  }
+
+  #activeDocumentIds(documentIds: readonly number[]): number[] {
+    if (documentIds.length === 0) return [];
+    const placeholders = documentIds.map(() => '?').join(', ');
+    return this.#database
+      .prepare(
+        `select id from context_documents
+         where id in (${placeholders}) and state = 'active'
+           and content_state = 'available' order by id`,
+      )
+      .pluck()
+      .all(...documentIds) as number[];
+  }
+
+  #documentRevisionRows(documentIds: readonly number[]): unknown[] {
+    if (documentIds.length === 0) return [];
+    const placeholders = documentIds.map(() => '?').join(', ');
+    return this.#database
+      .prepare(
+        `select id, revision from context_documents
+         where id in (${placeholders}) order by id`,
+      )
+      .all(...documentIds);
   }
 
   #memorySourceScopes(memoryIds: readonly number[]): string[] {
@@ -855,14 +1079,36 @@ export class ContextDeletionStore {
   }
 }
 
-function buildLexicalQuery(text: string): string | null {
-  const tokens = text.match(/[\p{L}\p{N}]+/gu);
-  if (tokens === null || tokens.length === 0) return null;
-  return tokens.map((token) => `"${token.replaceAll('"', '""')}"`).join(' OR ');
-}
-
 function digest(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function candidateCount(candidates: ContextDeletionCandidates): number {
+  return (
+    candidates.documentKeys.length +
+    candidates.memoryIds.length +
+    candidates.sourceScopeIds.length
+  );
+}
+
+function collectCompleteLexicalRows<Row extends { readonly text: string }>(
+  fetch: (limit: number, offset: number) => readonly Row[],
+  relevanceTerms: readonly string[],
+): { readonly complete: boolean; readonly rows: readonly Row[] } {
+  const rows: Row[] = [];
+  for (let offset = 0; ; offset += DELETION_DISCOVERY_PAGE_SIZE) {
+    const page = fetch(DELETION_DISCOVERY_PAGE_SIZE, offset);
+    for (const row of page) {
+      if (!hasCompleteLexicalAnchor(relevanceTerms, row.text)) continue;
+      rows.push(row);
+      if (rows.length > MAX_DELETION_CANDIDATES) {
+        return { complete: false, rows: [] };
+      }
+    }
+    if (page.length < DELETION_DISCOVERY_PAGE_SIZE) {
+      return { complete: true, rows };
+    }
+  }
 }
 
 function parseStringIds(value: string): string[] {
@@ -915,10 +1161,19 @@ function parseJournalPayload(
   }
   const candidate = parsed as Record<string, unknown>;
   const documentIds = parseNumberIds(JSON.stringify(candidate.documentIds));
+  const documentKeys = parseStringIds(
+    JSON.stringify(candidate.documentKeys ?? []),
+  );
   const memoryIds = parseNumberIds(JSON.stringify(candidate.memoryIds));
   const sourceScopeIds = parseStringIds(
     JSON.stringify(candidate.sourceScopeIds),
   );
   const tombstoneKeys = parseStringIds(JSON.stringify(candidate.tombstoneKeys));
-  return { documentIds, memoryIds, sourceScopeIds, tombstoneKeys };
+  return {
+    documentIds,
+    documentKeys,
+    memoryIds,
+    sourceScopeIds,
+    tombstoneKeys,
+  };
 }
