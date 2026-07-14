@@ -13,7 +13,7 @@ import type {
 import { ContextPersistenceError } from './context-errors.js';
 import {
   buildLexicalQuery,
-  extractLexicalTerms,
+  extractLexicalTermSet,
   hasSufficientLexicalOverlap,
 } from './lexical-relevance.js';
 
@@ -178,8 +178,8 @@ export class ContextAssembler {
     readonly recentEvents: ReturnType<ConversationStore['recent']>['events'];
   }): readonly HistoricalContext[] {
     if (input.historyTokenAllowance <= 0) return [];
-    const lexicalTerms = extractLexicalTerms(input.prompt);
-    const lexicalQuery = buildLexicalQuery(lexicalTerms);
+    const lexicalTerms = extractLexicalTermSet(input.prompt);
+    const lexicalQuery = buildLexicalQuery(lexicalTerms.all);
     const recentEventIds = new Set(input.recentEvents.map(({ id }) => id));
     const recentResponseIds = new Set(
       input.recentEvents.flatMap(({ logicalResponseId }) =>
@@ -191,7 +191,7 @@ export class ContextAssembler {
       ranked.push(
         ...this.#sourceCandidates(
           lexicalQuery,
-          lexicalTerms,
+          lexicalTerms.relevance,
           recentEventIds,
           recentResponseIds,
           input.beforeEventId,
@@ -203,7 +203,7 @@ export class ContextAssembler {
         ...this.#rollupCandidates(
           tier,
           lexicalQuery,
-          lexicalTerms,
+          lexicalTerms.relevance,
           input.embedding,
           input.beforeEventId,
         ),
@@ -265,7 +265,7 @@ export class ContextAssembler {
       excludeLogicalResponseIds: [...recentResponseIds],
       guildId: this.#guildId,
       lexicalQuery,
-      lexicalTerms,
+      lexicalRelevanceTerms: lexicalTerms,
       limit: SEARCH_LIMIT,
     });
     const eligible = expanded.filter(

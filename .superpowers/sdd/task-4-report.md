@@ -83,19 +83,24 @@ The implementation followed RED-GREEN cycles with focused local tests:
   another relevant response, then source matches were paged, grouped, relevance
   checked, and limited in that order.
 - A common term in an OR query admitted unrelated source and rollup evidence,
-  then lexical candidates required majority overlap among selective terms.
-  Low-signal request modifiers cannot admit evidence when selective terms are
-  present, while generic-only and valid lexical-only queries remain supported.
+  then lexical candidates required overlap with query-form-distinctive terms.
+  Capitalized names and identifier-shaped terms are preserved; an unformatted
+  lowercase query uses its longest term as a deterministic topic anchor.
 - Realtime trusted its instruction prompt to prevent greeting and one-character
   recall calls, then a deterministic pre-assembler guard rejected both while a
   short topical query on the same committed utterance still succeeded.
 - The first absolute lexical gate rejected `Marigold update` evidence that did
-  not repeat `update`, then selective-term matching retained both source and
-  rollup evidence outside the vector distance threshold while the original
+  not repeat `update`, then query-form matching retained both source and rollup
+  evidence outside the vector distance threshold while the original
   `project`-only false-positive regression remained rejected.
 - Source FTS paging and rollup post-filtering could scan every match, then real
   SQLite statement probes demonstrated and enforced a 96-match internal ceiling
   while preserving the separate top-24 public result limit.
+- The intermediate selective-term policy still admitted `launch`-only evidence
+  for `Marigold launch project`, then paired source and rollup regressions proved
+  that `Marigold`-only evidence survives distant vectors while `launch`-only and
+  `project`-only evidence do not. The lowercase form of the same query passes
+  the same regression.
 
 No test makes a paid provider call. Embeddings, provider responses, clocks, and
 the retrieval corpus are deterministic and local.
@@ -127,9 +132,10 @@ the retrieval corpus are deterministic and local.
   replay exposed `source` in "Show the SourceBeacon source" as metadata rather
   than a topic term, so it joined the lexical stop-word set while the named
   beacon remained eligible.
-- Generic request terms are different from stop words: `project`, `status`, and
-  `update` still support generic-only queries, but do not outweigh unmatched
-  selective terms such as a named project or launch term.
+- Token form is a stronger query-local signal than a growing generic-word list.
+  Explicit capitalization, camel case, acronyms, and digits identify relevance
+  anchors without maintaining domain vocabulary. When none exists, the longest
+  term preserves common lowercase identifier cases such as `marigold`.
 
 ## Verification
 
@@ -137,7 +143,7 @@ the retrieval corpus are deterministic and local.
 
 - Prettier, ESLint, and TypeScript checks passed.
 - 40 test files passed with 331 tests.
-- Coverage: 91.10% statements, 83.37% branches, 92.97% functions, and 92.71%
+- Coverage: 91.19% statements, 83.66% branches, 93.05% functions, and 92.75%
   lines.
 - `ContextAssembler`: 98.72% statements, 88.09% branches, and 100% functions
   and lines.
@@ -178,10 +184,10 @@ substantiated Important findings were reproduced and resolved:
 11. Source FTS limits apply after Chief logical-response grouping and lexical
     relevance checks, so one multi-chunk response cannot crowd out distinct
     candidates.
-12. Lexical source and rollup candidates require overlap among selective query
-    terms before ranking. Low-signal modifiers cannot admit unrelated evidence;
-    vector candidates retain their independent distance threshold, and valid
-    named-term lexical-only evidence remains retrievable.
+12. Lexical source and rollup candidates require overlap with deterministic
+    query-form relevance anchors before ranking. Vector candidates retain their
+    independent distance threshold, and both formatted and common lowercase
+    named-term lexical-only evidence remain retrievable.
 13. Realtime recall rejects committed greeting and one-character noise before
     claiming the per-utterance recall slot, preserving a subsequent short
     topical request on that utterance.
@@ -195,4 +201,7 @@ privacy with the current local SQLite scale. Retrieval latency should be
 measured as the index grows; a future schema migration could add a partitioned
 vector index without changing the assembler contract. The explicit lexical
 scan ceiling bounds work but can omit a valid candidate ranked below the first
-96 raw FTS matches; telemetry should guide any future ceiling adjustment.
+96 raw FTS matches; telemetry should guide any future ceiling adjustment. The
+lowercase fallback chooses the longest query term and can misclassify a shorter
+unformatted identifier; explicit capitalization or identifier shape avoids
+that ambiguity.

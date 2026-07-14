@@ -302,7 +302,7 @@ export class ConversationStore {
     readonly excludeLogicalResponseIds?: readonly string[];
     readonly guildId: string;
     readonly lexicalQuery: string;
-    readonly lexicalTerms: readonly string[];
+    readonly lexicalRelevanceTerms: readonly string[];
     readonly limit: number;
   }): readonly ConversationSourceGroup[] {
     if (input.limit <= 0) return [];
@@ -390,7 +390,10 @@ export class ConversationStore {
         const content = rows.map((row) => row.content).join('');
         const searchableContent = rows.map((row) => row.content).join(' ');
         if (
-          !hasSufficientLexicalOverlap(input.lexicalTerms, searchableContent)
+          !hasSufficientLexicalOverlap(
+            input.lexicalRelevanceTerms,
+            searchableContent,
+          )
         ) {
           continue;
         }

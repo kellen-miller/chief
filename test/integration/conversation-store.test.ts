@@ -322,7 +322,7 @@ describe('ConversationStore', () => {
       channelId: 'main',
       guildId: 'presidents',
       lexicalQuery: '"chunkbeacon"',
-      lexicalTerms: ['chunkbeacon'],
+      lexicalRelevanceTerms: ['chunkbeacon'],
       limit: 24,
     });
 
@@ -387,7 +387,7 @@ describe('ConversationStore', () => {
       channelId: 'main',
       guildId: 'presidents',
       lexicalQuery: '"scanbeacon"',
-      lexicalTerms: ['scanbeacon'],
+      lexicalRelevanceTerms: ['scanbeacon'],
       limit: 24,
     });
 

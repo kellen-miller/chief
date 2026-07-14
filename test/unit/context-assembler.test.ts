@@ -782,7 +782,7 @@ describe('ContextAssembler', () => {
     database.close();
   });
 
-  it('rejects incidental lexical overlap but keeps lexical-only evidence', async () => {
+  it('requires the distinctive term for lexical-only evidence', async () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
@@ -794,20 +794,28 @@ describe('ContextAssembler', () => {
       recentUntil: now - 1,
     });
     indexSource(database, weakSourceId, 'The unrelated project lunch menu.');
-    const validSourceId = recordEvent(conversation, {
-      content: 'Marigold launch review.',
+    const modifierSourceId = recordEvent(conversation, {
+      content: 'The launch lunch menu.',
       messageId: '52345678901234633',
       occurredAt: now - 3_000,
       recentUntil: now - 1,
     });
-    indexSource(database, validSourceId, 'Marigold launch review.');
+    indexSource(database, modifierSourceId, 'The launch lunch menu.');
+    const validSourceId = recordEvent(conversation, {
+      content: 'Marigold ships Friday.',
+      messageId: '52345678901234634',
+      occurredAt: now - 2_000,
+      recentUntil: now - 1,
+    });
+    indexSource(database, validSourceId, 'Marigold ships Friday.');
     for (const [index, summary] of [
       'The unrelated project lunch plan.',
-      'Marigold launch readiness review.',
+      'The launch lunch remained unresolved.',
+      'Marigold readiness review.',
     ].entries()) {
       const eventId = recordEvent(conversation, {
         content: `Lexical lineage ${String(index)}`,
-        messageId: String(52345678901234634n + BigInt(index)),
+        messageId: String(52345678901234635n + BigInt(index)),
         occurredAt: now - (index + 1) * 1_000,
         recentUntil: now - 1,
       });
@@ -847,18 +855,20 @@ describe('ContextAssembler', () => {
       timeZone: 'America/New_York',
     });
 
-    const prepared = await assembler.assemble({
-      now,
-      prompt: 'Marigold launch project',
-    });
-    const statements = prepared.historicalContext.map((context) =>
-      context.evidenceForm === 'source' ? context.text : context.summary,
-    );
+    for (const prompt of [
+      'Marigold launch project',
+      'marigold launch project',
+    ]) {
+      const prepared = await assembler.assemble({ now, prompt });
+      const statements = prepared.historicalContext.map((context) =>
+        context.evidenceForm === 'source' ? context.text : context.summary,
+      );
 
-    expect(statements).toEqual([
-      'Marigold launch review.',
-      'Marigold launch readiness review.',
-    ]);
+      expect(statements).toEqual([
+        'Marigold ships Friday.',
+        'Marigold readiness review.',
+      ]);
+    }
     database.close();
   });
 
