@@ -78,6 +78,7 @@ describe('ConversationStore', () => {
       '0007_context_backfill_accounting',
       '0008_context_backfill_lifecycle',
       '0009_context_backfill_targeting',
+      '0010_context_backfill_ownership',
     ]);
     reopened.close();
   });

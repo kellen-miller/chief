@@ -573,6 +573,12 @@ export const CONTEXT_BACKFILL_TARGETING_MIGRATION_ID =
   '0009_context_backfill_targeting';
 export const CONTEXT_BACKFILL_TARGETING_MIGRATION_CHECKSUM = 'chief-0009-v1';
 
+const CONTEXT_BACKFILL_OWNERSHIP_MIGRATION = `select 1;`;
+
+export const CONTEXT_BACKFILL_OWNERSHIP_MIGRATION_ID =
+  '0010_context_backfill_ownership';
+export const CONTEXT_BACKFILL_OWNERSHIP_MIGRATION_CHECKSUM = 'chief-0010-v1';
+
 interface Migration {
   readonly checksum: string;
   readonly id: string;
@@ -633,6 +639,12 @@ const MIGRATIONS: readonly Migration[] = [
     id: CONTEXT_BACKFILL_TARGETING_MIGRATION_ID,
     migrate: targetLegacyBackfillAccounting,
     sql: CONTEXT_BACKFILL_TARGETING_MIGRATION,
+  },
+  {
+    checksum: CONTEXT_BACKFILL_OWNERSHIP_MIGRATION_CHECKSUM,
+    id: CONTEXT_BACKFILL_OWNERSHIP_MIGRATION_ID,
+    migrate: repairBackfillOwnership,
+    sql: CONTEXT_BACKFILL_OWNERSHIP_MIGRATION,
   },
 ];
 
@@ -920,6 +932,195 @@ function migrationGuardedRun(
   );
 }
 
+interface OwnershipContextJobRow {
+  readonly backfillRunId: number | null;
+  readonly id: number;
+  readonly periodEnd: number | null;
+  readonly periodStart: number;
+  readonly sourceDocumentIdsJson: string;
+  readonly sourceRevisionChecksum: string;
+  readonly tier: string;
+  readonly usageReservationId: string | null;
+}
+
+function repairBackfillOwnership(database: Database.Database): void {
+  const jobs = database
+    .prepare(
+      `select id, tier, period_start as periodStart, period_end as periodEnd,
+              source_revision_checksum as sourceRevisionChecksum,
+              source_document_ids_json as sourceDocumentIdsJson,
+              usage_reservation_id as usageReservationId,
+              backfill_run_id as backfillRunId
+       from context_jobs where status in ('pending', 'leased')`,
+    )
+    .all() as OwnershipContextJobRow[];
+  const recoveredRunIds = new Set<number>();
+  const assignJob = database.prepare(
+    'update context_jobs set backfill_run_id = ? where id = ?',
+  );
+  const assignReservation = database.prepare(
+    `update usage_ledger set backfill_run_id = ?
+     where id = ? and actual_usd is null`,
+  );
+
+  for (const job of jobs) {
+    const provenRunIds = exactBackfillRunIds(database, job);
+    const targetRunId =
+      job.backfillRunId !== null && provenRunIds.includes(job.backfillRunId)
+        ? job.backfillRunId
+        : provenRunIds[0];
+    if (targetRunId !== undefined) {
+      assignJob.run(targetRunId, job.id);
+      if (job.usageReservationId !== null) {
+        assignReservation.run(targetRunId, job.usageReservationId);
+      }
+      recoveredRunIds.add(targetRunId);
+      continue;
+    }
+
+    assignJob.run(null, job.id);
+    if (job.usageReservationId !== null) {
+      assignReservation.run(null, job.usageReservationId);
+    }
+  }
+
+  const now = Date.now();
+  const recover = database.prepare(
+    `update context_backfills
+     set status = 'paused', completed_at = null,
+         pause_reason = 'migration-accounting-resume-required',
+         updated_at = ?
+     where id = ?`,
+  );
+  for (const runId of recoveredRunIds) recover.run(now, runId);
+}
+
+function exactBackfillRunIds(
+  database: Database.Database,
+  job: OwnershipContextJobRow,
+): number[] {
+  if (job.tier === 'hourly') {
+    return exactHourlyBackfillRunIds(database, job);
+  }
+  const documentIds = exactJobDocumentIds(database, job);
+  if (documentIds.length === 0) return [];
+  const runIds = database
+    .prepare(
+      `select distinct run_id from context_backfill_segments
+       order by run_id desc`,
+    )
+    .pluck()
+    .all() as number[];
+  return runIds.filter((runId) =>
+    documentIds.some((documentId) =>
+      documentDescendsFromRun(database, documentId, runId),
+    ),
+  );
+}
+
+function exactJobDocumentIds(
+  database: Database.Database,
+  job: OwnershipContextJobRow,
+): number[] {
+  if (job.tier === 'long-term') {
+    const documentIds = [
+      ...new Set(legacySourceDocumentIds(job.sourceDocumentIdsJson)),
+    ];
+    if (documentIds.length === 0) return [];
+    const placeholders = documentIds.map(() => '?').join(', ');
+    const rows = database
+      .prepare(
+        `select id, revision from context_documents
+         where id in (${placeholders}) order by id`,
+      )
+      .all(...documentIds) as {
+      readonly id: number;
+      readonly revision: number;
+    }[];
+    return rows.length === documentIds.length &&
+      migrationDigest(rows) === job.sourceRevisionChecksum
+      ? rows.map(({ id }) => id)
+      : [];
+  }
+  const childTier = job.tier === 'daily' ? 'hourly' : 'daily';
+  if (job.tier !== 'daily' && job.tier !== 'weekly') return [];
+  if (job.periodEnd === null) return [];
+  const rows = database
+    .prepare(
+      `select id, revision from context_documents
+       where tier = ? and completeness = 'final' and state = 'active'
+         and content_state = 'available' and is_internal = 0
+         and period_start >= ? and period_end <= ?
+       order by period_start, id`,
+    )
+    .all(childTier, job.periodStart, job.periodEnd) as {
+    readonly id: number;
+    readonly revision: number;
+  }[];
+  return rows.length > 0 && migrationDigest(rows) === job.sourceRevisionChecksum
+    ? rows.map(({ id }) => id)
+    : [];
+}
+
+function exactHourlyBackfillRunIds(
+  database: Database.Database,
+  job: OwnershipContextJobRow,
+): number[] {
+  if (job.periodEnd === null) return [];
+  const runs = database
+    .prepare(
+      `select distinct b.id as runId, b.scope_id as scopeId
+       from context_backfills b
+       join context_backfill_pages p on p.run_id = b.id
+       order by b.id desc`,
+    )
+    .all() as { readonly runId: number; readonly scopeId: string }[];
+  return runs.flatMap(({ runId, scopeId }) => {
+    const rows = database
+      .prepare(
+        `select id, discord_message_id as discordMessageId, content,
+                edited_at as editedAt
+         from conversation_events
+         where guild_id || '/' || channel_id = ? and medium = 'text'
+           and content_state = 'available'
+           and occurred_at >= ? and occurred_at < ?
+         order by id`,
+      )
+      .all(scopeId, job.periodStart, job.periodEnd) as {
+      readonly content: string;
+      readonly discordMessageId: string;
+      readonly editedAt: number | null;
+      readonly id: number;
+    }[];
+    if (
+      rows.length === 0 ||
+      migrationDigest(rows) !== job.sourceRevisionChecksum
+    ) {
+      return [];
+    }
+    const containsSource = database.prepare(
+      `select exists(
+         select 1 from context_backfill_pages
+         where run_id = ? and cast(? as integer) between
+           min(cast(oldest_source_id as integer),
+               cast(newest_source_id as integer)) and
+           max(cast(oldest_source_id as integer),
+               cast(newest_source_id as integer))
+       )`,
+    );
+    return rows.some(
+      ({ discordMessageId }) =>
+        containsSource.pluck().get(runId, discordMessageId) === 1,
+    )
+      ? [runId]
+      : [];
+  });
+}
+
+function migrationDigest(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
 function backfillContextForgetJournals(database: Database.Database): void {
   const rows = database
     .prepare(
@@ -1025,6 +1226,16 @@ export function verifyContextDatabaseSchema(
     if (
       backfillTargetingChecksum !==
       CONTEXT_BACKFILL_TARGETING_MIGRATION_CHECKSUM
+    ) {
+      return false;
+    }
+    const backfillOwnershipChecksum = database
+      .prepare('select checksum from schema_migrations where id = ?')
+      .pluck()
+      .get(CONTEXT_BACKFILL_OWNERSHIP_MIGRATION_ID);
+    if (
+      backfillOwnershipChecksum !==
+      CONTEXT_BACKFILL_OWNERSHIP_MIGRATION_CHECKSUM
     ) {
       return false;
     }
