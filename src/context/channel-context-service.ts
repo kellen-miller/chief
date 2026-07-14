@@ -8,6 +8,12 @@ import {
 } from '../conversation/conversation-store.js';
 import type { SqliteMemoryStore } from '../memory/memory-store.js';
 import type { UsageBudget } from '../usage/usage-budget.js';
+import type { DiscordHistorySource } from '../discord/discord-reconciliation-service.js';
+import {
+  ContextBackfillService,
+  type ContextBackfillPricing,
+  type ContextBackfillWorkResult,
+} from './context-backfill.js';
 import { contextPeriod, type ContextPeriod } from './context-period.js';
 import {
   ContextDeletionStore,
@@ -81,6 +87,7 @@ export interface DeliveredReplyInput {
 }
 
 export interface ChannelContextServiceOptions {
+  readonly backfillPricing?: ContextBackfillPricing;
   readonly budget?: UsageBudget;
   readonly channelId: string;
   readonly conversation: ConversationStore;
@@ -227,6 +234,7 @@ interface SummaryNode {
 }
 
 export class ChannelContextService {
+  readonly #backfill: ContextBackfillService;
   readonly #budget: UsageBudget | undefined;
   readonly #channelId: string;
   readonly #conversation: ConversationStore;
@@ -269,6 +277,52 @@ export class ChannelContextService {
     this.#summarizer = options.summarizer;
     this.#timeZone = options.timeZone;
     this.#uploadForgetJournal = options.uploadForgetJournal;
+    this.#backfill = new ContextBackfillService({
+      applySource: (source) =>
+        this.apply({
+          attachmentMetadataJson: source.attachmentMetadataJson,
+          canModerateContext: source.canModerateContext,
+          content: source.content,
+          editedAt: source.editedAt,
+          memoryExtraction:
+            source.authorKind === 'human' ? 'automatic' : 'none',
+          messageId: source.messageId,
+          occurredAt: source.occurredAt,
+          platformEventId: source.messageId,
+          replyToMessageId: source.replyToMessageId,
+          requestId: source.messageId,
+          revisionChecksum: source.revisionChecksum,
+          role: source.authorKind === 'chief' ? 'chief' : 'human',
+          speakerId: source.requesterId,
+          speakerName: source.speakerName,
+          type: 'upsert',
+        }),
+      ...(options.budget === undefined ? {} : { budget: options.budget }),
+      channelId: options.channelId,
+      database: options.database,
+      ...(options.embed === undefined ? {} : { embed: options.embed }),
+      ...(options.estimateUsd === undefined
+        ? {}
+        : { estimateUsd: options.estimateUsd }),
+      guildId: options.guildId,
+      ...(options.maxSourceTokens === undefined
+        ? {}
+        : { maxSourceTokens: options.maxSourceTokens }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+      pricing: options.backfillPricing ?? {
+        embeddingInputPerMillionUsd: 0,
+        summaryInputPerMillionUsd: 0,
+        summaryOutputPerMillionUsd: 0,
+      },
+      ...(options.summarizer === undefined
+        ? {}
+        : { summarizer: options.summarizer }),
+      timeZone: options.timeZone,
+    });
+  }
+
+  public attachHistorySource(history: DiscordHistorySource): void {
+    this.#backfill.attachHistorySource(history);
   }
 
   public apply(change: ContextSourceChange): ContextApplyResult {
@@ -598,7 +652,11 @@ export class ChannelContextService {
     })();
   }
 
-  public nextDeadline(now: number): number | null {
+  public nextDeadline(
+    now: number,
+    lane: 'live' | 'backfill' = 'live',
+  ): number | null {
+    if (lane === 'backfill') return this.#backfill.nextDeadline();
     return (
       (this.#database
         .prepare(
@@ -674,7 +732,16 @@ export class ChannelContextService {
     };
   }
 
-  public async runNext(now: number): Promise<ContextJobResult> {
+  public runNext(now: number): Promise<ContextJobResult>;
+  public runNext(
+    now: number,
+    lane: 'backfill',
+  ): Promise<ContextBackfillWorkResult>;
+  public async runNext(
+    now: number,
+    lane: 'live' | 'backfill' = 'live',
+  ): Promise<ContextJobResult | ContextBackfillWorkResult> {
+    if (lane === 'backfill') return this.#backfill.runNext(now);
     const job = this.#leaseNextJob(now);
     if (job === null) return { status: 'idle' };
     const budget = this.#budget;

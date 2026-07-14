@@ -41,8 +41,21 @@ export class ContextStore {
   }
 
   public activateDocumentRevision(input: ContextDocumentRevisionInput): number {
+    return this.#activateDocumentRevision(input, false);
+  }
+
+  public activateBackfillDocumentRevision(
+    input: ContextDocumentRevisionInput,
+  ): number {
+    return this.#activateDocumentRevision(input, true);
+  }
+
+  #activateDocumentRevision(
+    input: ContextDocumentRevisionInput,
+    allowRetentionExpiredSources: boolean,
+  ): number {
     return this.#database.transaction(() => {
-      this.#assertInputsAvailable(input);
+      this.#assertInputsAvailable(input, allowRetentionExpiredSources);
       const maximumRevision = this.#database
         .prepare(
           `select max(revision) from context_documents where document_key = ?`,
@@ -121,7 +134,10 @@ export class ContextStore {
     })();
   }
 
-  #assertInputsAvailable(input: ContextDocumentRevisionInput): void {
+  #assertInputsAvailable(
+    input: ContextDocumentRevisionInput,
+    allowRetentionExpiredSources: boolean,
+  ): void {
     if (input.eventIds.length === 0 && input.parentDocumentIds.length === 0) {
       throw new Error('context document requires lineage');
     }
@@ -132,10 +148,14 @@ export class ContextStore {
       throw new Error('higher context tier requires parent-only lineage');
     }
     const sourceRevisionChecksum = input.sourceRevisionChecksum;
-    if (input.eventIds.length > 0 && sourceRevisionChecksum === undefined) {
+    if (
+      input.eventIds.length > 0 &&
+      sourceRevisionChecksum === undefined &&
+      !allowRetentionExpiredSources
+    ) {
       throw new Error('context document requires source revision checksum');
     }
-    if (input.eventIds.length > 0) {
+    if (input.eventIds.length > 0 && !allowRetentionExpiredSources) {
       const current = this.#database
         .prepare(
           `select exists(
@@ -158,15 +178,41 @@ export class ContextStore {
     const sourceAvailable = this.#database.prepare(
       `select exists(
          select 1 from conversation_events
-         where id = ? and content_state = 'available'
+         where id = ? and (
+           content_state = 'available'
+           or (? = 1 and content_state = 'scrubbed'
+               and content_state_reason = 'retention-expired')
+         )
        )`,
     );
     if (
       input.eventIds.some(
-        (eventId) => sourceAvailable.pluck().get(eventId) !== 1,
+        (eventId) =>
+          sourceAvailable
+            .pluck()
+            .get(eventId, allowRetentionExpiredSources ? 1 : 0) !== 1,
       )
     ) {
       throw new Error('context document source is unavailable');
+    }
+    if (allowRetentionExpiredSources) {
+      const sourceTombstoned = this.#database.prepare(
+        `select exists(
+           select 1 from conversation_events c
+           join context_tombstones t
+             on t.scope_type = 'source'
+            and t.scope_id = c.guild_id || '/' || c.channel_id || '/' ||
+                             c.discord_message_id
+           where c.id = ?
+         )`,
+      );
+      if (
+        input.eventIds.some(
+          (eventId) => sourceTombstoned.pluck().get(eventId) === 1,
+        )
+      ) {
+        throw new Error('context document source is tombstoned');
+      }
     }
     const parentAvailable = this.#database.prepare(
       `select exists(

@@ -80,6 +80,7 @@ describe('Chief database', () => {
       '0003_channel_context',
       '0004_discord_source_lifecycle',
       '0005_context_forgetting',
+      '0006_context_backfill',
     ]);
     expect(verifyContextDatabaseSchema(database)).toBe(true);
     database.close();

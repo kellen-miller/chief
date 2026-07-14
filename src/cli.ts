@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
 import { loadConfig } from './config/config.js';
+import { executeContextBackfillCommand } from './context/context-backfill-command.js';
+import { ContextBackfillService } from './context/context-backfill.js';
+import { DiscordRestHistorySource } from './discord/rest-history-source.js';
 import { registerGuildCommands } from './discord/register-commands.js';
 import { HealthServer } from './health/health-server.js';
 import {
@@ -69,6 +72,40 @@ async function main(arguments_: readonly string[]): Promise<void> {
       database.close();
       if (integrity !== 'ok' || vectorVersion !== 'v0.1.9' || !contextSchema) {
         throw new Error(`backup verification failed for ${basename(backup)}`);
+      }
+      break;
+    }
+    case 'context-backfill': {
+      const config = loadConfig(process.env);
+      const database = openChiefDatabase(
+        join(config.dataDirectory, 'chief.db'),
+      );
+      try {
+        migrateChiefDatabase(database);
+        const history = new DiscordRestHistorySource({
+          botUserId: config.discord.applicationId,
+          channelId: config.discord.textChannelId,
+          guildId: config.discord.guildId,
+          token: config.discord.token,
+        });
+        const service = new ContextBackfillService({
+          channelId: config.discord.textChannelId,
+          database,
+          guildId: config.discord.guildId,
+          history,
+          pricing: {
+            embeddingInputPerMillionUsd: config.pricing.embeddingInput,
+            summaryInputPerMillionUsd: config.pricing.memoryInput,
+            summaryOutputPerMillionUsd: config.pricing.memoryOutput,
+          },
+        });
+        const output = await executeContextBackfillCommand(
+          arguments_.slice(1),
+          service,
+        );
+        process.stdout.write(`${output}\n`);
+      } finally {
+        database.close();
       }
       break;
     }

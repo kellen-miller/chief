@@ -84,6 +84,11 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     pricing: { inputPerMillionUsd: config.pricing.embeddingInput },
   });
   const context = new ChannelContextService({
+    backfillPricing: {
+      embeddingInputPerMillionUsd: config.pricing.embeddingInput,
+      summaryInputPerMillionUsd: config.pricing.memoryInput,
+      summaryOutputPerMillionUsd: config.pricing.memoryOutput,
+    },
     budget,
     channelId: config.discord.textChannelId,
     conversation,
@@ -248,6 +253,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     logger,
     orchestrator,
     reconciliation: ({ history }) => {
+      context.attachHistorySource(history);
       reconciliation = new DiscordReconciliationService({
         channelId: config.discord.textChannelId,
         database,
@@ -283,6 +289,10 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
   });
   let workerRunning = false;
   const background = new BackgroundScheduler({
+    backfill: {
+      nextDeadline: (now) => context.nextDeadline(now, 'backfill'),
+      runOne: (now) => context.runNext(now, 'backfill'),
+    },
     context: {
       nextDeadline: (now) => context.nextDeadline(now),
       runOne: (now) => context.runNext(now),

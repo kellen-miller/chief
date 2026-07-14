@@ -5,7 +5,8 @@ import type { NormalizedTextSource } from '../app/conversation-orchestrator.js';
 const RAW_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const FULL_SCAN_INTERVAL_MS = 7 * 24 * 60 * 60 * 1_000;
 
-export type DiscordHistoryMode = 'full' | 'incremental' | 'retained';
+export type DiscordHistoryMode =
+  'backfill' | 'full' | 'incremental' | 'retained';
 
 export interface DiscordHistoryItem {
   readonly messageId: string;

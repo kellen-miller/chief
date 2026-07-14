@@ -483,6 +483,72 @@ alter table context_forget_journal
 export const CONTEXT_FORGETTING_MIGRATION_ID = '0005_context_forgetting';
 export const CONTEXT_FORGETTING_MIGRATION_CHECKSUM = 'chief-0005-v4';
 
+const CONTEXT_BACKFILL_MIGRATION = `
+alter table context_backfills add column oldest_occurred_at integer;
+alter table context_backfills add column newest_occurred_at integer;
+alter table context_backfills
+  add column already_ingested_count integer not null default 0
+    check (already_ingested_count >= 0);
+alter table context_backfills
+  add column eligible_bytes integer not null default 0
+    check (eligible_bytes >= 0);
+alter table context_backfills
+  add column eligible_tokens integer not null default 0
+    check (eligible_tokens >= 0);
+alter table context_backfills
+  add column page_count integer not null default 0 check (page_count >= 0);
+alter table context_backfills add column next_page_index integer;
+alter table context_backfills add column manifest_checksum text;
+alter table context_backfills add column pause_reason text;
+alter table context_backfills add column activated_at integer;
+
+create table context_backfill_pages (
+  run_id integer not null references context_backfills(id) on delete cascade,
+  page_index integer not null check (page_index >= 0),
+  request_before_source_id text,
+  oldest_source_id text not null,
+  newest_source_id text not null,
+  eligible_count integer not null check (eligible_count >= 0),
+  eligible_bytes integer not null check (eligible_bytes >= 0),
+  eligible_tokens integer not null check (eligible_tokens >= 0),
+  identity_checksum text not null,
+  completed_at integer,
+  primary key (run_id, page_index)
+);
+
+create table context_backfill_segments (
+  run_id integer not null references context_backfills(id) on delete cascade,
+  segment_key text not null,
+  page_index integer not null check (page_index >= 0),
+  period_start integer not null,
+  period_end integer not null,
+  source_checksum text not null,
+  source_count integer not null check (source_count > 0),
+  document_id integer references context_documents(id) on delete restrict,
+  actual_usage_usd real not null default 0 check (actual_usage_usd >= 0),
+  committed_at integer not null,
+  primary key (run_id, segment_key),
+  foreign key (run_id, page_index)
+    references context_backfill_pages(run_id, page_index) on delete cascade
+);
+create index context_backfill_segments_page_idx
+  on context_backfill_segments(run_id, page_index);
+
+create table context_backfill_source_identities (
+  run_id integer not null references context_backfills(id) on delete cascade,
+  message_id text not null,
+  event_id integer not null references conversation_events(id) on delete restrict,
+  first_page_index integer not null check (first_page_index >= 0),
+  revision_checksum text not null,
+  occurred_at integer not null,
+  primary key (run_id, message_id),
+  unique (run_id, event_id)
+);
+`;
+
+export const CONTEXT_BACKFILL_MIGRATION_ID = '0006_context_backfill';
+export const CONTEXT_BACKFILL_MIGRATION_CHECKSUM = 'chief-0006-v2';
+
 interface Migration {
   readonly checksum: string;
   readonly id: string;
@@ -521,6 +587,11 @@ const MIGRATIONS: readonly Migration[] = [
     id: CONTEXT_FORGETTING_MIGRATION_ID,
     migrate: backfillContextForgetJournals,
     sql: CONTEXT_FORGETTING_MIGRATION,
+  },
+  {
+    checksum: CONTEXT_BACKFILL_MIGRATION_CHECKSUM,
+    id: CONTEXT_BACKFILL_MIGRATION_ID,
+    sql: CONTEXT_BACKFILL_MIGRATION,
   },
 ];
 
@@ -653,10 +724,18 @@ export function verifyContextDatabaseSchema(
     if (forgettingChecksum !== CONTEXT_FORGETTING_MIGRATION_CHECKSUM) {
       return false;
     }
+    const backfillChecksum = database
+      .prepare('select checksum from schema_migrations where id = ?')
+      .pluck()
+      .get(CONTEXT_BACKFILL_MIGRATION_ID);
+    if (backfillChecksum !== CONTEXT_BACKFILL_MIGRATION_CHECKSUM) return false;
     for (const table of [
       'conversation_event_fts',
       'context_document_fts',
       'context_document_vectors',
+      'context_backfill_pages',
+      'context_backfill_segments',
+      'context_backfill_source_identities',
       'discord_reconciliation_state',
       'discord_reconciliation_seen',
     ]) {
