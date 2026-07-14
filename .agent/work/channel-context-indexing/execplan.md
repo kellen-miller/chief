@@ -17,7 +17,7 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 - [x] (2026-07-14 03:08Z) Created `decision.md`, `meta.json`, `CONTEXT.md`, ADR 0001, and this initial ExecPlan.
 - [x] (2026-07-14 03:51Z) Ran two adversarial planning passes, resolved every verified critical/high issue, and incorporated the final medium/low recovery and implementation seams.
 - [x] (2026-07-14 04:58Z) Obtained explicit user approval of the adversarially revised written planning packet and activated implementation.
-- [ ] Milestone 1: create the canonical context schema and DST-safe calendar module.
+- [x] (2026-07-14 05:08Z) Task 1 created migration 0003, DST-safe context periods, canonical source/FTS writes, hourly job records, retention separation, delivered-snowflake identity, and transactional document invariants; 233 tests and `pnpm verify` passed, and the task review approved the five-commit range with no findings.
 - [ ] Milestone 2: ingest live Discord creates, edits, deletes, and Chief replies.
 - [ ] Milestone 3: generate resumable hierarchical rollups under a protected background budget.
 - [ ] Milestone 4: assemble cross-tier context with one embedding per retrieval query.
@@ -56,6 +56,10 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
   Evidence: `chief.service` starts `/opt/chief/run-container.sh` directly. The host-side start path needs an unconditional recovery preflight that can use a newer recovery image independently of the target runtime image.
 - Observation: the restore-resurrection risk applies to authoritative Discord deletion as well as natural-language local forgetting.
   Evidence: an older database backup predates either kind of tombstone. Journal every source deletion and local forget, not only explicit forget commands, before allowing a restored database to serve context.
+- Observation: storing Chief replies after a complete multi-chunk send loses canonical history when a later chunk fails.
+  Evidence: Task 1 review drove incremental persistence immediately after each successful Discord send, using one logical response ID and stable snowflake per chunk.
+- Observation: final-child hierarchy needs both positive and negative constraints: higher tiers require final parents and must reject raw event lineage even when a valid parent is also present.
+  Evidence: successive Task 1 review regressions closed parentless and mixed-lineage bypasses before document, FTS, vector, or lineage mutation.
 
 ## Decision Log
 
