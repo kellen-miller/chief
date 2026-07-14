@@ -549,6 +549,18 @@ create table context_backfill_source_identities (
 export const CONTEXT_BACKFILL_MIGRATION_ID = '0006_context_backfill';
 export const CONTEXT_BACKFILL_MIGRATION_CHECKSUM = 'chief-0006-v2';
 
+const CONTEXT_BACKFILL_ACCOUNTING_MIGRATION = `
+alter table context_jobs
+  add column backfill_run_id integer references context_backfills(id)
+    on delete restrict;
+create index context_jobs_backfill_run_idx
+  on context_jobs(backfill_run_id, status, not_before);
+`;
+
+export const CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_ID =
+  '0007_context_backfill_accounting';
+export const CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_CHECKSUM = 'chief-0007-v1';
+
 interface Migration {
   readonly checksum: string;
   readonly id: string;
@@ -592,6 +604,11 @@ const MIGRATIONS: readonly Migration[] = [
     checksum: CONTEXT_BACKFILL_MIGRATION_CHECKSUM,
     id: CONTEXT_BACKFILL_MIGRATION_ID,
     sql: CONTEXT_BACKFILL_MIGRATION,
+  },
+  {
+    checksum: CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_CHECKSUM,
+    id: CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_ID,
+    sql: CONTEXT_BACKFILL_ACCOUNTING_MIGRATION,
   },
 ];
 
@@ -729,6 +746,13 @@ export function verifyContextDatabaseSchema(
       .pluck()
       .get(CONTEXT_BACKFILL_MIGRATION_ID);
     if (backfillChecksum !== CONTEXT_BACKFILL_MIGRATION_CHECKSUM) return false;
+    const accountingChecksum = database
+      .prepare('select checksum from schema_migrations where id = ?')
+      .pluck()
+      .get(CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_ID);
+    if (accountingChecksum !== CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_CHECKSUM) {
+      return false;
+    }
     for (const table of [
       'conversation_event_fts',
       'context_document_fts',

@@ -78,6 +78,31 @@ function source(
   };
 }
 
+function recordLegacySource(
+  database: ReturnType<typeof openChiefDatabase>,
+  occurredAt: number,
+): number {
+  const input = source(occurredAt);
+  return new ConversationStore(database).record({
+    attachmentMetadataJson: input.attachmentMetadataJson,
+    channelId,
+    content: input.content,
+    discordMessageId: input.messageId,
+    editedAt: input.editedAt,
+    guildId,
+    medium: 'text',
+    occurredAt: input.occurredAt,
+    platformEventId: input.platformEventId,
+    recentUntil: occurredAt + sevenDays,
+    replyToMessageId: input.replyToMessageId,
+    requestId: input.requestId,
+    retentionDeadline: occurredAt + thirtyDays,
+    role: input.role,
+    speakerId: input.speakerId,
+    speakerName: input.speakerName,
+  });
+}
+
 function lexicalIds(
   database: ReturnType<typeof openChiefDatabase>,
   table: 'context_document_fts' | 'conversation_event_fts',
@@ -897,14 +922,7 @@ describe('ChannelContextService', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database, DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID);
-    const service = new ChannelContextService({
-      channelId,
-      conversation: new ConversationStore(database),
-      database,
-      guildId,
-      timeZone,
-    });
-    service.apply(source(occurredAt));
+    recordLegacySource(database, occurredAt);
     const scopeId = `${guildId}/${channelId}/${source(occurredAt).messageId}`;
     const tombstoneKey = `source:${scopeId}`;
     const legacyChecksum = createHash('sha256')
@@ -994,15 +1012,7 @@ describe('ChannelContextService', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database, DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID);
-    const service = new ChannelContextService({
-      channelId,
-      conversation: new ConversationStore(database),
-      database,
-      guildId,
-      timeZone,
-    });
-    const created = service.apply(source(occurredAt));
-    if (created.eventId === null) throw new Error('expected source event');
+    const eventId = recordLegacySource(database, occurredAt);
     const scopeId = `${guildId}/${channelId}/${source(occurredAt).messageId}`;
     const tombstoneKey = `source:${scopeId}`;
     const legacyChecksum = createHash('sha256')
@@ -1022,7 +1032,7 @@ describe('ChannelContextService', () => {
              content_state_reason = 'locally-forgotten'
          where id = ?`,
       )
-      .run(occurredAt + 1_000, created.eventId);
+      .run(occurredAt + 1_000, eventId);
     database
       .prepare(
         `insert into context_tombstones

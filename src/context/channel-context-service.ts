@@ -10,6 +10,7 @@ import type { SqliteMemoryStore } from '../memory/memory-store.js';
 import type { UsageBudget } from '../usage/usage-budget.js';
 import type { DiscordHistorySource } from '../discord/discord-reconciliation-service.js';
 import {
+  contextCallReservationUsd,
   ContextBackfillService,
   type ContextBackfillPricing,
   type ContextBackfillWorkResult,
@@ -153,7 +154,8 @@ export type ContextJobResult =
         | 'indexing-budget'
         | 'interactive-headroom'
         | 'overall-budget'
-        | 'run-budget';
+        | 'run-budget'
+        | 'usage-contract';
       readonly status: 'budget-deferred';
     }
   | { readonly status: 'failed' }
@@ -200,6 +202,7 @@ interface ExistingSourceRevision {
 
 interface ContextJobRow {
   readonly attemptCount: number;
+  readonly backfillRunId: number | null;
   readonly completeness: ContextCompleteness;
   readonly id: number;
   readonly jobKey: string;
@@ -261,7 +264,14 @@ export class ChannelContextService {
     this.#conversation = options.conversation;
     this.#database = options.database;
     this.#embed = options.embed;
-    this.#estimateUsd = options.estimateUsd ?? 0.05;
+    this.#estimateUsd = contextCallReservationUsd(
+      options.backfillPricing ?? {
+        embeddingInputPerMillionUsd: 0,
+        summaryInputPerMillionUsd: 0,
+        summaryOutputPerMillionUsd: 0,
+      },
+      options.estimateUsd ?? 0.05,
+    );
     this.#guildId = options.guildId;
     this.#memory = options.memory;
     this.#maxSourceTokens = options.maxSourceTokens ?? 8_000;
@@ -278,25 +288,28 @@ export class ChannelContextService {
     this.#timeZone = options.timeZone;
     this.#uploadForgetJournal = options.uploadForgetJournal;
     this.#backfill = new ContextBackfillService({
-      applySource: (source) =>
-        this.apply({
-          attachmentMetadataJson: source.attachmentMetadataJson,
-          canModerateContext: source.canModerateContext,
-          content: source.content,
-          editedAt: source.editedAt,
-          memoryExtraction:
-            source.authorKind === 'human' ? 'automatic' : 'none',
-          messageId: source.messageId,
-          occurredAt: source.occurredAt,
-          platformEventId: source.messageId,
-          replyToMessageId: source.replyToMessageId,
-          requestId: source.messageId,
-          revisionChecksum: source.revisionChecksum,
-          role: source.authorKind === 'chief' ? 'chief' : 'human',
-          speakerId: source.requesterId,
-          speakerName: source.speakerName,
-          type: 'upsert',
-        }),
+      applySource: (source, backfillRunId) =>
+        this.#applyFromBackfill(
+          {
+            attachmentMetadataJson: source.attachmentMetadataJson,
+            canModerateContext: source.canModerateContext,
+            content: source.content,
+            editedAt: source.editedAt,
+            memoryExtraction:
+              source.authorKind === 'human' ? 'automatic' : 'none',
+            messageId: source.messageId,
+            occurredAt: source.occurredAt,
+            platformEventId: source.messageId,
+            replyToMessageId: source.replyToMessageId,
+            requestId: source.messageId,
+            revisionChecksum: source.revisionChecksum,
+            role: source.authorKind === 'chief' ? 'chief' : 'human',
+            speakerId: source.requesterId,
+            speakerName: source.speakerName,
+            type: 'upsert',
+          },
+          backfillRunId,
+        ),
       ...(options.budget === undefined ? {} : { budget: options.budget }),
       channelId: options.channelId,
       database: options.database,
@@ -330,6 +343,15 @@ export class ChannelContextService {
       change.type === 'upsert'
         ? this.#applyUpsert(change)
         : this.#applySuppression(change),
+    )();
+  }
+
+  #applyFromBackfill(
+    change: ContextSourceUpsert,
+    backfillRunId: number,
+  ): ContextApplyResult {
+    return this.#database.transaction(() =>
+      this.#applyUpsert(change, null, backfillRunId),
     )();
   }
 
@@ -663,7 +685,12 @@ export class ChannelContextService {
           `select min(freshness_deadline) from context_jobs
            where not_before <= ?
              and (status = 'pending'
-               or (status = 'leased' and lease_expires_at <= ?))`,
+               or (status = 'leased' and lease_expires_at <= ?))
+             and (backfill_run_id is null or exists(
+               select 1 from context_backfills b
+               where b.id = context_jobs.backfill_run_id
+                 and b.status = 'active'
+             ))`,
         )
         .pluck()
         .get(now, now) as number | null) ?? null
@@ -791,6 +818,9 @@ export class ChannelContextService {
       'context-rollup',
       this.#estimateUsd * estimatedCalls,
       {
+        ...(job.backfillRunId === null
+          ? {}
+          : { backfillRunId: job.backfillRunId }),
         priority: 'background',
         workCategory: 'indexing',
       },
@@ -802,6 +832,9 @@ export class ChannelContextService {
           ? now + 5_000
           : nextUtcMonth(now);
       this.#deferJob(job.id, notBefore, reason);
+      if (job.backfillRunId !== null) {
+        this.#pauseBackfillRun(job.backfillRunId, reason, now);
+      }
       return { notBefore, reason, status: 'budget-deferred' };
     }
     this.#database
@@ -818,6 +851,28 @@ export class ChannelContextService {
         ) +
         plan.visibleUsageUsd +
         embedded.usageUsd;
+      if (usageUsd > reservation.reservedUsd) {
+        budget.reconcileConservatively(reservation.id);
+        this.#database
+          .prepare(
+            `update context_jobs set usage_reservation_id = null
+             where id = ? and usage_reservation_id = ?`,
+          )
+          .run(job.id, reservation.id);
+        this.#deferJob(
+          job.id,
+          now + retryDelay(job.attemptCount),
+          'usage-contract',
+        );
+        if (job.backfillRunId !== null) {
+          this.#pauseBackfillRun(job.backfillRunId, 'usage-contract', now);
+        }
+        return {
+          notBefore: now + retryDelay(job.attemptCount),
+          reason: 'usage-contract',
+          status: 'budget-deferred',
+        };
+      }
       let documentId = 0;
       const obsolete = this.#database.transaction((): boolean => {
         const commitNow = this.#now();
@@ -1046,11 +1101,17 @@ export class ChannelContextService {
                   usage_reservation_id as usageReservationId,
                   completeness,
                   source_revision_checksum as sourceRevisionChecksum,
-                  attempt_count as attemptCount
+                  attempt_count as attemptCount,
+                  backfill_run_id as backfillRunId
            from context_jobs
            where not_before <= ?
              and (status = 'pending'
                or (status = 'leased' and lease_expires_at <= ?))
+             and (backfill_run_id is null or exists(
+               select 1 from context_backfills b
+               where b.id = context_jobs.backfill_run_id
+                 and b.status = 'active'
+             ))
            order by freshness_deadline, id limit 1`,
         )
         .get(now, now) as ContextJobRow | undefined;
@@ -1242,6 +1303,7 @@ export class ChannelContextService {
         this.#documentRevisionChecksum('hourly', period.start, period.end),
         period.end,
         period.end + FINAL_DAILY_DEADLINE_MS,
+        job.backfillRunId,
       );
       return;
     }
@@ -1257,6 +1319,7 @@ export class ChannelContextService {
         this.#documentRevisionChecksum('daily', period.start, period.end),
         period.end,
         period.end + FINAL_WEEKLY_DEADLINE_MS,
+        job.backfillRunId,
       );
       for (const proposal of topicProposals) {
         this.#upsertTopicJob(
@@ -1264,6 +1327,8 @@ export class ChannelContextService {
           [documentId],
           job.periodStart,
           now,
+          undefined,
+          job.backfillRunId,
         );
       }
       return;
@@ -1288,6 +1353,7 @@ export class ChannelContextService {
           job.periodStart,
           now,
           topic.topicKey,
+          job.backfillRunId,
         );
       }
     }
@@ -1316,14 +1382,15 @@ export class ChannelContextService {
     checksum: string,
     notBefore: number,
     freshnessDeadline: number,
+    backfillRunId: number | null,
   ): void {
     this.#database
       .prepare(
         `insert into context_jobs
            (job_key, tier, period_start, period_end, timezone, topic_key,
             completeness, source_revision_checksum, not_before,
-            freshness_deadline)
-         values (?, ?, ?, ?, ?, null, 'final', ?, ?, ?)
+            freshness_deadline, backfill_run_id)
+         values (?, ?, ?, ?, ?, null, 'final', ?, ?, ?, ?)
          on conflict(job_key) do update set
            source_revision_checksum = excluded.source_revision_checksum,
            not_before = excluded.not_before,
@@ -1339,7 +1406,12 @@ export class ChannelContextService {
            last_error_category = case
              when context_jobs.source_revision_checksum
                     != excluded.source_revision_checksum
-             then null else context_jobs.last_error_category end`,
+             then null else context_jobs.last_error_category end,
+           backfill_run_id = case
+             when excluded.backfill_run_id is not null
+             then excluded.backfill_run_id
+             when context_jobs.status = 'completed' then null
+             else context_jobs.backfill_run_id end`,
       )
       .run(
         `${period.key}:final`,
@@ -1350,6 +1422,7 @@ export class ChannelContextService {
         checksum,
         notBefore,
         freshnessDeadline,
+        backfillRunId,
       );
   }
 
@@ -1359,6 +1432,7 @@ export class ChannelContextService {
     periodStart: number,
     now: number,
     existingTopicKey?: string,
+    backfillRunId: number | null = null,
   ): void {
     const topicKey =
       existingTopicKey ??
@@ -1383,8 +1457,9 @@ export class ChannelContextService {
         `insert into context_jobs
            (job_key, tier, period_start, period_end, timezone, topic_key,
             topic_label, completeness, source_revision_checksum,
-            source_document_ids_json, not_before, freshness_deadline)
-         values (?, 'long-term', ?, null, ?, ?, ?, 'final', ?, ?, ?, ?)
+            source_document_ids_json, not_before, freshness_deadline,
+            backfill_run_id)
+         values (?, 'long-term', ?, null, ?, ?, ?, 'final', ?, ?, ?, ?, ?)
          on conflict(job_key) do update set
            topic_label = excluded.topic_label,
            source_revision_checksum = excluded.source_revision_checksum,
@@ -1402,7 +1477,12 @@ export class ChannelContextService {
            last_error_category = case
              when context_jobs.source_revision_checksum
                     != excluded.source_revision_checksum
-             then null else context_jobs.last_error_category end`,
+             then null else context_jobs.last_error_category end,
+           backfill_run_id = case
+             when excluded.backfill_run_id is not null
+             then excluded.backfill_run_id
+             when context_jobs.status = 'completed' then null
+             else context_jobs.backfill_run_id end`,
       )
       .run(
         `long-term:${this.#timeZone}:${topicKey}:final`,
@@ -1414,6 +1494,7 @@ export class ChannelContextService {
         JSON.stringify(allSourceIds),
         now,
         now + LONG_TERM_DEADLINE_MS,
+        backfillRunId,
       );
   }
 
@@ -1432,6 +1513,7 @@ export class ChannelContextService {
   #applyUpsert(
     change: ContextSourceUpsert,
     logicalResponseId: string | null = null,
+    backfillRunId: number | null = null,
   ): ContextApplyResult {
     const scopeId = this.#sourceScopeId(change.messageId);
     const existingId = this.#eventId(change.messageId);
@@ -1514,7 +1596,7 @@ export class ChannelContextService {
         'insert into conversation_event_fts (rowid, content) values (?, ?)',
       )
       .run(eventId, canonical.content);
-    this.#scheduleHourlyJobs(canonical.occurredAt);
+    this.#scheduleHourlyJobs(canonical.occurredAt, backfillRunId);
     let memorySourceEventId: number | null = null;
     const memoryExtraction =
       change.role === 'chief'
@@ -1562,7 +1644,10 @@ export class ChannelContextService {
     return { eventId: result.eventId, status: 'suppressed' };
   }
 
-  #scheduleHourlyJobs(occurredAt: number): void {
+  #scheduleHourlyJobs(
+    occurredAt: number,
+    backfillRunId: number | null = null,
+  ): void {
     const period = contextPeriod({
       instant: occurredAt,
       tier: 'hourly',
@@ -1577,6 +1662,7 @@ export class ChannelContextService {
         checksum,
         now + PROVISIONAL_ELIGIBILITY_DELAY_MS,
         now + PROVISIONAL_DEADLINE_MS,
+        backfillRunId,
       );
     }
     this.#upsertJob(
@@ -1585,6 +1671,7 @@ export class ChannelContextService {
       checksum,
       period.end,
       period.end + FINAL_HOURLY_DEADLINE_MS,
+      backfillRunId,
     );
   }
 
@@ -1594,14 +1681,15 @@ export class ChannelContextService {
     checksum: string,
     notBefore: number,
     freshnessDeadline: number,
+    backfillRunId: number | null,
   ): void {
     this.#database
       .prepare(
         `insert into context_jobs
            (job_key, tier, period_start, period_end, timezone, topic_key,
             completeness, source_revision_checksum, not_before,
-            freshness_deadline)
-         values (?, 'hourly', ?, ?, ?, null, ?, ?, ?, ?)
+            freshness_deadline, backfill_run_id)
+         values (?, 'hourly', ?, ?, ?, null, ?, ?, ?, ?, ?)
          on conflict(job_key) do update set
            source_revision_checksum = excluded.source_revision_checksum,
            not_before = case
@@ -1635,7 +1723,12 @@ export class ChannelContextService {
            last_error_category = case
              when context_jobs.source_revision_checksum
                     != excluded.source_revision_checksum
-             then null else context_jobs.last_error_category end`,
+             then null else context_jobs.last_error_category end,
+           backfill_run_id = case
+             when excluded.backfill_run_id is not null
+             then excluded.backfill_run_id
+             when context_jobs.status = 'completed' then null
+             else context_jobs.backfill_run_id end`,
       )
       .run(
         `${period.key}:${completeness}`,
@@ -1646,7 +1739,18 @@ export class ChannelContextService {
         checksum,
         notBefore,
         freshnessDeadline,
+        backfillRunId,
       );
+  }
+
+  #pauseBackfillRun(runId: number, reason: string, now: number): void {
+    this.#database
+      .prepare(
+        `update context_backfills
+         set status = 'paused', pause_reason = ?, updated_at = ?
+         where id = ? and status = 'active'`,
+      )
+      .run(reason, now, runId);
   }
 
   #sourceRevisionChecksum(period: ContextPeriod): string {

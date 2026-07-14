@@ -24,7 +24,10 @@ export interface ContextBackfillPricing {
 }
 
 export interface ContextBackfillServiceOptions {
-  readonly applySource?: (source: NormalizedTextSource) => unknown;
+  readonly applySource?: (
+    source: NormalizedTextSource,
+    backfillRunId: number,
+  ) => unknown;
   readonly budget?: UsageBudget;
   readonly channelId: string;
   readonly database: Database.Database;
@@ -117,19 +120,22 @@ export type ContextBackfillWorkResult =
         | 'indexing-budget'
         | 'interactive-headroom'
         | 'overall-budget'
-        | 'run-budget';
+        | 'run-budget'
+        | 'usage-contract';
       readonly status: 'budget-paused';
     }
   | { readonly status: 'retry' };
 
 const DEFAULT_MAX_SOURCE_TOKENS = 8_000;
 const ESTIMATED_OUTPUT_TOKENS_PER_CALL = 1_200;
+const MAX_AGGREGATE_INPUT_TOKENS = ESTIMATED_OUTPUT_TOKENS_PER_CALL * 2;
 const RAW_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const RECENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export class ContextBackfillService {
   readonly #applySource:
-    ((source: NormalizedTextSource) => unknown) | undefined;
+    | ((source: NormalizedTextSource, backfillRunId: number) => unknown)
+    | undefined;
   readonly #budget: UsageBudget | undefined;
   readonly #channelId: string;
   readonly #database: Database.Database;
@@ -154,7 +160,10 @@ export class ContextBackfillService {
     this.#channelId = options.channelId;
     this.#database = options.database;
     this.#embed = options.embed;
-    this.#estimateUsd = options.estimateUsd ?? 0.05;
+    this.#estimateUsd = contextCallReservationUsd(
+      options.pricing,
+      options.estimateUsd ?? 0.05,
+    );
     this.#guildId = options.guildId;
     this.#history = options.history;
     this.#maxSourceTokens =
@@ -188,9 +197,21 @@ export class ContextBackfillService {
     return (
       (this.#database
         .prepare(
-          `select min(coalesce(activated_at, created_at))
-           from context_backfills
-           where scope_id = ? and status = 'active'`,
+          `select min(coalesce(b.activated_at, b.created_at))
+           from context_backfills b
+           where b.scope_id = ? and b.status = 'active'
+             and (
+               b.next_page_index is not null
+               or exists(
+                 select 1 from context_jobs j
+                 where j.backfill_run_id = b.id and j.status = 'failed'
+               )
+               or not exists(
+                 select 1 from context_jobs j
+                 where j.backfill_run_id = b.id
+                   and j.status in ('pending', 'leased')
+               )
+             )`,
         )
         .pluck()
         .get(this.#scopeId()) as number | null) ?? null
@@ -199,7 +220,8 @@ export class ContextBackfillService {
 
   public async runNext(now: number): Promise<ContextBackfillWorkResult> {
     const run = this.#activeRun();
-    if (run?.nextPageIndex == null) return { status: 'idle' };
+    if (run === null) return { status: 'idle' };
+    if (run.nextPageIndex === null) return this.#finalizeRun(run.runId, now);
     const history = this.#history;
     const budget = this.#budget;
     const summarizer = this.#summarizer;
@@ -215,15 +237,8 @@ export class ContextBackfillService {
     this.#recoverOutstandingReservations(run.runId, budget);
     const page = this.#page(run.runId, run.nextPageIndex);
     if (page === null) throw new Error('backfill manifest page is missing');
-    const fetched = await history.fetchPage({
-      afterMessageId: null,
-      cursor: page.requestBeforeSourceId,
-      mode: 'backfill',
-      retentionCutoff: Number.MIN_SAFE_INTEGER,
-      scanUpperBoundMessageId: null,
-    });
-    if (fetched.rateLimited || !fetched.complete) return { status: 'retry' };
-    const boundedSources = this.#boundedPageSources(fetched, page);
+    const boundedSources = await this.#refetchManifestSources(history, page);
+    if (boundedSources === null) return { status: 'retry' };
     const recent = boundedSources.filter(
       ({ occurredAt }) => occurredAt >= now - RAW_RETENTION_MS,
     );
@@ -231,7 +246,7 @@ export class ContextBackfillService {
       const applySource = this.#applySource;
       if (applySource === undefined) return { status: 'retry' };
       for (const source of [...recent].sort(compareSourceOldestFirst)) {
-        applySource(source);
+        applySource(source, run.runId);
       }
     }
     const old = boundedSources.filter(
@@ -247,13 +262,13 @@ export class ContextBackfillService {
       this.#timeZone,
     );
     const segment = segments.find(
-      ({ key }) => !this.#segmentCommitted(run.runId, key),
+      (candidate) => !this.#segmentCommitted(run.runId, candidate),
     );
     if (segment === undefined) {
       this.#completePage(run.runId, page.pageIndex, now);
       return { status: 'completed', runId: run.runId };
     }
-    const priorSegments = this.#priorSegmentDocuments(segment);
+    const priorSegments = this.#priorAggregateDocument(segment);
     const estimatedCalls = priorSegments.length === 0 ? 1 : 2;
     const reservation = budget.reserve(
       'context-backfill',
@@ -290,6 +305,11 @@ export class ContextBackfillService {
         segmentResult.usageUsd +
         aggregate.additionalUsageUsd +
         embedded.usageUsd;
+      if (usageUsd > reservation.reservedUsd) {
+        budget.reconcileConservatively(reservation.id);
+        this.#pause(run.runId, 'usage-contract', now);
+        return { reason: 'usage-contract', status: 'budget-paused' };
+      }
       this.#database.transaction(() => {
         this.#assertSegmentCommitCurrent(
           run.runId,
@@ -376,10 +396,12 @@ export class ContextBackfillService {
             usageUsd,
             now,
           );
-        this.#scheduleDaily(segment.periodStart, now);
+        this.#scheduleDaily(segment.periodStart, now, run.runId);
         if (
-          segments.every(({ key }) =>
-            key === segment.key ? true : this.#segmentCommitted(run.runId, key),
+          segments.every(
+            (candidate) =>
+              candidate.key === segment.key ||
+              this.#segmentCommitted(run.runId, candidate),
           )
         ) {
           this.#completePage(run.runId, page.pageIndex, now);
@@ -843,6 +865,41 @@ export class ContextBackfillService {
     return [...selected.values()];
   }
 
+  async #refetchManifestSources(
+    history: DiscordHistorySource,
+    page: BackfillPageRow,
+  ): Promise<NormalizedTextSource[] | null> {
+    let cursor = page.requestBeforeSourceId;
+    const selected = new Map<string, NormalizedTextSource>();
+    for (;;) {
+      const fetched = await history.fetchPage({
+        afterMessageId: null,
+        cursor,
+        mode: 'backfill',
+        retentionCutoff: Number.MIN_SAFE_INTEGER,
+        scanUpperBoundMessageId: cursor === null ? page.newestSourceId : null,
+      });
+      if (fetched.rateLimited || !fetched.complete) return null;
+      for (const source of this.#boundedPageSources(fetched, page)) {
+        const existing = selected.get(source.messageId);
+        if (existing === undefined || sourceIsNewer(source, existing)) {
+          selected.set(source.messageId, source);
+        }
+      }
+      const coveredOldest = fetched.coverage?.oldestMessageId;
+      if (
+        coveredOldest !== undefined &&
+        BigInt(coveredOldest) <= BigInt(page.oldestSourceId)
+      ) {
+        return [...selected.values()];
+      }
+      if (coveredOldest === undefined || fetched.nextCursor === null)
+        return null;
+      if (fetched.nextCursor === cursor) return null;
+      cursor = fetched.nextCursor;
+    }
+  }
+
   #sourceEligibleForRun(
     runId: number,
     pageIndex: number,
@@ -902,33 +959,36 @@ export class ContextBackfillService {
     );
   }
 
-  #segmentCommitted(runId: number, segmentKey: string): boolean {
-    return (
-      this.#database
-        .prepare(
-          `select exists(
-             select 1 from context_backfill_segments
-             where run_id = ? and segment_key = ?
-           )`,
-        )
-        .pluck()
-        .get(runId, segmentKey) === 1
-    );
+  #segmentCommitted(runId: number, segment: BackfillSegment): boolean {
+    const checksum = this.#database
+      .prepare(
+        `select source_checksum from context_backfill_segments
+         where run_id = ? and segment_key = ?`,
+      )
+      .pluck()
+      .get(runId, segment.key) as string | undefined;
+    return checksum === segmentChecksum(segment);
   }
 
-  #priorSegmentDocuments(segment: BackfillSegment): {
+  #priorAggregateDocument(segment: BackfillSegment): {
     readonly id: number;
     readonly summary: string;
   }[] {
     return this.#database
       .prepare(
         `select id, summary from context_documents
-         where tier = 'hourly' and period_start = ? and period_end = ?
-           and timezone = ? and state = 'active'
-           and content_state = 'available' and is_internal = 1
-         order by id`,
+         where document_key = ? and tier = 'hourly'
+           and period_start = ? and period_end = ? and timezone = ?
+           and state = 'active' and content_state = 'available'
+           and is_internal = 0
+         order by revision desc limit 1`,
       )
-      .all(segment.periodStart, segment.periodEnd, this.#timeZone) as {
+      .all(
+        segment.periodKey,
+        segment.periodStart,
+        segment.periodEnd,
+        this.#timeZone,
+      ) as {
       readonly id: number;
       readonly summary: string;
     }[];
@@ -959,6 +1019,14 @@ export class ContextBackfillService {
       })),
       { id: 'segment:new', text: segmentResult.summary },
     ];
+    if (
+      sources.reduce(
+        (total, source) => total + approximateTokens(source.text),
+        0,
+      ) > MAX_AGGREGATE_INPUT_TOKENS
+    ) {
+      throw new Error('backfill aggregate input exceeded its hard token bound');
+    }
     const result = await summarizeBackfill(summarizer, sources);
     return {
       additionalUsageUsd: result.usageUsd,
@@ -998,7 +1066,7 @@ export class ContextBackfillService {
       )
       .pluck()
       .get(runId, this.#scopeId(), pageIndex);
-    if (currentRun !== 1 || this.#segmentCommitted(runId, segment.key)) {
+    if (currentRun !== 1 || this.#segmentCommitted(runId, segment)) {
       throw new Error('backfill segment is no longer current');
     }
     for (const { normalized } of segment.sources) {
@@ -1075,7 +1143,11 @@ export class ContextBackfillService {
     return eventId;
   }
 
-  #scheduleDaily(hourlyPeriodStart: number, now: number): void {
+  #scheduleDaily(
+    hourlyPeriodStart: number,
+    now: number,
+    backfillRunId: number,
+  ): void {
     const period = contextPeriod({
       instant: hourlyPeriodStart,
       tier: 'daily',
@@ -1096,8 +1168,8 @@ export class ContextBackfillService {
         `insert into context_jobs
            (job_key, tier, period_start, period_end, timezone, topic_key,
             completeness, source_revision_checksum, not_before,
-            freshness_deadline, source_document_ids_json)
-         values (?, 'daily', ?, ?, ?, null, 'final', ?, ?, ?, '[]')
+            freshness_deadline, source_document_ids_json, backfill_run_id)
+         values (?, 'daily', ?, ?, ?, null, 'final', ?, ?, ?, '[]', ?)
          on conflict(job_key) do update set
            source_revision_checksum = excluded.source_revision_checksum,
            status = case
@@ -1119,7 +1191,12 @@ export class ContextBackfillService {
            last_error_category = case
              when context_jobs.source_revision_checksum !=
                   excluded.source_revision_checksum
-             then null else context_jobs.last_error_category end`,
+             then null else context_jobs.last_error_category end,
+           backfill_run_id = case
+             when excluded.backfill_run_id is not null
+             then excluded.backfill_run_id
+             when context_jobs.status = 'completed' then null
+             else context_jobs.backfill_run_id end`,
       )
       .run(
         `${period.key}:final`,
@@ -1129,6 +1206,7 @@ export class ContextBackfillService {
         checksum,
         Math.min(now, period.end),
         period.end + 30 * 60 * 1_000,
+        backfillRunId,
       );
   }
 
@@ -1143,22 +1221,45 @@ export class ContextBackfillService {
     this.#database
       .prepare(
         `update context_backfills
-         set status = case when ? < 0 then 'completed' else status end,
-             next_page_index = case when ? < 0 then null else ? end,
-             completed_at = case when ? < 0 then ? else completed_at end,
+         set next_page_index = case when ? < 0 then null else ? end,
              updated_at = ?
          where id = ? and status = 'active' and next_page_index = ?`,
       )
-      .run(
-        nextPageIndex,
-        nextPageIndex,
-        nextPageIndex,
-        nextPageIndex,
-        now,
-        now,
-        runId,
-        pageIndex,
-      );
+      .run(nextPageIndex, nextPageIndex, now, runId, pageIndex);
+  }
+
+  #finalizeRun(runId: number, now: number): ContextBackfillWorkResult {
+    const failed = Number(
+      this.#database
+        .prepare(
+          `select count(*) from context_jobs
+           where backfill_run_id = ? and status = 'failed'`,
+        )
+        .pluck()
+        .get(runId),
+    );
+    if (failed > 0) {
+      this.#pause(runId, 'induced-job-failed', now);
+      return { status: 'retry' };
+    }
+    const outstanding = Number(
+      this.#database
+        .prepare(
+          `select count(*) from context_jobs
+           where backfill_run_id = ? and status in ('pending', 'leased')`,
+        )
+        .pluck()
+        .get(runId),
+    );
+    if (outstanding > 0) return { status: 'idle' };
+    this.#database
+      .prepare(
+        `update context_backfills
+         set status = 'completed', completed_at = ?, updated_at = ?
+         where id = ? and status = 'active' and next_page_index is null`,
+      )
+      .run(now, now, runId);
+    return { runId, status: 'completed' };
   }
 
   #pause(runId: number, reason: string, now: number): void {
@@ -1207,6 +1308,17 @@ export class ContextBackfillService {
 
 function approximateTokens(text: string): number {
   return Math.ceil(text.length / 4);
+}
+
+export function contextCallReservationUsd(
+  pricing: ContextBackfillPricing,
+  configuredMinimumUsd: number,
+): number {
+  const hardProviderBound =
+    0.5 * pricing.summaryInputPerMillionUsd +
+    0.0012 * pricing.summaryOutputPerMillionUsd +
+    0.0012 * pricing.embeddingInputPerMillionUsd;
+  return Math.max(configuredMinimumUsd, hardProviderBound);
 }
 
 function digest(value: unknown): string {
@@ -1300,18 +1412,22 @@ function buildSegments(
     });
     let current: BackfillSegmentSource[] = [];
     let currentTokens = 0;
-    let segmentIndex = 0;
     const flush = (): void => {
       if (current.length === 0) return;
       result.push({
-        key: `${pageIndex.toString()}:${period.start.toString()}:${segmentIndex.toString()}`,
+        key: `${pageIndex.toString()}:${period.start.toString()}:${digest(
+          current.map(({ id, normalized, text }) => ({
+            id,
+            revisionChecksum: normalized.revisionChecksum,
+            textChecksum: digest(text),
+          })),
+        )}`,
         pageIndex,
         periodEnd: period.end,
         periodKey: period.key,
         periodStart: period.start,
         sources: current,
       });
-      segmentIndex += 1;
       current = [];
       currentTokens = 0;
     };

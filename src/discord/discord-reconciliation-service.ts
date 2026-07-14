@@ -434,6 +434,16 @@ export function discordHistoryFetchRequest(input: DiscordHistoryFetchInput): {
   readonly before?: string;
   readonly limit: 100;
 } {
+  if (
+    input.mode === 'backfill' &&
+    input.cursor === null &&
+    input.scanUpperBoundMessageId !== null
+  ) {
+    return {
+      before: (BigInt(input.scanUpperBoundMessageId) + 1n).toString(),
+      limit: 100,
+    };
+  }
   if (input.mode === 'full' && input.cursor === null) {
     const scanUpperBoundMessageId = requireFullScanUpperBound(input);
     return {

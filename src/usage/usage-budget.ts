@@ -51,7 +51,11 @@ export type ReservationResult =
       readonly reason:
         'ceiling' | 'indexing-ceiling' | 'interactive-headroom' | 'run-ceiling';
     }
-  | { readonly allowed: true; readonly id: string };
+  | {
+      readonly allowed: true;
+      readonly id: string;
+      readonly reservedUsd: number;
+    };
 
 export interface UsageSnapshot {
   readonly actualUsd: number;
@@ -176,7 +180,7 @@ export class UsageBudget {
       ...work,
       reservationUsd: estimateUsd,
     });
-    return { allowed: true, id };
+    return { allowed: true, id, reservedUsd: estimateUsd };
   }
 
   public reconcile(reservationId: string, actualUsd: number): void {

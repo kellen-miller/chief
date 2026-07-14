@@ -152,6 +152,30 @@ describe('DiscordRestHistorySource', () => {
     expect(result.items[0]?.source).toBeUndefined();
   });
 
+  it('anchors the first backfill request at the manifest ceiling', async () => {
+    const get = vi.fn(() => Promise.resolve([]));
+    const source = new DiscordRestHistorySource({
+      botUserId,
+      channelId,
+      dependencies: { get },
+      guildId,
+      token: 'fake-token',
+    });
+
+    await source.fetchPage({
+      afterMessageId: null,
+      cursor: null,
+      mode: 'backfill',
+      retentionCutoff: 0,
+      scanUpperBoundMessageId: '62345678901234567',
+    });
+
+    expect(get).toHaveBeenCalledWith(`/channels/${channelId}/messages`, {
+      before: '62345678901234568',
+      limit: 100,
+    });
+  });
+
   it('rejects malformed arrays and timestamps without content logging', async () => {
     const malformed = new DiscordRestHistorySource({
       botUserId,

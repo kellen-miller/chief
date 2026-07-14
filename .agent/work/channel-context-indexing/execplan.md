@@ -23,6 +23,7 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 - [x] (2026-07-14 09:39Z) Task 4 assembled one bounded text/Realtime context with one embedding per query, per-tier source and rollup retrieval, recent/history budgeting, provenance links, deterministic replay, privacy/as-of boundaries, and utterance-safe voice recall; 331 tests and final review passed after three correction loops.
 - [x] (2026-07-14 11:43Z) Task 5 implemented redacted cross-store candidate discovery, current self/admin authorization, single-use broad confirmation, one synchronous atomic deletion shared by local and authoritative Discord suppression, immutable GCS upload/retry, content-free migration-safe replay, complete revision scrubbing, and stale-job-safe lineage rebuild; 362 tests and final review passed after three correction loops.
 - [x] (2026-07-14 12:22Z) Task 6 added an aggregate-only reverse manifest, owner-confirmed activation, GET-only Discord REST history, bounded derived-only expired-history processing, oldest-first resumable segment commits, tombstone/revision guards, and shared queue/budget execution; 388 tests and the repository gate passed.
+- [x] (2026-07-14 12:58Z) Task 6 review correction attributed every induced rollup and reservation to its run, kept runs active through their complete hierarchy, enforced hard provider-cost contracts, anchored refetch to exact manifest ranges, made segment identity source-derived, and reduced same-hour aggregation to a bounded rolling pair; 396 tests and coverage passed.
 - [ ] Milestone 7: expose degraded health, document operations, and validate rollback.
 - [ ] Milestone 8: complete deterministic, quality, container, and live acceptance evidence.
 
@@ -96,8 +97,14 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
   Evidence: Task 6 refetches every previously recorded page boundary to rebuild an in-memory seen-ID set before it continues from the durable cursor; overlapping pages remain deduplicated without durable raw IDs or text.
 - Observation: a crashed paid backfill can leave a durable unresolved reservation that a newly constructed in-memory budget does not know about.
   Evidence: Task 6 restart tests leave an unresolved ledger row, require conservative reconciliation before admission, and pause against the approved run ceiling without invoking the provider again.
-- Observation: bounded segments for the same historical hour need private derived children before they can safely replace one public active hourly revision.
-  Evidence: Task 6 stores one internal derived document per committed segment, aggregates active internal children into the public hourly revision, and preserves all child lineage while never persisting expired raw text.
+- Observation: page exhaustion is not run completion when backfill has induced daily, weekly, or topic work.
+  Evidence: Task 6 review reproduced a run completing after the first page while unattributed downstream jobs continued outside its ceiling. Migration 0007 now carries the run foreign key through every induced job, and finalization waits for the attributed hierarchy.
+- Observation: a configured estimate is not a safe reservation when a provider reports cost only after the call.
+  Evidence: Task 6 review reproduced reported usage above both the reservation and run maximum. Reservations now cover a hard token-cost bound, and a provider contract violation is conservatively charged, committed nowhere, and pauses the run.
+- Observation: reverse pagination must prove the exact persisted manifest interval, including the newest boundary on page zero.
+  Evidence: Task 6 review inserted more than one REST page of newer concurrent creates. Processing now starts below the manifest ceiling and follows cursors until it proves coverage through the manifest page's oldest boundary.
+- Observation: segment ordinals and all-prior-child aggregation are unstable under refetch changes and grow quadratically.
+  Evidence: Task 6 review shifted an old page by removing one source and reproduced a skipped middle source, then split one hour into many segments and reproduced unbounded aggregation input. Segment keys now digest source identity and revision/text checksums; each new private leaf folds with only the active public hourly aggregate.
 
 ## Decision Log
 
@@ -161,6 +168,15 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 - Decision: attach backfill as a separate source on the existing background scheduler and reuse the runtime's single `UsageBudget`.
   Rationale: this preserves live-work priority and one authoritative view of overall, indexing, interactive-headroom, and per-run reservations across restart.
   Date/Author: 2026-07-14, Codex during Task 6 implementation.
+- Decision: make the backfill run own its complete induced hierarchy rather than only direct page work.
+  Rationale: daily, weekly, and topic rollups are costs caused by the backfill and must remain under its lifetime maximum; page exhaustion can finalize only after every attributed job completes.
+  Date/Author: 2026-07-14, Codex from Task 6 implementation review.
+- Decision: treat the reservation as a hard provider-cost contract and pause without persistence when reported usage exceeds it.
+  Rationale: post-call reconciliation cannot safely expand a reservation past the overall, indexing, or run ceiling. A conservative full-reservation charge bounds accounting while making the provider mismatch operationally explicit.
+  Date/Author: 2026-07-14, Codex from Task 6 implementation review.
+- Decision: identify backfill segments by their source content and fold same-hour segments through one active aggregate plus one new leaf.
+  Rationale: refetched page membership may shift, so ordinal idempotence can skip work; a rolling two-source hierarchy preserves bounded provider input without rereading every prior segment.
+  Date/Author: 2026-07-14, Codex from Task 6 implementation review.
 - Decision: require confirmation for every broad scope, store only a nonce checksum and stable candidate IDs, and reevaluate authorization when the confirmation is presented.
   Rationale: candidate counts and target text do not belong in an authorization response, a leaked database must not reveal a usable nonce, and administrator authority may change during the confirmation window.
   Date/Author: 2026-07-14, Codex during Task 5 implementation.
@@ -170,7 +186,7 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 
 ## Outcomes & Retrospective
 
-Milestones 1 through 6 are implemented. Task 6 can inventory accessible channel history without persisting message content, obtain explicit owner activation and a per-run ceiling, then use the running process's existing protected queue and budget to process oldest-first history. Recent sources follow normal ingestion; expired sources become only scrubbed identities plus derived, provenance-backed documents. Tombstones, live revisions, restart reservations, rate limits, duplicates, and page/segment replay remain safe. The repository gate passes 388 deterministic tests with no provider or live Discord calls. Operational and live acceptance remain in Milestones 7 and 8; no live acceptance is claimed.
+Milestones 1 through 6 are implemented. Task 6 can inventory accessible channel history without persisting message content, obtain explicit owner activation and a per-run ceiling, then use the running process's existing protected queue and budget to process oldest-first history. Recent sources follow normal ingestion; expired sources become only scrubbed identities plus derived, provenance-backed documents. The complete induced rollup hierarchy remains run-attributed and ceiling-bound; tombstones, live revisions, exact manifest ranges, restart reservations, rate limits, shifting segments, duplicates, and page/segment replay remain safe. The repository gate passes 396 deterministic tests with no provider or live Discord calls. Operational and live acceptance remain in Milestones 7 and 8; no live acceptance is claimed.
 
 ## Context and Orientation
 
@@ -460,3 +476,4 @@ Current relevant dependencies are `discord.js` 14.26.5, `openai` 6.46.0, `@opena
 - 2026-07-14: Improvement pass 5 closed the resolution review's remaining recovery and identity seams: unconditional fail-closed journal replay on every host start, migration-0002 recovery through a separate image, bounded local recovery artifacts, one source row per Chief reply chunk, covered deletion-inference logic, and explicit source-FTS retrieval. Usefulness score: 10/10 because it removed operator bypass, old-image, forgotten-byte, coverage, duplicate-chunk, and one-second retrieval ambiguities before implementation.
 - 2026-07-14: Task 5 implemented the planned synchronous deletion seam and refined confirmation-time permission checks, broad no-match redaction, supersession-chain scrubbing, and artifact-independent tombstone replay from executable regressions. These changes preserve the approved policy while closing concrete permission-loss, FTS, and older-backup failure modes.
 - 2026-07-14: Task 6 implemented the content-free reverse manifest and runtime-owned backfill seam. Resume refetches prior page boundaries to preserve privacy, expired raw content exists only in bounded memory before an atomic derived commit, and restart admission conservatively charges unresolved reservations before any new provider call.
+- 2026-07-14: Task 6 review correction extended run attribution through every induced rollup, enforced hard cost and exact manifest-range contracts, replaced ordinal segment idempotence with source-derived identity, and made same-hour aggregation a bounded rolling fold.

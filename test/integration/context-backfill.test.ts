@@ -15,6 +15,8 @@ import {
   openChiefDatabase,
 } from '../../src/memory/database.js';
 import { SqliteUsageLedger } from '../../src/usage/sqlite-usage-ledger.js';
+import { BackgroundScheduler } from '../../src/usage/background-scheduler.js';
+import { PaidWorkQueue } from '../../src/usage/paid-work-queue.js';
 import { UsageBudget } from '../../src/usage/usage-budget.js';
 
 const guildId = '12345678901234567';
@@ -274,9 +276,9 @@ describe('ContextBackfillService', () => {
       index < 5 && service.status()?.status === 'active';
       index += 1
     ) {
-      await expect(service.runNext(now)).resolves.toMatchObject({
-        status: 'completed',
-      });
+      const result = await service.runNext(now);
+      expect(['completed', 'idle']).toContain(result.status);
+      if (result.status === 'idle') break;
     }
 
     expect(
@@ -340,7 +342,7 @@ describe('ContextBackfillService', () => {
     ).toBe(true);
     expect(service.status()).toMatchObject({
       actualUsageUsd: 0.08,
-      status: 'completed',
+      status: 'active',
     });
     database.close();
   });
@@ -398,6 +400,69 @@ describe('ContextBackfillService', () => {
     database.close();
   });
 
+  it('does not commit provider usage above its hard reservation', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const now = 40 * 24 * 60 * 60 * 1_000;
+    const old = normalized('32345678901234567', 'Old private words', 1_000);
+    const budget = new UsageBudget({
+      ceilingUsd: 0.05,
+      indexingCeilingUsd: 0.05,
+      ledger: new SqliteUsageLedger(database),
+      now: () => now,
+      warningUsd: 0.04,
+    });
+    const service = new ContextBackfillService({
+      budget,
+      channelId,
+      database,
+      embed: () =>
+        Promise.resolve({ embedding: new Float32Array(1536), usageUsd: 0 }),
+      estimateUsd: 0.05,
+      guildId,
+      history: fakeHistory([page([old], null)]),
+      now: () => now,
+      pricing: zeroPricing,
+      summarizer: {
+        summarize: ({ sources }) =>
+          Promise.resolve({
+            confidence: 0.9,
+            inputTokens: 1,
+            outputTokens: 1,
+            sourceIds: sources.map(({ id }) => id),
+            summary: 'Over-contract summary',
+            topicProposals: [],
+            usageUsd: 0.06,
+          }),
+      },
+      timeZone: 'America/New_York',
+    });
+    await service.dryRun({ replace: false });
+    service.activate({ confirmGuildId: guildId, maximumUsageUsd: 0.05 });
+    service.attachHistorySource(repeatingHistory(page([old], null)));
+
+    await expect(service.runNext(now)).resolves.toEqual({
+      reason: 'usage-contract',
+      status: 'budget-paused',
+    });
+
+    expect(service.status()).toMatchObject({
+      actualUsageUsd: 0.05,
+      pauseReason: 'usage-contract',
+      status: 'paused',
+    });
+    expect(
+      database.prepare('select count(*) from context_documents').pluck().get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare('select count(*) from conversation_events')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    database.close();
+  });
+
   it('runs recent backfill through the channel service background lane', async () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
@@ -431,7 +496,10 @@ describe('ContextBackfillService', () => {
       conversation: new ConversationStore(database),
       database,
       embed: () =>
-        Promise.resolve({ embedding: new Float32Array(1536), usageUsd: 0 }),
+        Promise.resolve({
+          embedding: new Float32Array(1536),
+          usageUsd: 0,
+        }),
       guildId,
       now: () => now,
       summarizer: {
@@ -466,7 +534,339 @@ describe('ContextBackfillService', () => {
       content: recent.content,
       contentState: 'available',
     });
-    expect(setup.status()).toMatchObject({ status: 'completed' });
+    expect(setup.status()).toMatchObject({ status: 'active' });
+    database.close();
+  });
+
+  it('charges the full recent and expired rollup chain to its run', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const now = Date.UTC(2026, 6, 14, 12);
+    const recent = normalized(
+      '42345678901234567',
+      'Recent attributed discussion.',
+      now - 10 * 24 * 60 * 60 * 1_000,
+    );
+    const expired = normalized(
+      '32345678901234567',
+      'Expired attributed discussion.',
+      now - 40 * 24 * 60 * 60 * 1_000,
+    );
+    const historyPage = page([recent, expired], null);
+    const setup = new ContextBackfillService({
+      channelId,
+      database,
+      guildId,
+      history: fakeHistory([historyPage]),
+      now: () => now,
+      pricing: zeroPricing,
+    });
+    const run = await setup.dryRun({ replace: false });
+    setup.activate({ confirmGuildId: guildId, maximumUsageUsd: 1 });
+    const budget = new UsageBudget({
+      ceilingUsd: 10,
+      indexingCeilingUsd: 3,
+      ledger: new SqliteUsageLedger(database),
+      now: () => now,
+      warningUsd: 5,
+    });
+    const context = new ChannelContextService({
+      backfillPricing: zeroPricing,
+      budget,
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      embed: () =>
+        Promise.resolve({
+          embedding: new Float32Array(1536),
+          usageUsd: 0.001,
+        }),
+      estimateUsd: 0.01,
+      guildId,
+      now: () => now,
+      summarizer: {
+        summarize: (input) =>
+          Promise.resolve({
+            confidence: 0.9,
+            inputTokens: 1,
+            outputTokens: 1,
+            sourceIds: input.sources.map(({ id }) => id),
+            summary: `${input.tier} attributed summary`,
+            topicProposals:
+              input.tier === 'daily'
+                ? [
+                    {
+                      label: 'Attributed topic',
+                      sourceIds: [input.sources[0]?.id ?? 'missing'],
+                    },
+                  ]
+                : [],
+            usageUsd: 0.001,
+          }),
+      },
+      timeZone: 'America/New_York',
+    });
+    context.attachHistorySource(repeatingHistory(historyPage));
+    const scheduler = new BackgroundScheduler({
+      backfill: {
+        nextDeadline: (time) => context.nextDeadline(time, 'backfill'),
+        runOne: (time) => context.runNext(time, 'backfill'),
+      },
+      context: {
+        nextDeadline: (time) => context.nextDeadline(time),
+        runOne: (time) => context.runNext(time),
+      },
+      memory: { nextDeadline: () => null, runOne: () => Promise.resolve() },
+      queue: new PaidWorkQueue(),
+    });
+
+    await scheduler.runBackgroundOne(now);
+
+    expect(setup.status(run.runId)).toMatchObject({ status: 'active' });
+    expect(
+      database
+        .prepare(
+          `select distinct backfill_run_id from context_jobs
+           where backfill_run_id is not null`,
+        )
+        .pluck()
+        .all(),
+    ).toEqual([run.runId]);
+
+    for (
+      let attempt = 0;
+      attempt < 30 && setup.status(run.runId)?.status === 'active';
+      attempt += 1
+    ) {
+      await scheduler.runBackgroundOne(now);
+    }
+
+    expect(setup.status(run.runId)).toMatchObject({ status: 'completed' });
+    expect(
+      database
+        .prepare(
+          `select distinct tier from context_jobs
+           where backfill_run_id = ? order by tier`,
+        )
+        .pluck()
+        .all(run.runId),
+    ).toEqual(['daily', 'hourly', 'long-term', 'weekly']);
+    expect(
+      database
+        .prepare(
+          `select count(*) from usage_ledger
+           where backfill_run_id = ? and actual_usd is not null`,
+        )
+        .pluck()
+        .get(run.runId),
+    ).toBeGreaterThan(0);
+    const attributedUsage = Number(
+      database
+        .prepare(
+          `select coalesce(sum(actual_usd), 0) from usage_ledger
+           where backfill_run_id = ?`,
+        )
+        .pluck()
+        .get(run.runId),
+    );
+    expect(setup.status(run.runId)?.actualUsageUsd).toBeCloseTo(
+      attributedUsage,
+    );
+    expect(attributedUsage).toBeGreaterThan(0);
+    expect(attributedUsage).toBeLessThanOrEqual(1);
+    expect(
+      database
+        .prepare(
+          `select count(*) from context_jobs
+           where backfill_run_id = ? and status != 'completed'`,
+        )
+        .pluck()
+        .get(run.runId),
+    ).toBe(0);
+    database.close();
+  });
+
+  it('pauses before an induced rollup can exceed its run ceiling', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const now = Date.UTC(2026, 6, 14, 12);
+    const expired = normalized(
+      '32345678901234567',
+      'Expired ceiling discussion.',
+      now - 40 * 24 * 60 * 60 * 1_000,
+    );
+    const historyPage = page([expired], null);
+    const setup = new ContextBackfillService({
+      channelId,
+      database,
+      guildId,
+      history: fakeHistory([historyPage]),
+      now: () => now,
+      pricing: zeroPricing,
+    });
+    const run = await setup.dryRun({ replace: false });
+    setup.activate({ confirmGuildId: guildId, maximumUsageUsd: 0.015 });
+    const budget = new UsageBudget({
+      ceilingUsd: 10,
+      indexingCeilingUsd: 3,
+      ledger: new SqliteUsageLedger(database),
+      now: () => now,
+      warningUsd: 5,
+    });
+    const context = new ChannelContextService({
+      backfillPricing: zeroPricing,
+      budget,
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      embed: () =>
+        Promise.resolve({ embedding: new Float32Array(1536), usageUsd: 0 }),
+      estimateUsd: 0.01,
+      guildId,
+      now: () => now,
+      summarizer: {
+        summarize: ({ sources }) =>
+          Promise.resolve({
+            confidence: 0.9,
+            inputTokens: 1,
+            outputTokens: 1,
+            sourceIds: sources.map(({ id }) => id),
+            summary: 'Ceiling summary',
+            topicProposals: [],
+            usageUsd: 0.005,
+          }),
+      },
+      timeZone: 'America/New_York',
+    });
+    context.attachHistorySource(repeatingHistory(historyPage));
+    const scheduler = new BackgroundScheduler({
+      backfill: {
+        nextDeadline: (time) => context.nextDeadline(time, 'backfill'),
+        runOne: (time) => context.runNext(time, 'backfill'),
+      },
+      context: {
+        nextDeadline: (time) => context.nextDeadline(time),
+        runOne: (time) => context.runNext(time),
+      },
+      memory: { nextDeadline: () => null, runOne: () => Promise.resolve() },
+      queue: new PaidWorkQueue(),
+    });
+
+    for (
+      let attempt = 0;
+      attempt < 10 && setup.status(run.runId)?.status === 'active';
+      attempt += 1
+    ) {
+      await scheduler.runBackgroundOne(now);
+    }
+
+    expect(setup.status(run.runId)).toMatchObject({
+      actualUsageUsd: 0.01,
+      maximumUsageUsd: 0.015,
+      pauseReason: 'run-budget',
+      status: 'paused',
+    });
+    expect(
+      database
+        .prepare(
+          `select count(*) from usage_ledger
+           where backfill_run_id = ? and actual_usd is null`,
+        )
+        .pluck()
+        .get(run.runId),
+    ).toBe(0);
+    database.close();
+  });
+
+  it('rejects induced rollup usage above its reservation', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const now = Date.UTC(2026, 6, 14, 12);
+    const expired = normalized(
+      '32345678901234567',
+      'Expired provider contract discussion.',
+      now - 40 * 24 * 60 * 60 * 1_000,
+    );
+    const historyPage = page([expired], null);
+    const setup = new ContextBackfillService({
+      channelId,
+      database,
+      guildId,
+      history: fakeHistory([historyPage]),
+      now: () => now,
+      pricing: zeroPricing,
+    });
+    const run = await setup.dryRun({ replace: false });
+    setup.activate({ confirmGuildId: guildId, maximumUsageUsd: 1 });
+    const budget = new UsageBudget({
+      ceilingUsd: 10,
+      indexingCeilingUsd: 3,
+      ledger: new SqliteUsageLedger(database),
+      now: () => now,
+      warningUsd: 5,
+    });
+    let summarizeCalls = 0;
+    const context = new ChannelContextService({
+      backfillPricing: zeroPricing,
+      budget,
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      embed: () =>
+        Promise.resolve({ embedding: new Float32Array(1536), usageUsd: 0 }),
+      estimateUsd: 0.01,
+      guildId,
+      now: () => now,
+      summarizer: {
+        summarize: ({ sources }) => {
+          summarizeCalls += 1;
+          return Promise.resolve({
+            confidence: 0.9,
+            inputTokens: 1,
+            outputTokens: 1,
+            sourceIds: sources.map(({ id }) => id),
+            summary: 'Provider contract summary',
+            topicProposals: [],
+            usageUsd: summarizeCalls === 1 ? 0.001 : 0.02,
+          });
+        },
+      },
+      timeZone: 'America/New_York',
+    });
+    context.attachHistorySource(repeatingHistory(historyPage));
+
+    await expect(context.runNext(now, 'backfill')).resolves.toMatchObject({
+      status: 'completed',
+    });
+    await expect(context.runNext(now)).resolves.toMatchObject({
+      reason: 'usage-contract',
+      status: 'budget-deferred',
+    });
+
+    expect(setup.status(run.runId)).toMatchObject({
+      actualUsageUsd: 0.011,
+      pauseReason: 'usage-contract',
+      status: 'paused',
+    });
+    expect(
+      database
+        .prepare(
+          `select count(*) from context_documents
+           where tier = 'daily' and state = 'active'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare(
+          `select last_error_category from context_jobs
+           where tier = 'daily' and backfill_run_id = ?`,
+        )
+        .pluck()
+        .get(run.runId),
+    ).toBe('usage-contract');
+    expect(context.nextDeadline(now + 24 * 60 * 60 * 1_000)).toBeNull();
     database.close();
   });
 
@@ -733,7 +1133,232 @@ describe('ContextBackfillService', () => {
         .pluck()
         .get(),
     ).toBe(3);
-    expect(service.status()).toMatchObject({ status: 'completed' });
+    expect(service.status()).toMatchObject({ status: 'active' });
+    database.close();
+  });
+
+  it('anchors page zero below creates newer than the manifest ceiling', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const now = Date.UTC(2026, 6, 14, 12);
+    const manifestNewest = normalized(
+      '42345678901234567',
+      'Manifest newest',
+      now - 2_000,
+    );
+    const manifestOldest = normalized(
+      '32345678901234567',
+      'Manifest oldest',
+      now - 3_000,
+    );
+    const manifested = [manifestNewest, manifestOldest];
+    const manifestPage = page(manifested, null);
+    const setup = new ContextBackfillService({
+      channelId,
+      database,
+      guildId,
+      history: fakeHistory([manifestPage]),
+      now: () => now,
+      pricing: zeroPricing,
+    });
+    await setup.dryRun({ replace: false });
+    setup.activate({ confirmGuildId: guildId, maximumUsageUsd: 1 });
+    const newer = Array.from({ length: 101 }, (_, index) =>
+      normalized(
+        (52345678901234567n + BigInt(index)).toString(),
+        `Concurrent create ${index.toString()}`,
+        now - 1_000 + index,
+      ),
+    ).reverse();
+    const processing = {
+      fetchPage: vi.fn((input: DiscordHistoryFetchInput) =>
+        Promise.resolve(
+          input.scanUpperBoundMessageId === manifestNewest.messageId
+            ? page([manifestNewest], manifestNewest.messageId)
+            : input.cursor === manifestNewest.messageId
+              ? page([manifestOldest], null)
+              : page(newer, null),
+        ),
+      ),
+    };
+    const context = equivalenceContext(database, now);
+    context.attachHistorySource(processing);
+
+    await context.runNext(now, 'backfill');
+
+    expect(processing.fetchPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cursor: null,
+        scanUpperBoundMessageId: manifestNewest.messageId,
+      }),
+    );
+    expect(processing.fetchPage).toHaveBeenCalledTimes(2);
+    expect(
+      database
+        .prepare(
+          `select discord_message_id from conversation_events
+           order by occurred_at, id`,
+        )
+        .pluck()
+        .all(),
+    ).toEqual(manifested.toReversed().map(({ messageId }) => messageId));
+    expect(
+      database
+        .prepare(
+          `select count(*) from conversation_events
+           where content like 'Concurrent create %'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(0);
+    database.close();
+  });
+
+  it('commits unprocessed source pieces when page segments shift', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const now = 40 * 24 * 60 * 60 * 1_000;
+    const sources = [
+      normalized('42345678901234567', '33333333', 3_000),
+      normalized('32345678901234567', '22222222', 2_000),
+      normalized('22345678901234568', '11111111', 1_000),
+    ];
+    const originalPage = page(sources, null);
+    const budget = new UsageBudget({
+      ceilingUsd: 10,
+      indexingCeilingUsd: 3,
+      ledger: new SqliteUsageLedger(database),
+      now: () => now,
+      warningUsd: 5,
+    });
+    const service = new ContextBackfillService({
+      budget,
+      channelId,
+      database,
+      embed: () =>
+        Promise.resolve({ embedding: new Float32Array(1536), usageUsd: 0 }),
+      estimateUsd: 0.01,
+      guildId,
+      history: fakeHistory([originalPage]),
+      maxSourceTokens: 2,
+      now: () => now,
+      pricing: zeroPricing,
+      summarizer: {
+        summarize: ({ sources: inputs }) =>
+          Promise.resolve({
+            confidence: 0.9,
+            inputTokens: 1,
+            outputTokens: 1,
+            sourceIds: inputs.map(({ id }) => id),
+            summary: inputs.map(({ id }) => id).join(' '),
+            topicProposals: [],
+            usageUsd: 0,
+          }),
+      },
+      timeZone: 'America/New_York',
+    });
+    await service.dryRun({ replace: false });
+    service.activate({ confirmGuildId: guildId, maximumUsageUsd: 1 });
+    service.attachHistorySource(repeatingHistory(originalPage));
+    await service.runNext(now);
+
+    service.attachHistorySource(
+      repeatingHistory({
+        ...page(sources.slice(0, 2), null),
+        coverage: {
+          newestMessageId: sources[0]?.messageId ?? '0',
+          oldestMessageId: sources[2]?.messageId ?? '0',
+        },
+      }),
+    );
+    await service.runNext(now);
+    await service.runNext(now);
+
+    expect(
+      database
+        .prepare(
+          `select message_id from context_backfill_source_identities
+           order by occurred_at`,
+        )
+        .pluck()
+        .all(),
+    ).toEqual(sources.toReversed().map(({ messageId }) => messageId));
+    expect(
+      database
+        .prepare('select sum(source_count) from context_backfill_segments')
+        .pluck()
+        .get(),
+    ).toBe(3);
+    database.close();
+  });
+
+  it('aggregates many same-hour segments through bounded pairs', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const now = 40 * 24 * 60 * 60 * 1_000;
+    const sources = Array.from({ length: 8 }, (_, index) =>
+      normalized(
+        (22345678901234568n + BigInt(index)).toString(),
+        index.toString().repeat(8),
+        1_000 + index,
+      ),
+    ).toReversed();
+    const sourceCounts: number[] = [];
+    const budget = new UsageBudget({
+      ceilingUsd: 10,
+      indexingCeilingUsd: 3,
+      ledger: new SqliteUsageLedger(database),
+      now: () => now,
+      warningUsd: 5,
+    });
+    const service = new ContextBackfillService({
+      budget,
+      channelId,
+      database,
+      embed: () =>
+        Promise.resolve({ embedding: new Float32Array(1536), usageUsd: 0 }),
+      estimateUsd: 0.01,
+      guildId,
+      history: fakeHistory([page(sources, null)]),
+      maxSourceTokens: 2,
+      now: () => now,
+      pricing: zeroPricing,
+      summarizer: {
+        summarize: ({ sources: inputs }) => {
+          sourceCounts.push(inputs.length);
+          return Promise.resolve({
+            confidence: 0.9,
+            inputTokens: inputs.length,
+            outputTokens: 1,
+            sourceIds: inputs.map(({ id }) => id),
+            summary: `node-${sourceCounts.length.toString()}`,
+            topicProposals: [],
+            usageUsd: 0,
+          });
+        },
+      },
+      timeZone: 'America/New_York',
+    });
+    await service.dryRun({ replace: false });
+    service.activate({ confirmGuildId: guildId, maximumUsageUsd: 1 });
+    service.attachHistorySource(repeatingHistory(page(sources, null)));
+
+    for (const source of sources) {
+      expect(source.content).toHaveLength(8);
+      await service.runNext(now);
+    }
+
+    expect(sourceCounts.every((count) => count <= 2)).toBe(true);
+    expect(sourceCounts.length).toBe(sources.length * 2 - 1);
+    expect(
+      database
+        .prepare(
+          `select count(*) from context_documents
+           where tier = 'hourly' and is_internal = 1`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(sources.length);
     database.close();
   });
 
