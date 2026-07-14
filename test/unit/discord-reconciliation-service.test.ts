@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildDiscordHistoryPage,
   discordHistoryFetchRequest,
+  type DiscordHistoryFetchInput,
   DiscordReconciliationService,
   rateLimitedDiscordHistoryPage,
 } from '../../src/discord/discord-reconciliation-service.js';
@@ -74,6 +75,7 @@ describe('Discord history pagination', () => {
         cursor: null,
         mode: 'incremental',
         retentionCutoff: 0,
+        scanUpperBoundMessageId: null,
       }),
     ).toEqual({ after: '100', limit: 100 });
     expect(
@@ -82,8 +84,77 @@ describe('Discord history pagination', () => {
         cursor: '200',
         mode: 'incremental',
         retentionCutoff: 0,
+        scanUpperBoundMessageId: null,
       }),
     ).toEqual({ before: '200', limit: 100 });
+  });
+
+  it('anchors full coverage at the scan-start snowflake ceiling', () => {
+    const scanStartedAt = 1_720_000_000_000;
+    const scanUpperBoundMessageId = (
+      (BigInt(scanStartedAt - 1_420_070_400_000) << 22n) |
+      ((1n << 22n) - 1n)
+    ).toString();
+    const survivorId = (BigInt(scanUpperBoundMessageId) - 1n).toString();
+    const postStartId = (
+      BigInt(scanUpperBoundMessageId) +
+      (1n << 22n)
+    ).toString();
+    const input = {
+      afterMessageId: null,
+      cursor: null,
+      mode: 'full' as const,
+      retentionCutoff: scanStartedAt - 30 * 24 * 60 * 60 * 1_000,
+      scanUpperBoundMessageId,
+    };
+
+    expect(discordHistoryFetchRequest(input)).toEqual({
+      before: (BigInt(scanUpperBoundMessageId) + 1n).toString(),
+      limit: 100,
+    });
+    const survivor = {
+      item: {
+        messageId: survivorId,
+        occurredAt: scanStartedAt,
+        revisionChecksum: 'survivor',
+      },
+      messageId: survivorId,
+      occurredAt: scanStartedAt,
+    };
+    expect(buildDiscordHistoryPage(input, [survivor])).toMatchObject({
+      coverage: {
+        newestMessageId: scanUpperBoundMessageId,
+        oldestMessageId: '0',
+      },
+      items: [{ messageId: survivorId }],
+      nextCursor: null,
+    });
+    expect(buildDiscordHistoryPage(input, [])).toMatchObject({
+      complete: true,
+      coverage: {
+        newestMessageId: scanUpperBoundMessageId,
+        oldestMessageId: '0',
+      },
+    });
+    expect(
+      buildDiscordHistoryPage(input, [
+        {
+          ...survivor,
+          item: {
+            ...survivor.item,
+            messageId: postStartId,
+          },
+          messageId: postStartId,
+          occurredAt: scanStartedAt + 1,
+        },
+      ]),
+    ).toEqual({
+      complete: false,
+      coverage: null,
+      items: [],
+      nextCursor: null,
+      rateLimited: false,
+    });
   });
 
   it('proves nonterminal coverage and advances from the oldest identity', () => {
@@ -92,6 +163,7 @@ describe('Discord history pagination', () => {
       cursor: null,
       mode: 'full' as const,
       retentionCutoff: 500,
+      scanUpperBoundMessageId: '1099',
     };
     const fetched = Array.from({ length: 100 }, (_, index) => ({
       item: {
@@ -118,6 +190,7 @@ describe('Discord history pagination', () => {
         cursor: '1100',
         mode: 'incremental',
         retentionCutoff: 500,
+        scanUpperBoundMessageId: null,
       },
       Array.from({ length: 100 }, (_, index) => {
         const messageId = String(1_099 - index);
@@ -143,6 +216,7 @@ describe('Discord history pagination', () => {
         cursor: '1100',
         mode: 'retained',
         retentionCutoff: 900,
+        scanUpperBoundMessageId: null,
       },
       Array.from({ length: 100 }, (_, index) => {
         const messageId = String(1_099 - index);
@@ -166,6 +240,7 @@ describe('Discord history pagination', () => {
         cursor: '200',
         mode: 'incremental',
         retentionCutoff: 0,
+        scanUpperBoundMessageId: null,
       }),
     ).toEqual({
       complete: false,
@@ -482,10 +557,56 @@ describe('DiscordReconciliationService', () => {
     database.close();
   });
 
+  it('infers an omitted identity newer than every full-scan survivor', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    seedAvailable(database, '201', 'Deleted before weekly scan.');
+    const deleteTextSource = vi.fn();
+    const fetchPage = vi.fn((input: DiscordHistoryFetchInput) =>
+      Promise.resolve(
+        buildDiscordHistoryPage(input, [
+          {
+            item: {
+              messageId: '200',
+              occurredAt: 1_500,
+              revisionChecksum: 'survivor',
+            },
+            messageId: '200',
+            occurredAt: 1_500,
+          },
+        ]),
+      ),
+    );
+    const service = new DiscordReconciliationService({
+      channelId,
+      database,
+      guildId,
+      history: { fetchPage },
+      lifecycle: { applyTextSource: vi.fn(), deleteTextSource },
+      now: () => 2_000,
+    });
+
+    await expect(service.reconcileWeeklyIdentity()).resolves.toEqual({
+      status: 'completed',
+    });
+    expect(fetchPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'full',
+        scanUpperBoundMessageId: '4194303',
+      }),
+    );
+    expect(deleteTextSource).toHaveBeenCalledWith({
+      deletedAt: 2_000,
+      messageId: '201',
+    });
+    database.close();
+  });
+
   it('preserves a full-scan cursor while gap reconciliation runs', async () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);
     let fullAttempts = 0;
+    let now = 1_720_000_000_000;
     const fetchPage = vi.fn(
       ({ mode }: { cursor: string | null; mode: string }) => {
         if (mode === 'full') {
@@ -516,12 +637,13 @@ describe('DiscordReconciliationService', () => {
       guildId,
       history: { fetchPage },
       lifecycle: { applyTextSource: vi.fn(), deleteTextSource: vi.fn() },
-      now: () => 2_000,
+      now: () => now,
     });
 
     await expect(service.reconcileWeeklyIdentity()).resolves.toEqual({
       status: 'rate-limited',
     });
+    now += 1_000;
     await expect(service.reconcileAfterGap()).resolves.toEqual({
       status: 'completed',
     });
@@ -530,7 +652,16 @@ describe('DiscordReconciliationService', () => {
     });
 
     expect(fetchPage).toHaveBeenLastCalledWith(
-      expect.objectContaining({ cursor: editedId, mode: 'full' }),
+      expect.objectContaining({
+        cursor: editedId,
+        mode: 'full',
+        scanUpperBoundMessageId: '1257995921002594303',
+      }),
+    );
+    expect(fetchPage.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        scanUpperBoundMessageId: '1257995921002594303',
+      }),
     );
     database.close();
   });

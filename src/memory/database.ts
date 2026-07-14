@@ -426,6 +426,7 @@ create table discord_reconciliation_state (
   cursor_message_id text,
   covered_oldest_message_id text,
   covered_newest_message_id text,
+  scan_upper_bound_message_id text,
   last_complete_at integer,
   last_full_scan_at integer,
   updated_at integer not null
@@ -443,7 +444,7 @@ create table discord_reconciliation_seen (
 
 export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID =
   '0004_discord_source_lifecycle';
-export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_CHECKSUM = 'chief-0004-v2';
+export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_CHECKSUM = 'chief-0004-v3';
 
 interface Migration {
   readonly checksum: string;

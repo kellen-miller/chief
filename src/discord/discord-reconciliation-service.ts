@@ -30,6 +30,7 @@ export interface DiscordHistoryFetchInput {
   readonly cursor: string | null;
   readonly mode: DiscordHistoryMode;
   readonly retentionCutoff: number;
+  readonly scanUpperBoundMessageId: string | null;
 }
 
 export interface DiscordHistoryTransportIdentity {
@@ -72,6 +73,7 @@ interface ReconciliationState {
   readonly lastFullScanAt: number | null;
   readonly passKey: string | null;
   readonly phase: DiscordHistoryMode | null;
+  readonly scanUpperBoundMessageId: string | null;
 }
 
 export class DiscordReconciliationService {
@@ -143,6 +145,8 @@ export class DiscordReconciliationService {
     let state = this.#state(mode);
     if (state.phase !== mode || state.passKey === null) {
       const passKey = `${mode}:${startedAt.toString()}`;
+      const scanUpperBoundMessageId =
+        mode === 'full' ? timestampSnowflakeUpperBound(startedAt) : null;
       this.#database.transaction(() => {
         this.#database
           .prepare(
@@ -155,10 +159,11 @@ export class DiscordReconciliationService {
             `update discord_reconciliation_state
              set phase = ?, pass_key = ?, cursor_message_id = null,
                  covered_oldest_message_id = null,
-                 covered_newest_message_id = null, updated_at = ?
+                 covered_newest_message_id = null,
+                 scan_upper_bound_message_id = ?, updated_at = ?
              where scope_id = ?`,
           )
-          .run(mode, passKey, startedAt, stateScopeId);
+          .run(mode, passKey, scanUpperBoundMessageId, startedAt, stateScopeId);
       })();
       state = this.#state(mode);
     }
@@ -174,6 +179,7 @@ export class DiscordReconciliationService {
           cursor: state.cursorMessageId,
           mode,
           retentionCutoff: startedAt - RAW_RETENTION_MS,
+          scanUpperBoundMessageId: state.scanUpperBoundMessageId,
         });
         this.#applyPage(mode, stateScopeId, passKey, page, startedAt);
         this.#updateProgress(mode, page, startedAt);
@@ -338,6 +344,7 @@ export class DiscordReconciliationService {
            set high_water_message_id = ?, phase = null, pass_key = null,
                cursor_message_id = null, covered_oldest_message_id = null,
                covered_newest_message_id = null, last_complete_at = ?,
+               scan_upper_bound_message_id = null,
                last_full_scan_at = case when ? = 'full' then ?
                                         else last_full_scan_at end,
                updated_at = ? where scope_id = ?`,
@@ -377,6 +384,7 @@ export class DiscordReconciliationService {
                 pass_key as passKey, cursor_message_id as cursorMessageId,
                 covered_oldest_message_id as coveredOldestMessageId,
                 covered_newest_message_id as coveredNewestMessageId,
+                scan_upper_bound_message_id as scanUpperBoundMessageId,
                 last_complete_at as lastCompleteAt,
                 last_full_scan_at as lastFullScanAt
          from discord_reconciliation_state where scope_id = ?`,
@@ -425,6 +433,13 @@ export function discordHistoryFetchRequest(input: DiscordHistoryFetchInput): {
   readonly before?: string;
   readonly limit: 100;
 } {
+  if (input.mode === 'full' && input.cursor === null) {
+    const scanUpperBoundMessageId = requireFullScanUpperBound(input);
+    return {
+      before: (BigInt(scanUpperBoundMessageId) + 1n).toString(),
+      limit: 100,
+    };
+  }
   const anchor = input.cursor ?? input.afterMessageId;
   if (anchor === null) return { limit: 100 };
   return input.mode === 'incremental' && input.cursor === null
@@ -437,6 +452,22 @@ export function buildDiscordHistoryPage(
   fetched: readonly DiscordHistoryTransportIdentity[],
 ): DiscordHistoryPage {
   const incremental = input.mode === 'incremental';
+  const fullScanUpperBound =
+    input.mode === 'full' ? requireFullScanUpperBound(input) : null;
+  if (
+    fullScanUpperBound !== null &&
+    fetched.some(
+      ({ messageId }) => BigInt(messageId) > BigInt(fullScanUpperBound),
+    )
+  ) {
+    return {
+      complete: false,
+      coverage: null,
+      items: [],
+      nextCursor: input.cursor,
+      rateLimited: false,
+    };
+  }
   const afterMessageId = input.afterMessageId;
   const reachedIncrementalBoundary =
     incremental &&
@@ -473,6 +504,7 @@ export function buildDiscordHistoryPage(
       ? null
       : {
           newestMessageId:
+            fullScanUpperBound ??
             newestRaw ??
             timestampSnowflake(input.retentionCutoff + RAW_RETENTION_MS),
           oldestMessageId:
@@ -523,4 +555,18 @@ function timestampSnowflake(timestamp: number): string {
   return (
     BigInt(Math.max(0, Math.floor(timestamp) - DISCORD_EPOCH_MS)) << 22n
   ).toString();
+}
+
+function timestampSnowflakeUpperBound(timestamp: number): string {
+  return (
+    (BigInt(Math.max(0, Math.floor(timestamp) - DISCORD_EPOCH_MS)) << 22n) |
+    ((1n << 22n) - 1n)
+  ).toString();
+}
+
+function requireFullScanUpperBound(input: DiscordHistoryFetchInput): string {
+  if (input.scanUpperBoundMessageId === null) {
+    throw new Error('full Discord scan requires an upper bound');
+  }
+  return input.scanUpperBoundMessageId;
 }

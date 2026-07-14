@@ -72,8 +72,8 @@ content-bearing path that applies eligible revisions inside raw retention.
 `pnpm verify` passed:
 
 - Prettier, ESLint, and TypeScript checks passed.
-- 32 test files passed with 265 tests.
-- Coverage: 90.38% statements, 83.37% branches, 90.90% functions, and 91.88%
+- 32 test files passed with 267 tests.
+- Coverage: 90.39% statements, 83.79% branches, 90.98% functions, and 91.87%
   lines.
 - The production TypeScript build passed.
 
@@ -127,7 +127,7 @@ test-first:
    - GREEN: the focused edit test observes a scrubbed/suppressed document, no
      search rows, and fresh pending jobs.
 6. Migration `0004_discord_source_lifecycle` now adds a nonnegative nullable
-   `response_chunk_index`; its checksum is bumped to `chief-0004-v2`.
+   `response_chunk_index`; its checksum is currently `chief-0004-v3`.
    Delivery callbacks persist/repair that ordinal, and prompt grouping orders
    chunk content by ordinal rather than insertion ID.
    - RED: reverse reconciliation failed because `response_chunk_index` did not
@@ -164,4 +164,37 @@ The remaining retained-identity deletion gap was resolved test-first.
 Final verification passed with the 12 reconciliation unit tests and 7 source
 lifecycle integration tests focused first, then `pnpm verify`: formatting,
 lint, typecheck, all 32 test files and 265 tests, coverage thresholds, and the
+production build all passed.
+
+## Production page-proof re-review response
+
+The final production-path coverage gap was reproduced and resolved test-first.
+
+- RED: the direct page-builder test showed the initial full request was
+  unanchored. The direct service test and durable-memory lifecycle test both
+  used `buildDiscordHistoryPage` with retained/deleted identity `201` omitted
+  and survivor `200` returned; both completed with zero deletion callbacks
+  because coverage ended at `200`.
+- GREEN: every full pass now captures a scan-start snowflake ceiling with all
+  22 Discord low bits set, persists it in reconciliation state, and sends the
+  first request with exclusive `before = ceiling + 1`. Completed non-empty and
+  empty pages prove coverage through that ceiling, so omitted identities newer
+  than every survivor remain eligible for deletion inference.
+- The ceiling remains stable when a full cursor is interrupted, gap
+  reconciliation runs, wall time advances, and the full cursor resumes.
+  Continuations still use their durable `before` cursor. A response containing
+  an identity above the captured ceiling fails closed as incomplete with no
+  coverage, preventing deletion inference for post-start messages.
+- Incremental and retained scans keep a null full-scan bound and their existing
+  raw-retention filtering. Existing incomplete and rate-limited no-delete
+  proofs remain green. The Discord gateway remains a thin transport adapter;
+  request anchoring and coverage proof stay in the covered reconciliation
+  component.
+- Migration `0004_discord_source_lifecycle` now persists
+  `scan_upper_bound_message_id` and uses checksum `chief-0004-v3`.
+
+Final verification passed with all 14 reconciliation unit tests and the 7
+source lifecycle integration tests focused first, then `pnpm verify`:
+formatting, lint, typecheck, all 32 test files and 267 tests, coverage thresholds
+(90.39% statements, 83.79% branches, 90.98% functions, 91.87% lines), and the
 production build all passed.

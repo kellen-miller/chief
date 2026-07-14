@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ChannelContextService } from '../../src/context/channel-context-service.js';
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
-import { DiscordReconciliationService } from '../../src/discord/discord-reconciliation-service.js';
+import {
+  buildDiscordHistoryPage,
+  DiscordReconciliationService,
+} from '../../src/discord/discord-reconciliation-service.js';
 import {
   migrateChiefDatabase,
   openChiefDatabase,
@@ -33,19 +36,21 @@ function source(
   overrides: Partial<{
     content: string;
     editedAt: number | null;
+    messageId: string;
     revisionChecksum: string;
   }> = {},
 ) {
+  const sourceMessageId = overrides.messageId ?? messageId;
   return {
     attachmentMetadataJson: '[]',
     content: overrides.content ?? 'Project Marigold launches Friday.',
     editedAt: overrides.editedAt ?? null,
     memoryExtraction: 'automatic' as const,
-    messageId,
+    messageId: sourceMessageId,
     occurredAt: 1_000,
-    platformEventId: messageId,
+    platformEventId: sourceMessageId,
     replyToMessageId: null,
-    requestId: messageId,
+    requestId: sourceMessageId,
     revisionChecksum: overrides.revisionChecksum ?? 'revision-one',
     role: 'human' as const,
     speakerId: '42345678901234567',
@@ -278,7 +283,9 @@ describe('Discord source lifecycle', () => {
 
   it('infers an offline delete from retained source identity', async () => {
     const { context, database, memory } = createHarness();
-    const applied = context.apply(source());
+    const retainedMessageId = '201';
+    const survivorMessageId = '200';
+    const applied = context.apply(source({ messageId: retainedMessageId }));
     if (applied.status !== 'applied' || applied.memorySourceEventId === null) {
       throw new Error('expected a memory source');
     }
@@ -290,7 +297,7 @@ describe('Discord source lifecycle', () => {
       confidence: 0.9,
       embedding: new Float32Array(1_536),
       kind: 'fact',
-      provenance: { platformSourceId: messageId },
+      provenance: { platformSourceId: retainedMessageId },
       sourceEventId: applied.memorySourceEventId,
       timestamp: 1_500,
     });
@@ -307,7 +314,7 @@ describe('Discord source lifecycle', () => {
         .get(applied.memorySourceEventId),
     ).toEqual({
       content: '',
-      sourceScopeId: `${guildId}/${channelId}/${messageId}`,
+      sourceScopeId: `${guildId}/${channelId}/${retainedMessageId}`,
     });
 
     const deleteTextSource = vi.fn(
@@ -324,17 +331,20 @@ describe('Discord source lifecycle', () => {
       database,
       guildId,
       history: {
-        fetchPage: () =>
-          Promise.resolve({
-            complete: true,
-            coverage: {
-              newestMessageId: messageId,
-              oldestMessageId: messageId,
-            },
-            items: [],
-            nextCursor: null,
-            rateLimited: false,
-          }),
+        fetchPage: (input) =>
+          Promise.resolve(
+            buildDiscordHistoryPage(input, [
+              {
+                item: {
+                  messageId: survivorMessageId,
+                  occurredAt: 999,
+                  revisionChecksum: 'survivor',
+                },
+                messageId: survivorMessageId,
+                occurredAt: 999,
+              },
+            ]),
+          ),
       },
       lifecycle: { applyTextSource: vi.fn(), deleteTextSource },
       now: () => now,
@@ -346,7 +356,7 @@ describe('Discord source lifecycle', () => {
     expect(deleteTextSource).toHaveBeenCalledOnce();
     expect(deleteTextSource).toHaveBeenCalledWith({
       deletedAt: now,
-      messageId,
+      messageId: retainedMessageId,
     });
     expect(
       database.prepare('select count(*) from memories').pluck().get(),
