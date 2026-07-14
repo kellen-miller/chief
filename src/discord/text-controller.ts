@@ -77,16 +77,14 @@ export class DiscordTextController {
       missingCitations.length === 0
         ? result.content
         : `${result.content.replace(/\s*Mr\. President$/u, '')}\n\nSources: ${missingCitations.join(' ')}`;
-    const delivered: { content: string; messageId: string }[] = [];
     for (const chunk of chunkReply(content)) {
       const messageId = await delivery.reply(chunk);
-      delivered.push({ content: chunk, messageId });
+      this.#dependencies.recordDeliveredReply({
+        chunks: [{ content: chunk, messageId }],
+        logicalResponseId: message.id,
+        replyToMessageId: message.id,
+        requestId: message.id,
+      });
     }
-    this.#dependencies.recordDeliveredReply({
-      chunks: delivered,
-      logicalResponseId: message.id,
-      replyToMessageId: message.id,
-      requestId: message.id,
-    });
   }
 }

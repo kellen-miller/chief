@@ -33,6 +33,15 @@ export class ContextStore {
   public activateDocumentRevision(input: ContextDocumentRevisionInput): number {
     return this.#database.transaction(() => {
       this.#assertInputsAvailable(input);
+      const maximumRevision = this.#database
+        .prepare(
+          `select max(revision) from context_documents where document_key = ?`,
+        )
+        .pluck()
+        .get(input.documentKey) as number | null;
+      if (maximumRevision !== null && input.revision <= maximumRevision) {
+        throw new Error('context document revision must increase');
+      }
       const previousIds = this.#database
         .prepare(
           `select id from context_documents
@@ -97,6 +106,9 @@ export class ContextStore {
   }
 
   #assertInputsAvailable(input: ContextDocumentRevisionInput): void {
+    if (input.eventIds.length === 0 && input.parentDocumentIds.length === 0) {
+      throw new Error('context document requires lineage');
+    }
     const sourceAvailable = this.#database.prepare(
       `select exists(
          select 1 from conversation_events
@@ -122,6 +134,21 @@ export class ContextStore {
       )
     ) {
       throw new Error('context document parent is unavailable');
+    }
+    if (input.tier !== 'hourly') {
+      const parentFinal = this.#database.prepare(
+        `select exists(
+           select 1 from context_documents
+           where id = ? and completeness = 'final'
+         )`,
+      );
+      if (
+        input.parentDocumentIds.some(
+          (parentId) => parentFinal.pluck().get(parentId) !== 1,
+        )
+      ) {
+        throw new Error('higher context tier requires final parents');
+      }
     }
     const tombstoned = this.#database
       .prepare(

@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { ChannelContextService } from '../../src/context/channel-context-service.js';
 import { contextPeriod } from '../../src/context/context-period.js';
-import { ContextStore } from '../../src/context/context-store.js';
+import {
+  ContextStore,
+  type ContextDocumentRevisionInput,
+} from '../../src/context/context-store.js';
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import {
   migrateChiefDatabase,
@@ -80,6 +83,32 @@ function embedding(value: number): Float32Array {
   return result;
 }
 
+function documentInput(
+  overrides: Partial<ContextDocumentRevisionInput> = {},
+): ContextDocumentRevisionInput {
+  return {
+    completeness: 'final',
+    confidence: 0.9,
+    createdAt: 1_000,
+    documentKey: 'hourly-cabinet',
+    embedding: embedding(0.1),
+    eventIds: [],
+    generationInputTokens: 10,
+    generationOutputTokens: 5,
+    generationUsageUsd: 0.01,
+    parentDocumentIds: [],
+    periodEnd: 2_000,
+    periodStart: 1_000,
+    retentionDeadline: null,
+    revision: 1,
+    summary: 'Cabinet meets Friday.',
+    tier: 'hourly',
+    timeZone,
+    topicKey: null,
+    ...overrides,
+  };
+}
+
 describe('ChannelContextService', () => {
   it('indexes upserts immediately and schedules one hourly job pair', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
@@ -155,6 +184,51 @@ describe('ChannelContextService', () => {
     expect(
       database.prepare('select count(*) from context_jobs').pluck().get(),
     ).toBe(2);
+    database.close();
+  });
+
+  it('keeps the first provisional deadline during continuous activity', () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const firstNow = occurredAt + 1_000;
+    const { database, service, setNow } = createHarness(firstNow);
+    service.apply(source(occurredAt));
+    const firstDue = database
+      .prepare(
+        `select not_before from context_jobs
+         where completeness = 'provisional'`,
+      )
+      .pluck()
+      .get() as number;
+
+    setNow(firstNow + 4 * 60 * 1_000);
+    service.apply(
+      source(occurredAt + 4 * 60 * 1_000, {
+        content: 'Project Juniper launches Monday.',
+        messageId: '52345678901234568',
+        platformEventId: 'second-live-key',
+      }),
+    );
+
+    expect(
+      database
+        .prepare(
+          `select not_before from context_jobs
+           where completeness = 'provisional'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(firstDue);
+    expect(firstDue).toBe(firstNow + 5 * 60 * 1_000);
+    expect(
+      database
+        .prepare(
+          `select not_before from context_jobs where completeness = 'final'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(
+      contextPeriod({ instant: occurredAt, tier: 'hourly', timeZone }).end,
+    );
     database.close();
   });
 
@@ -358,9 +432,20 @@ describe('ChannelContextService', () => {
       { content: 'First chunk. ', messageId: '62345678901234567' },
       { content: 'Second chunk.', messageId: '62345678901234568' },
     ];
+    const [firstChunk, secondChunk] = chunks;
+    if (firstChunk === undefined || secondChunk === undefined) {
+      throw new Error('expected reply chunks');
+    }
 
     service.recordDeliveredReply({
-      chunks,
+      chunks: [firstChunk],
+      logicalResponseId: 'response-1',
+      replyToMessageId: '52345678901234567',
+      requestId: '52345678901234567',
+    });
+    setNow(2_000);
+    service.recordDeliveredReply({
+      chunks: [secondChunk],
       logicalResponseId: 'response-1',
       replyToMessageId: '52345678901234567',
       requestId: '52345678901234567',
@@ -388,7 +473,7 @@ describe('ChannelContextService', () => {
       })),
     );
 
-    setNow(2_000);
+    setNow(3_000);
     service.recordDeliveredReply({
       chunks,
       logicalResponseId: 'response-1',
@@ -412,24 +497,37 @@ describe('ChannelContextService', () => {
 });
 
 describe('ContextStore', () => {
-  it('replaces an active document and its search rows atomically', () => {
+  it('rejects a document without source or parent lineage atomically', () => {
     const { contextStore, database } = createHarness(1_000);
+
+    expect(() =>
+      contextStore.activateDocumentRevision(documentInput()),
+    ).toThrow('context document requires lineage');
+    expect(
+      database.prepare('select count(*) from context_documents').pluck().get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare('select count(*) from context_document_fts')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare('select count(*) from context_document_vectors')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    database.close();
+  });
+
+  it('replaces an active document and its search rows atomically', () => {
+    const { contextStore, database, service } = createHarness(1_000);
+    const created = service.apply(source(500));
+    if (created.eventId === null) throw new Error('expected a source event');
     const base = {
-      completeness: 'final' as const,
-      confidence: 0.9,
-      createdAt: 1_000,
-      documentKey: 'daily-cabinet',
-      eventIds: [] as number[],
-      generationInputTokens: 10,
-      generationOutputTokens: 5,
-      generationUsageUsd: 0.01,
-      parentDocumentIds: [] as number[],
-      periodEnd: 2_000,
-      periodStart: 1_000,
-      retentionDeadline: null,
-      tier: 'daily' as const,
-      timeZone,
-      topicKey: null,
+      ...documentInput(),
+      eventIds: [created.eventId],
     };
     const firstId = contextStore.activateDocumentRevision({
       ...base,
@@ -463,6 +561,111 @@ describe('ContextStore', () => {
         .pluck()
         .all(),
     ).toEqual([secondId]);
+    database.close();
+  });
+
+  it('requires final parents for every higher context tier', () => {
+    const { contextStore, database, service } = createHarness(1_000);
+    const created = service.apply(source(500));
+    if (created.eventId === null) throw new Error('expected a source event');
+    const provisionalId = contextStore.activateDocumentRevision(
+      documentInput({
+        completeness: 'provisional',
+        documentKey: 'hourly-source',
+        eventIds: [created.eventId],
+        summary: 'Provisional hourly rollup.',
+      }),
+    );
+
+    for (const tier of ['daily', 'weekly', 'long-term'] as const) {
+      expect(() =>
+        contextStore.activateDocumentRevision(
+          documentInput({
+            documentKey: `${tier}-rejected`,
+            eventIds: [],
+            parentDocumentIds: [provisionalId],
+            periodEnd: tier === 'long-term' ? null : 3_000,
+            summary: 'Rejected higher rollup.',
+            tier,
+          }),
+        ),
+      ).toThrow('higher context tier requires final parents');
+    }
+    expect(lexicalIds(database, 'context_document_fts', 'Rejected')).toEqual(
+      [],
+    );
+
+    const finalId = contextStore.activateDocumentRevision(
+      documentInput({
+        completeness: 'final',
+        createdAt: 2_000,
+        documentKey: 'hourly-source',
+        embedding: embedding(0.2),
+        eventIds: [created.eventId],
+        revision: 2,
+        summary: 'Final hourly rollup.',
+      }),
+    );
+    const dailyId = contextStore.activateDocumentRevision(
+      documentInput({
+        documentKey: 'daily-accepted',
+        eventIds: [],
+        parentDocumentIds: [finalId],
+        periodEnd: 3_000,
+        summary: 'Accepted daily rollup.',
+        tier: 'daily',
+      }),
+    );
+    expect(lexicalIds(database, 'context_document_fts', 'Accepted')).toEqual([
+      dailyId,
+    ]);
+    database.close();
+  });
+
+  it('rejects a revision below the maximum without replacing search state', () => {
+    const { contextStore, database, service } = createHarness(1_000);
+    const created = service.apply(source(500));
+    if (created.eventId === null) throw new Error('expected a source event');
+    const eventId = created.eventId;
+    const secondId = contextStore.activateDocumentRevision(
+      documentInput({
+        documentKey: 'hourly-monotonic',
+        eventIds: [eventId],
+        revision: 2,
+        summary: 'Revision two remains searchable.',
+      }),
+    );
+
+    expect(() =>
+      contextStore.activateDocumentRevision(
+        documentInput({
+          createdAt: 2_000,
+          documentKey: 'hourly-monotonic',
+          embedding: embedding(0.2),
+          eventIds: [eventId],
+          revision: 1,
+          summary: 'Revision one must not replace it.',
+        }),
+      ),
+    ).toThrow('context document revision must increase');
+    expect(
+      database
+        .prepare(
+          `select id, revision, state from context_documents
+           where document_key = 'hourly-monotonic'`,
+        )
+        .all(),
+    ).toEqual([{ id: secondId, revision: 2, state: 'active' }]);
+    expect(lexicalIds(database, 'context_document_fts', 'remains')).toEqual([
+      secondId,
+    ]);
+    expect(lexicalIds(database, 'context_document_fts', 'replace')).toEqual([]);
+    expect(
+      database
+        .prepare('select document_id from context_document_vectors')
+        .pluck()
+        .all(),
+    ).toContain(secondId);
     database.close();
   });
 });

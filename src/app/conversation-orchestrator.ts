@@ -152,7 +152,7 @@ export class ConversationOrchestrator {
         speakerName: turn.speakerName,
         type: 'upsert',
       });
-      if (applied.eventId === null) throw new Error('source was suppressed');
+      if (applied.status === 'suppressed') return Promise.resolve(null);
       eventId = applied.eventId;
       const source: SourceObservation = {
         content: turn.content,

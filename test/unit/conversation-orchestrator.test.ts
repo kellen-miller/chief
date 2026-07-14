@@ -114,6 +114,65 @@ function createContext(
   });
 }
 
+function createTextHarness() {
+  const database = openChiefDatabase(':memory:');
+  migrateChiefDatabase(database);
+  const conversation = new ConversationStore(database);
+  const context = createContext(database, conversation, () => 1_000);
+  const store = new SqliteMemoryStore(database);
+  const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+  const vector = new Float32Array(1_536).fill(0.4);
+  const answerText = vi.fn<ChiefAgent['answerText']>(() =>
+    Promise.resolve({ citations: [], content: 'Current answer', usageUsd: 0 }),
+  );
+  const extract = vi.fn(() => Promise.resolve({ proposals: [], usageUsd: 0 }));
+  const memory = new MemoryService({
+    budget,
+    embed: () => Promise.resolve({ embedding: vector, usageUsd: 0 }),
+    estimateUsd: 0.1,
+    extract,
+    store,
+  });
+  const orchestrator = new ConversationOrchestrator({
+    agent: {
+      answerText,
+      interruptVoice: vi.fn(),
+      openVoice: vi.fn(),
+      transcribe: vi.fn(),
+    },
+    budget,
+    context,
+    conversation,
+    memory,
+    now: () => 1_000,
+  });
+  return { answerText, context, database, extract, memory, orchestrator };
+}
+
+function tombstoneSource(
+  context: ChannelContextService,
+  messageId: string,
+): void {
+  context.apply({
+    content: 'Original source content.',
+    messageId,
+    occurredAt: 500,
+    platformEventId: `original:${messageId}`,
+    replyToMessageId: null,
+    requestId: messageId,
+    role: 'human',
+    speakerId: 'president-test',
+    speakerName: 'President Test',
+    type: 'upsert',
+  });
+  context.apply({
+    deletedAt: 750,
+    messageId,
+    reason: 'discord-deleted',
+    type: 'delete',
+  });
+}
+
 describe('ConversationOrchestrator', () => {
   it('records no Chief source before Discord delivery', async () => {
     const database = openChiefDatabase(':memory:');
@@ -164,6 +223,117 @@ describe('ConversationOrchestrator', () => {
         .pluck()
         .get(),
     ).toBe(0);
+    database.close();
+  });
+
+  it('skips automatic memory for a suppressed replay', async () => {
+    const { answerText, context, database, memory, orchestrator } =
+      createTextHarness();
+    const deletedMessageId = '52345678901234567';
+    tombstoneSource(context, deletedMessageId);
+    const observeAutomatic = vi.spyOn(memory, 'observeAutomatic');
+
+    await expect(
+      orchestrator.handleText({
+        content: 'Deleted launch code must stay gone.',
+        kind: 'observe',
+        occurredAt: 900,
+        platformSourceId: deletedMessageId,
+        requestId: deletedMessageId,
+        speakerId: 'president-test',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toBeNull();
+    expect(observeAutomatic).not.toHaveBeenCalled();
+    expect(answerText).not.toHaveBeenCalled();
+    expect(
+      database.prepare('select count(*) from source_events').pluck().get(),
+    ).toBe(0);
+
+    const expiredMessageId = '52345678901234571';
+    context.apply({
+      content: 'Expired source content.',
+      messageId: expiredMessageId,
+      occurredAt: 500,
+      platformEventId: `original:${expiredMessageId}`,
+      replyToMessageId: null,
+      requestId: expiredMessageId,
+      role: 'human',
+      speakerId: 'president-test',
+      speakerName: 'President Test',
+      type: 'upsert',
+    });
+    context.maintain(500 + 30 * 24 * 60 * 60 * 1_000);
+    await expect(
+      orchestrator.handleText({
+        content: 'Expired content must stay gone.',
+        kind: 'observe',
+        occurredAt: 925,
+        platformSourceId: expiredMessageId,
+        requestId: expiredMessageId,
+        speakerId: 'president-test',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toBeNull();
+    expect(observeAutomatic).not.toHaveBeenCalled();
+
+    await expect(
+      orchestrator.handleText({
+        content: 'Legitimate new observation.',
+        kind: 'observe',
+        occurredAt: 950,
+        platformSourceId: '52345678901234568',
+        requestId: '52345678901234568',
+        speakerId: 'president-test',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toBeNull();
+    expect(observeAutomatic).toHaveBeenCalledOnce();
+    expect(
+      database.prepare('select content from source_events').pluck().all(),
+    ).toEqual(['Legitimate new observation.']);
+    database.close();
+  });
+
+  it('skips explicit memory and generation for a suppressed replay', async () => {
+    const { answerText, context, database, extract, memory, orchestrator } =
+      createTextHarness();
+    const deletedMessageId = '52345678901234569';
+    tombstoneSource(context, deletedMessageId);
+    const observeExplicit = vi.spyOn(memory, 'observeExplicit');
+
+    await expect(
+      orchestrator.handleText({
+        content: 'Chief, remember that the deleted launch code is red',
+        kind: 'request',
+        occurredAt: 900,
+        platformSourceId: deletedMessageId,
+        prompt: 'remember that the deleted launch code is red',
+        requestId: deletedMessageId,
+        speakerId: 'president-test',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toBeNull();
+    expect(observeExplicit).not.toHaveBeenCalled();
+    expect(extract).not.toHaveBeenCalled();
+    expect(answerText).not.toHaveBeenCalled();
+    expect(
+      database.prepare('select count(*) from source_events').pluck().get(),
+    ).toBe(0);
+
+    await expect(
+      orchestrator.handleText({
+        content: 'Chief, summarize the current agenda',
+        kind: 'request',
+        occurredAt: 950,
+        platformSourceId: '52345678901234570',
+        prompt: 'summarize the current agenda',
+        requestId: '52345678901234570',
+        speakerId: 'president-test',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toMatchObject({ status: 'completed' });
+    expect(answerText).toHaveBeenCalledOnce();
     database.close();
   });
 

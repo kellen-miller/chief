@@ -100,8 +100,17 @@ export class ChannelContextService {
     ) {
       throw new Error('delivered replies require Discord message snowflakes');
     }
-    const now = this.#now();
     this.#database.transaction(() => {
+      const existingOccurredAt = this.#database
+        .prepare(
+          `select min(occurred_at) from conversation_events
+           where guild_id = ? and channel_id = ?
+             and logical_response_id = ?`,
+        )
+        .pluck()
+        .get(this.#guildId, this.#channelId, input.logicalResponseId) as
+        number | null;
+      const now = existingOccurredAt ?? this.#now();
       for (const chunk of input.chunks) {
         this.#applyUpsert(
           {
@@ -288,6 +297,11 @@ export class ChannelContextService {
          on conflict(job_key) do update set
            source_revision_checksum = excluded.source_revision_checksum,
            not_before = case
+             when context_jobs.source_revision_checksum
+                    != excluded.source_revision_checksum
+               and context_jobs.completeness = 'provisional'
+               and context_jobs.status = 'pending'
+             then min(context_jobs.not_before, excluded.not_before)
              when context_jobs.source_revision_checksum
                     != excluded.source_revision_checksum
              then excluded.not_before else context_jobs.not_before end,

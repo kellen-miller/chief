@@ -78,18 +78,18 @@ describe('DiscordTextController', () => {
         .slice(0, -1)
         .every(([chunk]) => !chunk.endsWith('Mr. President')),
     ).toBe(true);
-    expect(recordDeliveredReply).toHaveBeenCalledWith({
-      chunks: reply.mock.calls.map(([content], index) => ({
-        content,
-        messageId: deliveredIds[index],
-      })),
-      logicalResponseId: message('').id,
-      replyToMessageId: message('').id,
-      requestId: message('').id,
-    });
+    expect(recordDeliveredReply).toHaveBeenCalledTimes(reply.mock.calls.length);
+    for (const [index, [content]] of reply.mock.calls.entries()) {
+      expect(recordDeliveredReply).toHaveBeenNthCalledWith(index + 1, {
+        chunks: [{ content, messageId: deliveredIds[index] }],
+        logicalResponseId: message('').id,
+        replyToMessageId: message('').id,
+        requestId: message('').id,
+      });
+    }
   });
 
-  it('records no delivered reply when a chunk send fails', async () => {
+  it('records each successful chunk before a later send fails', async () => {
     const recordDeliveredReply = vi.fn();
     const reply = vi
       .fn<(content: string) => Promise<string>>()
@@ -110,6 +110,40 @@ describe('DiscordTextController', () => {
     await expect(
       controller.handle(message(`<@${allowed.botUserId}> brief us`), {
         reply,
+        typing: vi.fn(() => Promise.resolve()),
+      }),
+    ).rejects.toThrow('Discord send failed');
+    expect(recordDeliveredReply).toHaveBeenCalledOnce();
+    expect(recordDeliveredReply).toHaveBeenCalledWith({
+      chunks: [
+        {
+          content: reply.mock.calls[0]?.[0],
+          messageId: '62345678901234567',
+        },
+      ],
+      logicalResponseId: message('').id,
+      replyToMessageId: message('').id,
+      requestId: message('').id,
+    });
+  });
+
+  it('records nothing when the first chunk send fails', async () => {
+    const recordDeliveredReply = vi.fn();
+    const controller = new DiscordTextController(allowed, {
+      handleText: vi.fn(() =>
+        Promise.resolve({
+          citations: [],
+          content: 'Briefing failed Mr. President',
+          status: 'completed' as const,
+        }),
+      ),
+      now: () => 1_000,
+      recordDeliveredReply,
+    });
+
+    await expect(
+      controller.handle(message(`<@${allowed.botUserId}> brief us`), {
+        reply: vi.fn(() => Promise.reject(new Error('Discord send failed'))),
         typing: vi.fn(() => Promise.resolve()),
       }),
     ).rejects.toThrow('Discord send failed');
