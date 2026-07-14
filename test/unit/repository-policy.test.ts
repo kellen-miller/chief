@@ -34,11 +34,11 @@ describe('repository policy', () => {
     expect(variables).toContain('default     = "America/New_York"');
     expect(variables).toContain('variable "usage_indexing_ceiling_usd"');
     expect(variables).toContain('default     = 3');
-    expect(application).toContain(
-      'context_time_zone          = var.context_time_zone',
+    expect(application).toMatch(
+      /context_time_zone\s+= var\.context_time_zone/u,
     );
-    expect(application).toContain(
-      'usage_indexing_ceiling_usd = var.usage_indexing_ceiling_usd',
+    expect(application).toMatch(
+      /usage_indexing_ceiling_usd\s+= var\.usage_indexing_ceiling_usd/u,
     );
     for (const forbidden of [
       'CHIEF_CONTEXT_RETENTION',
