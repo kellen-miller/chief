@@ -47,8 +47,10 @@ boundaries and do not duplicate ordering or file-selection knowledge.
 - [x] (2026-07-14 00:15Z) Ran the fresh-eyes recent-work review, confirmed the
   Moby prune semantics, and corrected one operator-doc wording issue.
 - [ ] Run formal and adversarial implementation reviews.
-- [ ] Run all local validation, commit, push the explicit remote ref, open the
-      PR, and verify the four required GitHub checks.
+- [x] (2026-07-14 00:16Z) Ran all local validation and created the reviewed
+  Conventional Commit.
+- [ ] Push the explicit remote ref, open the PR, and verify the four required
+  GitHub checks.
 
 ## Surprises & Discoveries
 
@@ -78,7 +80,7 @@ set for option Signed-By`.
   and the exit status of its final `deploy.sh` invocation.
 - Observation: The adversarial reviewer initially claimed digest references
   would defeat non-`--all` pruning, then overturned that claim after reading the
-  Moby classic image-store path.
+  Moby (Docker Engine's upstream implementation) classic image-store path.
   Evidence: Moby prunes unused canonical digest references when there is no
   tagged reference; the retained prior digest is protected by
   `chief:rollback`, and the candidate is protected by its running container.
@@ -151,12 +153,12 @@ Agent source. The new `scripts/configure-google-cloud-apt.sh` will own the sourc
 files after the key exists. Terraform will inject its file contents into the
 startup template, just as it already injects `scripts/run-container.sh`.
 
-The GitHub deploy workflow already copies shell scripts over IAP SSH and installs
-them under `/opt/chief`. Extend that existing step to copy, install, and invoke
-the apt-source module before running the deployment transaction. The module only
-rewrites source definitions; it does not call `apt-get` in the ordinary deploy
-path. First boot continues to call `apt-get update` and install the CLI and Ops
-Agent after canonicalization.
+The GitHub deploy workflow already copies shell scripts over Identity-Aware
+Proxy (IAP) SSH tunneling and installs them under `/opt/chief`. Extend that
+existing step to copy, install, and invoke the apt-source module before running
+the deployment transaction. The module only rewrites source definitions; it
+does not call `apt-get` in the ordinary deploy path. First boot continues to
+call `apt-get update` and install the CLI and Ops Agent after canonicalization.
 
 Tests use Vitest and fake executables in temporary directories. The current
 `test/integration/deploy-script.test.ts` records fake Docker calls and exercises
