@@ -232,10 +232,12 @@ describe('DiscordTextController', () => {
       status: 'suppressed' as const,
     }));
     const handleText = vi.fn(() => Promise.resolve(null));
+    const hasTextSource = vi.fn(() => true);
     const reply = vi.fn();
     const controller = new DiscordTextController(allowed, {
       applyTextSource,
       deleteTextSource,
+      hasTextSource,
       handleText,
       now: () => 2_000,
       recordDeliveredReply: vi.fn(),
@@ -266,6 +268,7 @@ describe('DiscordTextController', () => {
     });
 
     expect(applyTextSource).toHaveBeenCalledOnce();
+    expect(hasTextSource).toHaveBeenCalledWith(chiefMessage.id);
     expect(applyTextSource).toHaveBeenCalledWith(
       expect.objectContaining({
         authorKind: 'chief',
@@ -277,6 +280,42 @@ describe('DiscordTextController', () => {
       deletedAt: 1_750,
       messageId: chiefMessage.id,
     });
+    expect(handleText).not.toHaveBeenCalled();
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it('recovers an unrecorded Chief create without generation', async () => {
+    const applyTextSource = vi.fn(() => ({
+      eventId: 1,
+      memorySourceEventId: null,
+      status: 'applied' as const,
+    }));
+    const handleText = vi.fn(() => Promise.resolve(null));
+    const controller = new DiscordTextController(allowed, {
+      applyTextSource,
+      handleText,
+      hasTextSource: vi.fn(() => false),
+      now: () => 2_000,
+      recordDeliveredReply: vi.fn(),
+    });
+    const chiefMessage = {
+      ...message('Recovered delivered answer.'),
+      attachments: [],
+      authorDisplayName: 'Chief',
+      authorId: allowed.botUserId,
+      authorIsBot: true,
+      occurredAt: 1_000,
+    };
+    const reply = vi.fn();
+
+    await controller.handle(chiefMessage, { reply, typing: vi.fn() });
+
+    expect(applyTextSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authorKind: 'chief',
+        messageId: chiefMessage.id,
+      }),
+    );
     expect(handleText).not.toHaveBeenCalled();
     expect(reply).not.toHaveBeenCalled();
   });

@@ -110,6 +110,30 @@ function documentInput(
   };
 }
 
+function sourceJobInput(
+  database: ReturnType<typeof openChiefDatabase>,
+  completeness: 'final' | 'provisional' = 'final',
+): Pick<
+  ContextDocumentRevisionInput,
+  'periodEnd' | 'periodStart' | 'sourceRevisionChecksum' | 'timeZone'
+> {
+  const row = database
+    .prepare(
+      `select period_start as periodStart, period_end as periodEnd,
+              source_revision_checksum as sourceRevisionChecksum,
+              timezone as timeZone
+       from context_jobs where completeness = ?`,
+    )
+    .get(completeness) as
+    | Pick<
+        ContextDocumentRevisionInput,
+        'periodEnd' | 'periodStart' | 'sourceRevisionChecksum' | 'timeZone'
+      >
+    | undefined;
+  if (row === undefined) throw new Error('expected a context source job');
+  return row;
+}
+
 describe('ChannelContextService', () => {
   it('indexes upserts immediately and schedules one hourly job pair', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
@@ -277,6 +301,97 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
+  it('rejects source-derived context without a revision checksum', () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const { contextStore, database, service } = createHarness(
+      occurredAt + 1_000,
+    );
+    const created = service.apply(source(occurredAt));
+    if (created.status !== 'applied') {
+      throw new Error('expected a source event');
+    }
+    const period = contextPeriod({
+      instant: occurredAt,
+      tier: 'hourly',
+      timeZone,
+    });
+
+    expect(() =>
+      contextStore.activateDocumentRevision(
+        documentInput({
+          createdAt: occurredAt + 2_000,
+          eventIds: [created.eventId],
+          periodEnd: period.end,
+          periodStart: period.start,
+        }),
+      ),
+    ).toThrow('context document requires source revision checksum');
+    expect(
+      database.prepare('select count(*) from context_documents').pluck().get(),
+    ).toBe(0);
+    database.close();
+  });
+
+  it('suppresses active context descendants before applying an edit', () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    const { contextStore, database, service } = createHarness(
+      occurredAt + 1_000,
+    );
+    const created = service.apply(source(occurredAt));
+    if (created.status !== 'applied') {
+      throw new Error('expected a source event');
+    }
+    const documentId = contextStore.activateDocumentRevision(
+      documentInput({
+        ...sourceJobInput(database),
+        createdAt: occurredAt + 1_500,
+        documentKey: 'hourly-edit-invalidation',
+        eventIds: [created.eventId],
+        summary: 'Project Marigold launches Friday.',
+      }),
+    );
+
+    expect(
+      service.apply(
+        source(occurredAt, {
+          content: 'Project Juniper launches Monday.',
+          editedAt: occurredAt + 2_000,
+        }),
+      ),
+    ).toMatchObject({ status: 'applied' });
+
+    expect(
+      database
+        .prepare(
+          `select state, content_state as contentState,
+                  content_state_reason as contentStateReason, summary
+           from context_documents where id = ?`,
+        )
+        .get(documentId),
+    ).toEqual({
+      contentState: 'scrubbed',
+      contentStateReason: 'retention-expired',
+      state: 'suppressed',
+      summary: '',
+    });
+    expect(lexicalIds(database, 'context_document_fts', 'Marigold')).toEqual(
+      [],
+    );
+    expect(
+      database
+        .prepare('select count(*) from context_document_vectors')
+        .pluck()
+        .get(),
+    ).toBe(0);
+    expect(
+      database
+        .prepare(`select distinct status from context_jobs`)
+        .pluck()
+        .all(),
+    ).toEqual(['pending']);
+    database.close();
+  });
+
   it('scrubs deletion descendants and blocks resurrection', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const { contextStore, database, service } = createHarness(
@@ -291,6 +406,7 @@ describe('ChannelContextService', () => {
     if (created.eventId === null) throw new Error('expected a source event');
     const eventId = created.eventId;
     const documentId = contextStore.activateDocumentRevision({
+      ...sourceJobInput(database, 'provisional'),
       completeness: 'provisional',
       confidence: 0.9,
       createdAt: occurredAt + 2_000,
@@ -301,13 +417,10 @@ describe('ChannelContextService', () => {
       generationOutputTokens: 5,
       generationUsageUsd: 0.01,
       parentDocumentIds: [],
-      periodEnd: occurredAt + 60 * 60 * 1_000,
-      periodStart: occurredAt,
       retentionDeadline: occurredAt + thirtyDays,
       revision: 1,
       summary: 'Project Marigold was discussed.',
       tier: 'hourly',
-      timeZone,
       topicKey: null,
     });
 
@@ -401,6 +514,7 @@ describe('ChannelContextService', () => {
     ).toBe('');
     expect(() =>
       contextStore.activateDocumentRevision({
+        ...sourceJobInput(database),
         completeness: 'final',
         confidence: 0.9,
         createdAt: deletedAt + 1,
@@ -411,13 +525,10 @@ describe('ChannelContextService', () => {
         generationOutputTokens: 5,
         generationUsageUsd: 0.01,
         parentDocumentIds: [],
-        periodEnd: occurredAt + 60 * 60 * 1_000,
-        periodStart: occurredAt,
         retentionDeadline: occurredAt + thirtyDays,
         revision: 2,
         summary: 'Project Marigold was discussed.',
         tier: 'hourly',
-        timeZone,
         topicKey: null,
       }),
     ).toThrow('context document source is unavailable');
@@ -499,7 +610,7 @@ describe('ChannelContextService', () => {
     });
     setNow(2_000);
     service.recordDeliveredReply({
-      chunks: [secondChunk],
+      chunks: [firstChunk, secondChunk],
       logicalResponseId: 'response-1',
       replyToMessageId: '52345678901234567',
       requestId: '52345678901234567',
@@ -514,6 +625,7 @@ describe('ChannelContextService', () => {
                   logical_response_id as logicalResponseId,
                   platform_event_id as platformEventId,
                   reply_to_message_id as replyToMessageId,
+                  response_chunk_index as responseChunkIndex,
                   revision_checksum as revisionChecksum,
                   speaker_id as speakerId
            from conversation_events order by id`,
@@ -528,6 +640,7 @@ describe('ChannelContextService', () => {
         platformEventId: chunk.messageId,
         recentUntil: chunk.occurredAt + sevenDays,
         replyToMessageId: '52345678901234567',
+        responseChunkIndex: chunks.indexOf(chunk),
         revisionChecksum: discordSourceRevisionChecksum({
           attachmentMetadataJson: '[]',
           authorKind: 'chief',
@@ -619,6 +732,65 @@ describe('ChannelContextService', () => {
     });
     database.close();
   });
+
+  it('repairs durable delivered order after reverse reconciliation', () => {
+    const { database, service } = createHarness(1_000);
+    const chunks = [
+      {
+        content: 'First chunk. ',
+        messageId: '62345678901234567',
+        occurredAt: 1_100,
+      },
+      {
+        content: 'Second chunk.',
+        messageId: '62345678901234568',
+        occurredAt: 1_200,
+      },
+    ];
+    for (const chunk of [...chunks].reverse()) {
+      service.apply({
+        attachmentMetadataJson: '[]',
+        content: chunk.content,
+        editedAt: null,
+        messageId: chunk.messageId,
+        occurredAt: chunk.occurredAt,
+        platformEventId: chunk.messageId,
+        replyToMessageId: null,
+        requestId: chunk.messageId,
+        role: 'chief',
+        speakerId: '12345678901234567',
+        speakerName: 'Chief',
+        type: 'upsert',
+      });
+    }
+
+    service.recordDeliveredReply({
+      chunks,
+      logicalResponseId: 'response-ordered',
+      replyToMessageId: '52345678901234567',
+      requestId: '52345678901234567',
+      speakerId: '12345678901234567',
+    });
+
+    expect(
+      database
+        .prepare(
+          `select discord_message_id as messageId,
+                  response_chunk_index as chunkIndex
+           from conversation_events order by response_chunk_index`,
+        )
+        .all(),
+    ).toEqual([
+      { chunkIndex: 0, messageId: chunks[0]?.messageId },
+      { chunkIndex: 1, messageId: chunks[1]?.messageId },
+    ]);
+    expect(
+      new ConversationStore(database).recent({ now: 2_000 }).events,
+    ).toEqual([
+      expect.objectContaining({ content: 'First chunk. Second chunk.' }),
+    ]);
+    database.close();
+  });
 });
 
 describe('ContextStore', () => {
@@ -652,6 +824,7 @@ describe('ContextStore', () => {
     if (created.eventId === null) throw new Error('expected a source event');
     const base = {
       ...documentInput(),
+      ...sourceJobInput(database),
       eventIds: [created.eventId],
     };
     const firstId = contextStore.activateDocumentRevision({
@@ -731,6 +904,7 @@ describe('ContextStore', () => {
     const eventId = created.eventId;
     const finalParentId = contextStore.activateDocumentRevision(
       documentInput({
+        ...sourceJobInput(database),
         completeness: 'final',
         documentKey: 'hourly-final-parent',
         eventIds: [eventId],
@@ -784,6 +958,7 @@ describe('ContextStore', () => {
     if (created.eventId === null) throw new Error('expected a source event');
     const provisionalId = contextStore.activateDocumentRevision(
       documentInput({
+        ...sourceJobInput(database, 'provisional'),
         completeness: 'provisional',
         documentKey: 'hourly-source',
         eventIds: [created.eventId],
@@ -811,6 +986,7 @@ describe('ContextStore', () => {
 
     const finalId = contextStore.activateDocumentRevision(
       documentInput({
+        ...sourceJobInput(database),
         completeness: 'final',
         createdAt: 2_000,
         documentKey: 'hourly-source',
@@ -843,6 +1019,7 @@ describe('ContextStore', () => {
     const eventId = created.eventId;
     const secondId = contextStore.activateDocumentRevision(
       documentInput({
+        ...sourceJobInput(database),
         documentKey: 'hourly-monotonic',
         eventIds: [eventId],
         revision: 2,
@@ -853,6 +1030,7 @@ describe('ContextStore', () => {
     expect(() =>
       contextStore.activateDocumentRevision(
         documentInput({
+          ...sourceJobInput(database),
           createdAt: 2_000,
           documentKey: 'hourly-monotonic',
           embedding: embedding(0.2),

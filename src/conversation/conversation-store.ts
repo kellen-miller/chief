@@ -24,6 +24,7 @@ export interface ConversationEventInput {
   readonly recentUntil?: number;
   readonly replyToMessageId?: string | null;
   readonly requestId: string | null;
+  readonly responseChunkIndex?: number | null;
   readonly revisionChecksum?: string;
   readonly retentionDeadline: number;
   readonly role: ConversationRole;
@@ -105,6 +106,7 @@ export class ConversationStore {
       logicalResponseId: event.logicalResponseId ?? null,
       recentUntil: event.recentUntil ?? event.retentionDeadline,
       replyToMessageId: event.replyToMessageId ?? null,
+      responseChunkIndex: event.responseChunkIndex ?? null,
       revisionChecksum: event.revisionChecksum ?? '',
     };
     this.#database
@@ -114,18 +116,23 @@ export class ConversationStore {
             request_id, logical_response_id, role, speaker_id, speaker_name,
             medium, reply_to_message_id, content, attachment_metadata_json,
             occurred_at, edited_at, recent_until, retention_deadline,
-            content_state, content_state_reason, revision_checksum)
+            content_state, content_state_reason, revision_checksum,
+            response_chunk_index)
          values (@platformEventId, @discordMessageId, @guildId, @channelId,
                  @requestId, @logicalResponseId, @role, @speakerId,
                  @speakerName, @medium, @replyToMessageId, @content,
                  @attachmentMetadataJson, @occurredAt, @editedAt,
                  @recentUntil, @retentionDeadline, 'available', 'retained',
-                 @revisionChecksum)
+                 @revisionChecksum, @responseChunkIndex)
          on conflict(guild_id, channel_id, discord_message_id) do update set
            speaker_name = excluded.speaker_name,
            speaker_id = excluded.speaker_id,
            edited_at = excluded.edited_at,
            reply_to_message_id = excluded.reply_to_message_id,
+           response_chunk_index = coalesce(
+             excluded.response_chunk_index,
+             conversation_events.response_chunk_index
+           ),
            content = case when conversation_events.content_state = 'available'
              then excluded.content else conversation_events.content end,
            attachment_metadata_json = case
@@ -171,6 +178,7 @@ export class ConversationStore {
                   e.guild_id as guildId, e.channel_id as channelId,
                   e.request_id as requestId, e.role,
                   e.logical_response_id as logicalResponseId,
+                  e.response_chunk_index as responseChunkIndex,
                   e.speaker_id as speakerId, e.speaker_name as speakerName,
                   e.medium, e.reply_to_message_id as replyToMessageId,
                   e.content,
@@ -209,7 +217,10 @@ export class ConversationStore {
                   min(role) as role, min(speakerId) as speakerId,
                   min(speakerName) as speakerName, min(medium) as medium,
                   min(replyToMessageId) as replyToMessageId,
-                  group_concat(content, '' order by id) as content,
+                  group_concat(
+                    content, '' order by
+                      coalesce(responseChunkIndex, 2147483647), id
+                  ) as content,
                   min(attachmentMetadataJson) as attachmentMetadataJson,
                   min(occurredAt) as occurredAt, max(editedAt) as editedAt,
                   max(deletedAt) as deletedAt,

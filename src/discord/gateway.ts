@@ -17,11 +17,14 @@ import type { Logger } from 'pino';
 
 import type { ConversationOrchestrator } from '../app/conversation-orchestrator.js';
 import { roll } from '../commands/roll.js';
-import type {
-  DiscordHistoryMode,
-  DiscordHistoryPage,
-  DiscordHistorySource,
-  DiscordReconciliationResult,
+import {
+  buildDiscordHistoryPage,
+  discordHistoryFetchRequest,
+  rateLimitedDiscordHistoryPage,
+  type DiscordHistoryFetchInput,
+  type DiscordHistoryPage,
+  type DiscordHistorySource,
+  type DiscordReconciliationResult,
 } from './discord-reconciliation-service.js';
 import { contextPermissionSnapshot } from './source-message.js';
 import {
@@ -150,6 +153,8 @@ export class DiscordGateway {
         deleteTextSource: (input) =>
           this.#options.orchestrator.deleteTextSource(input),
         handleText: (turn) => this.#options.orchestrator.handleText(turn),
+        hasTextSource: (messageId) =>
+          this.#options.orchestrator.hasTextSource(messageId),
         recordDeliveredReply: (input) => {
           this.#options.orchestrator.recordDeliveredReply(input);
         },
@@ -397,112 +402,51 @@ class DiscordGatewayHistorySource implements DiscordHistorySource {
     this.#channel = options.channel;
   }
 
-  public async fetchPage(input: {
-    readonly afterMessageId: string | null;
-    readonly cursor: string | null;
-    readonly mode: DiscordHistoryMode;
-    readonly retentionCutoff: number;
-  }): Promise<DiscordHistoryPage> {
+  public async fetchPage(
+    input: DiscordHistoryFetchInput,
+  ): Promise<DiscordHistoryPage> {
     try {
-      const incremental = input.mode === 'incremental';
-      const anchor = input.cursor ?? input.afterMessageId;
-      const messages = await this.#channel.messages.fetch({
-        ...(anchor === null
-          ? {}
-          : incremental && input.cursor === null
-            ? { after: anchor }
-            : { before: anchor }),
-        limit: 100,
-      });
-      const fetched = [...messages.values()];
-      const reachedIncrementalBoundary =
-        incremental &&
-        input.afterMessageId !== null &&
-        fetched.some(
-          ({ id }) => BigInt(id) <= BigInt(input.afterMessageId ?? '0'),
-        );
-      const containsExpired = fetched.some(
-        ({ createdTimestamp }) => createdTimestamp < input.retentionCutoff,
+      const messages = await this.#channel.messages.fetch(
+        discordHistoryFetchRequest(input),
       );
-      const terminal =
-        (incremental && input.afterMessageId === null) ||
-        fetched.length < 100 ||
-        reachedIncrementalBoundary ||
-        (input.mode === 'retained' && containsExpired);
-      const rawIds = fetched.map(({ id }) => id);
-      const oldestRaw = snowflakeMinimum(rawIds);
-      const newestRaw = snowflakeMaximum(rawIds);
-      const nextCursor = terminal ? null : oldestRaw;
-      const items = fetched.flatMap((message) => {
-        if (
-          incremental &&
-          input.afterMessageId !== null &&
-          BigInt(message.id) <= BigInt(input.afterMessageId)
-        ) {
-          return [];
-        }
-        if (
-          input.mode === 'retained' &&
-          message.createdTimestamp < input.retentionCutoff
-        ) {
-          return [];
-        }
+      const fetched = [...messages.values()].map((message) => {
         const source = normalizeDiscordSourceForStorage(
           this.#allowed,
           historyCandidate(message),
         );
-        if (source === null) return [];
-        const normalized = {
-          ...source,
-          revisionChecksum: discordSourceRevisionChecksum(source),
+        const revisionChecksum =
+          source === null ? undefined : discordSourceRevisionChecksum(source);
+        const item =
+          source === null || revisionChecksum === undefined
+            ? undefined
+            : {
+                messageId: message.id,
+                occurredAt: message.createdTimestamp,
+                revisionChecksum,
+                ...(input.mode === 'full'
+                  ? {}
+                  : {
+                      source: {
+                        ...source,
+                        revisionChecksum,
+                      },
+                    }),
+              };
+        return {
+          ...(item === undefined ? {} : { item }),
+          messageId: message.id,
+          occurredAt: message.createdTimestamp,
         };
-        return [
-          {
-            messageId: message.id,
-            occurredAt: message.createdTimestamp,
-            revisionChecksum: normalized.revisionChecksum,
-            ...(input.mode === 'full' ? {} : { source: normalized }),
-          },
-        ];
       });
-      const coverage =
-        oldestRaw === null && newestRaw === null && !terminal
-          ? null
-          : {
-              newestMessageId:
-                newestRaw ??
-                timestampSnowflake(input.retentionCutoff + RAW_RETENTION_MS),
-              oldestMessageId:
-                input.mode === 'full' && terminal
-                  ? '0'
-                  : input.mode === 'retained' && terminal
-                    ? timestampSnowflake(input.retentionCutoff)
-                    : (oldestRaw ?? timestampSnowflake(input.retentionCutoff)),
-            };
-      return {
-        complete: true,
-        coverage,
-        items,
-        nextCursor,
-        rateLimited: false,
-      };
+      return buildDiscordHistoryPage(input, fetched);
     } catch (error) {
       if (isRateLimited(error)) {
-        return {
-          complete: false,
-          coverage: null,
-          items: [],
-          nextCursor: input.cursor,
-          rateLimited: true,
-        };
+        return rateLimitedDiscordHistoryPage(input);
       }
       throw error;
     }
   }
 }
-
-const RAW_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
-const DISCORD_EPOCH_MS = 1_420_070_400_000;
 
 function historyCandidate(message: Message) {
   return {
@@ -526,28 +470,6 @@ function historyCandidate(message: Message) {
     replyToMessageId: message.reference?.messageId ?? null,
     webhookId: message.webhookId,
   };
-}
-
-function snowflakeMinimum(ids: readonly string[]): string | null {
-  return ids.reduce<string | null>(
-    (minimum, id) =>
-      minimum === null || BigInt(id) < BigInt(minimum) ? id : minimum,
-    null,
-  );
-}
-
-function snowflakeMaximum(ids: readonly string[]): string | null {
-  return ids.reduce<string | null>(
-    (maximum, id) =>
-      maximum === null || BigInt(id) > BigInt(maximum) ? id : maximum,
-    null,
-  );
-}
-
-function timestampSnowflake(timestamp: number): string {
-  return (
-    BigInt(Math.max(0, Math.floor(timestamp) - DISCORD_EPOCH_MS)) << 22n
-  ).toString();
 }
 
 function isRateLimited(error: unknown): boolean {

@@ -25,13 +25,21 @@ export interface DiscordHistoryPage {
   readonly rateLimited: boolean;
 }
 
+export interface DiscordHistoryFetchInput {
+  readonly afterMessageId: string | null;
+  readonly cursor: string | null;
+  readonly mode: DiscordHistoryMode;
+  readonly retentionCutoff: number;
+}
+
+export interface DiscordHistoryTransportIdentity {
+  readonly item?: DiscordHistoryItem;
+  readonly messageId: string;
+  readonly occurredAt: number;
+}
+
 export interface DiscordHistorySource {
-  fetchPage(input: {
-    readonly afterMessageId: string | null;
-    readonly cursor: string | null;
-    readonly mode: DiscordHistoryMode;
-    readonly retentionCutoff: number;
-  }): Promise<DiscordHistoryPage>;
+  fetchPage(input: DiscordHistoryFetchInput): Promise<DiscordHistoryPage>;
 }
 
 export interface DiscordSourceLifecycle {
@@ -393,4 +401,111 @@ function withinSnowflakeRange(
 ): boolean {
   const value = BigInt(messageId);
   return value >= BigInt(oldestMessageId) && value <= BigInt(newestMessageId);
+}
+
+const DISCORD_EPOCH_MS = 1_420_070_400_000;
+
+export function discordHistoryFetchRequest(input: DiscordHistoryFetchInput): {
+  readonly after?: string;
+  readonly before?: string;
+  readonly limit: 100;
+} {
+  const anchor = input.cursor ?? input.afterMessageId;
+  if (anchor === null) return { limit: 100 };
+  return input.mode === 'incremental' && input.cursor === null
+    ? { after: anchor, limit: 100 }
+    : { before: anchor, limit: 100 };
+}
+
+export function buildDiscordHistoryPage(
+  input: DiscordHistoryFetchInput,
+  fetched: readonly DiscordHistoryTransportIdentity[],
+): DiscordHistoryPage {
+  const incremental = input.mode === 'incremental';
+  const afterMessageId = input.afterMessageId;
+  const reachedIncrementalBoundary =
+    incremental &&
+    afterMessageId !== null &&
+    fetched.some(
+      ({ messageId }) => BigInt(messageId) <= BigInt(afterMessageId),
+    );
+  const containsExpired = fetched.some(
+    ({ occurredAt }) => occurredAt < input.retentionCutoff,
+  );
+  const terminal =
+    (incremental && input.afterMessageId === null) ||
+    fetched.length < 100 ||
+    reachedIncrementalBoundary ||
+    (input.mode === 'retained' && containsExpired);
+  const rawIds = fetched.map(({ messageId }) => messageId);
+  const oldestRaw = snowflakeMinimum(rawIds);
+  const newestRaw = snowflakeMaximum(rawIds);
+  const items = fetched.flatMap(({ item, messageId, occurredAt }) => {
+    if (
+      incremental &&
+      afterMessageId !== null &&
+      BigInt(messageId) <= BigInt(afterMessageId)
+    ) {
+      return [];
+    }
+    if (input.mode === 'retained' && occurredAt < input.retentionCutoff) {
+      return [];
+    }
+    return item === undefined ? [] : [item];
+  });
+  const coverage =
+    oldestRaw === null && newestRaw === null && !terminal
+      ? null
+      : {
+          newestMessageId:
+            newestRaw ??
+            timestampSnowflake(input.retentionCutoff + RAW_RETENTION_MS),
+          oldestMessageId:
+            input.mode === 'full' && terminal
+              ? '0'
+              : input.mode === 'retained' && terminal
+                ? timestampSnowflake(input.retentionCutoff)
+                : (oldestRaw ?? timestampSnowflake(input.retentionCutoff)),
+        };
+  return {
+    complete: true,
+    coverage,
+    items,
+    nextCursor: terminal ? null : oldestRaw,
+    rateLimited: false,
+  };
+}
+
+export function rateLimitedDiscordHistoryPage(
+  input: DiscordHistoryFetchInput,
+): DiscordHistoryPage {
+  return {
+    complete: false,
+    coverage: null,
+    items: [],
+    nextCursor: input.cursor,
+    rateLimited: true,
+  };
+}
+
+function snowflakeMinimum(ids: readonly string[]): string | null {
+  return ids.reduce<string | null>(
+    (minimum, id) =>
+      minimum === null || BigInt(id) < BigInt(minimum) ? id : minimum,
+    null,
+  );
+}
+
+function snowflakeMaximum(ids: readonly string[]): string | null {
+  return ids.reduce<string | null>(
+    (maximum, id) =>
+      maximum === null || BigInt(id) > BigInt(maximum) ? id : maximum,
+    null,
+  );
+}
+
+function timestampSnowflake(timestamp: number): string {
+  return (
+    BigInt(Math.max(0, Math.floor(timestamp) - DISCORD_EPOCH_MS)) << 22n
+  ).toString();
 }

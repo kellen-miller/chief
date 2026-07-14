@@ -57,6 +57,7 @@ export interface DiscordTextDependencies {
   readonly handleText: (
     turn: NormalizedTextTurn,
   ) => Promise<ConversationResult | null>;
+  readonly hasTextSource?: (messageId: string) => boolean;
   readonly now?: () => number;
   readonly recordDeliveredReply: (input: DeliveredReplyInput) => void;
 }
@@ -79,7 +80,11 @@ export class DiscordTextController {
   ): Promise<void> {
     const source = this.#normalize(message);
     if (source === null) return;
-    if (source.authorKind === 'chief') return;
+    if (source.authorKind === 'chief') {
+      if (this.#dependencies.hasTextSource?.(source.messageId) === true) return;
+      this.#dependencies.applyTextSource?.(source);
+      return;
+    }
     const qualification = qualifyTextMessage(this.#allowed, message);
     if (qualification.kind === 'ignore') return;
 

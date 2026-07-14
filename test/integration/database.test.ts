@@ -152,7 +152,8 @@ describe('Chief database', () => {
                   discord_message_id as discordMessageId,
                   attachment_metadata_json as attachmentMetadataJson,
                   content_state as contentState,
-                  content_state_reason as contentStateReason
+                  content_state_reason as contentStateReason,
+                  response_chunk_index as responseChunkIndex
            from conversation_events where id = 1`,
         )
         .get(),
@@ -164,6 +165,7 @@ describe('Chief database', () => {
       discordMessageId: 'discord:text:1280000000000000001',
       guildId: '',
       recentUntil: 700,
+      responseChunkIndex: null,
     });
     expect(
       new SqliteMemoryStore(database).retrieve({

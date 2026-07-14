@@ -72,8 +72,8 @@ content-bearing path that applies eligible revisions inside raw retention.
 `pnpm verify` passed:
 
 - Prettier, ESLint, and TypeScript checks passed.
-- 32 test files passed with 254 tests.
-- Coverage: 90.30% statements, 83.00% branches, 91.08% functions, and 91.78%
+- 32 test files passed with 264 tests.
+- Coverage: 90.38% statements, 83.37% branches, 90.90% functions, and 91.88%
   lines.
 - The production TypeScript build passed.
 
@@ -83,3 +83,59 @@ No known blockers. `src/discord/gateway.ts` remains intentionally excluded by
 the project coverage configuration; pagination/deletion proof is in the
 directly covered reconciliation service, while the Discord adapter is checked
 by lint, typecheck, and build.
+
+## Independent review response
+
+All six substantiated findings from the independent review were resolved
+test-first:
+
+1. Durable provenance now survives raw retention without retaining raw source
+   text. `SqliteMemoryStore.maintain` scrubs expired source content while a
+   durable memory still needs the stable source and author identity; completed
+   extraction jobs are removed. The source row is deleted once no durable
+   memory or unfinished job references it.
+   - RED: the self-forget retention test returned `ambiguous`, and the
+     post-retention Discord deletion test left one memory active.
+   - GREEN: both focused tests pass and assert the retained source content is
+     empty before self-forget or authoritative Discord deletion revokes it.
+2. Source-derived context commits now require a source revision checksum and
+   reject omission before mutation.
+   - RED: `channel-context-service.test.ts -t "without a revision checksum"`
+     activated a document.
+   - GREEN: the same test throws the missing source revision checksum error;
+     the stale-checksum and tombstone tests remain green.
+3. Discord request anchoring, cursor direction, coverage, terminal boundaries,
+   retention filtering, and rate-limit proofs moved out of excluded
+   `gateway.ts` into covered reconciliation code. The gateway now only fetches,
+   normalizes transport messages, and delegates page proof construction.
+   - RED: four direct pagination tests failed because the covered functions did
+     not exist.
+   - GREEN: all four pass for after/before cursors, nonterminal ranges,
+     incremental/retention terminals, and incomplete rate-limit pages.
+4. Chief creates now use recorded-snowflake identity. Recorded callback rows are
+   ignored; an unrecorded Chief create is recovered through the lifecycle
+   without generation. The callback still repairs authoritative request,
+   response, and chunk lineage if reconciliation wins the race.
+   - RED: both recorded-ignore and unrecorded-recovery controller tests failed.
+   - GREEN: both pass, and the existing reconciliation-won callback race test
+     remains green.
+5. A newer human edit now suppresses all active context descendants and removes
+   their FTS/vector rows before the canonical source and fresh jobs are
+   applied. The existing `retention-expired` scrub reason is reused for this
+   internal invalidation rather than expanding the public deletion reasons.
+   - RED: the edit left the active rollup, summary, FTS row, and vector intact.
+   - GREEN: the focused edit test observes a scrubbed/suppressed document, no
+     search rows, and fresh pending jobs.
+6. Migration `0004_discord_source_lifecycle` now adds a nonnegative nullable
+   `response_chunk_index`; its checksum is bumped to `chief-0004-v2`.
+   Delivery callbacks persist/repair that ordinal, and prompt grouping orders
+   chunk content by ordinal rather than insertion ID.
+   - RED: reverse reconciliation failed because `response_chunk_index` did not
+     exist.
+   - GREEN: the callback repairs ordinals `0, 1`, and recent prompt assembly
+     returns the delivered first/second order despite reverse insertion.
+
+Review verification completed with 24 focused Discord unit tests and 61 focused
+integration tests, followed by `pnpm verify`: all 32 files and 264 tests passed,
+coverage stayed above repository thresholds, and formatting, lint, typecheck,
+and the production build all passed.

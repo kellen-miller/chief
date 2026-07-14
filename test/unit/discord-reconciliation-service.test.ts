@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { DiscordReconciliationService } from '../../src/discord/discord-reconciliation-service.js';
+import {
+  buildDiscordHistoryPage,
+  discordHistoryFetchRequest,
+  DiscordReconciliationService,
+  rateLimitedDiscordHistoryPage,
+} from '../../src/discord/discord-reconciliation-service.js';
 import {
   migrateChiefDatabase,
   openChiefDatabase,
@@ -60,6 +65,117 @@ function seedAvailable(
       `${messageId}:${content}`,
     );
 }
+
+describe('Discord history pagination', () => {
+  it('uses an after anchor once and a before cursor for continuation', () => {
+    expect(
+      discordHistoryFetchRequest({
+        afterMessageId: '100',
+        cursor: null,
+        mode: 'incremental',
+        retentionCutoff: 0,
+      }),
+    ).toEqual({ after: '100', limit: 100 });
+    expect(
+      discordHistoryFetchRequest({
+        afterMessageId: '100',
+        cursor: '200',
+        mode: 'incremental',
+        retentionCutoff: 0,
+      }),
+    ).toEqual({ before: '200', limit: 100 });
+  });
+
+  it('proves nonterminal coverage and advances from the oldest identity', () => {
+    const input = {
+      afterMessageId: null,
+      cursor: null,
+      mode: 'full' as const,
+      retentionCutoff: 500,
+    };
+    const fetched = Array.from({ length: 100 }, (_, index) => ({
+      item: {
+        messageId: String(1_000 + index),
+        occurredAt: 1_000,
+        revisionChecksum: `revision-${String(index)}`,
+      },
+      messageId: String(1_000 + index),
+      occurredAt: 1_000,
+    }));
+
+    expect(buildDiscordHistoryPage(input, fetched)).toMatchObject({
+      complete: true,
+      coverage: { newestMessageId: '1099', oldestMessageId: '1000' },
+      nextCursor: '1000',
+      rateLimited: false,
+    });
+  });
+
+  it('terminates at incremental and retention boundaries', () => {
+    const incremental = buildDiscordHistoryPage(
+      {
+        afterMessageId: '1000',
+        cursor: '1100',
+        mode: 'incremental',
+        retentionCutoff: 500,
+      },
+      Array.from({ length: 100 }, (_, index) => {
+        const messageId = String(1_099 - index);
+        return {
+          item: {
+            messageId,
+            occurredAt: 1_000,
+            revisionChecksum: messageId,
+          },
+          messageId,
+          occurredAt: 1_000,
+        };
+      }),
+    );
+    expect(incremental.nextCursor).toBeNull();
+    expect(incremental.items.every(({ messageId }) => messageId > '1000')).toBe(
+      true,
+    );
+
+    const retained = buildDiscordHistoryPage(
+      {
+        afterMessageId: null,
+        cursor: '1100',
+        mode: 'retained',
+        retentionCutoff: 900,
+      },
+      Array.from({ length: 100 }, (_, index) => {
+        const messageId = String(1_099 - index);
+        const occurredAt = index === 99 ? 899 : 1_000;
+        return {
+          item: { messageId, occurredAt, revisionChecksum: messageId },
+          messageId,
+          occurredAt,
+        };
+      }),
+    );
+    expect(retained.nextCursor).toBeNull();
+    expect(retained.items).toHaveLength(99);
+    expect(retained.coverage?.oldestMessageId).toBe('0');
+  });
+
+  it('returns an incomplete rate-limited proof at the durable cursor', () => {
+    expect(
+      rateLimitedDiscordHistoryPage({
+        afterMessageId: '100',
+        cursor: '200',
+        mode: 'incremental',
+        retentionCutoff: 0,
+      }),
+    ).toEqual({
+      complete: false,
+      coverage: null,
+      items: [],
+      nextCursor: '200',
+      rateLimited: true,
+    });
+  });
+});
 
 describe('DiscordReconciliationService', () => {
   it('applies an offline create and edit then infers a covered deletion', async () => {

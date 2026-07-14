@@ -25,6 +25,7 @@ export interface ContextSourceUpsert {
   readonly platformEventId?: string;
   readonly replyToMessageId?: string | null;
   readonly requestId: string | null;
+  readonly responseChunkIndex?: number | null;
   readonly revisionChecksum?: string;
   readonly role: ConversationRole;
   readonly speakerId: string | null;
@@ -114,6 +115,10 @@ export class ChannelContextService {
     )();
   }
 
+  public hasSource(messageId: string): boolean {
+    return this.#eventId(messageId) !== null;
+  }
+
   public recordDeliveredReply(input: DeliveredReplyInput): void {
     if (
       input.chunks.length === 0 ||
@@ -132,7 +137,7 @@ export class ChannelContextService {
         .get(this.#guildId, this.#channelId, input.logicalResponseId) as
         number | null;
       const fallbackOccurredAt = existingOccurredAt ?? this.#now();
-      for (const chunk of input.chunks) {
+      for (const [chunkIndex, chunk] of input.chunks.entries()) {
         const applied = this.#applyUpsert(
           {
             attachmentMetadataJson: '[]',
@@ -143,6 +148,7 @@ export class ChannelContextService {
             platformEventId: chunk.messageId,
             replyToMessageId: input.replyToMessageId,
             requestId: input.requestId,
+            responseChunkIndex: chunkIndex,
             role: 'chief',
             speakerId: input.speakerId ?? null,
             speakerName: 'Chief',
@@ -159,6 +165,7 @@ export class ChannelContextService {
                  reply_to_message_id = case when logical_response_id is null
                                             then ? else reply_to_message_id end,
                  logical_response_id = coalesce(logical_response_id, ?),
+                 response_chunk_index = ?,
                  platform_event_id = ?
                where id = ? and role = 'chief'`,
             )
@@ -166,6 +173,7 @@ export class ChannelContextService {
               input.requestId,
               input.replyToMessageId,
               input.logicalResponseId,
+              chunkIndex,
               chunk.messageId,
               applied.eventId,
             );
@@ -229,6 +237,10 @@ export class ChannelContextService {
     ) {
       return { eventId: existing.id, status: 'unchanged' };
     }
+    if (existing !== null) {
+      this.#suppressDescendants(existing.id, 'retention-expired', this.#now());
+      this.#invalidateEventJobs(existing.id);
+    }
 
     const eventId = this.#conversation.record({
       attachmentMetadataJson: change.attachmentMetadataJson ?? '[]',
@@ -244,6 +256,7 @@ export class ChannelContextService {
       recentUntil: change.occurredAt + RECENT_RETENTION_MS,
       replyToMessageId: change.replyToMessageId ?? null,
       requestId: change.requestId,
+      responseChunkIndex: change.responseChunkIndex ?? null,
       revisionChecksum,
       retentionDeadline: change.occurredAt + RAW_RETENTION_MS,
       role: change.role,

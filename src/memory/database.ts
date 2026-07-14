@@ -399,6 +399,9 @@ export const CHANNEL_CONTEXT_MIGRATION_CHECKSUM = 'chief-0003-v2';
 const DISCORD_SOURCE_LIFECYCLE_MIGRATION = `
 alter table conversation_events
   add column revision_checksum text not null default '';
+alter table conversation_events
+  add column response_chunk_index integer
+    check (response_chunk_index is null or response_chunk_index >= 0);
 alter table source_events
   add column source_scope_id text not null default '';
 alter table source_events
@@ -440,7 +443,7 @@ create table discord_reconciliation_seen (
 
 export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID =
   '0004_discord_source_lifecycle';
-export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_CHECKSUM = 'chief-0004-v1';
+export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_CHECKSUM = 'chief-0004-v2';
 
 interface Migration {
   readonly checksum: string;

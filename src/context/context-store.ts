@@ -116,7 +116,11 @@ export class ContextStore {
     if (input.tier !== 'hourly' && input.eventIds.length > 0) {
       throw new Error('higher context tier requires parent-only lineage');
     }
-    if (input.sourceRevisionChecksum !== undefined && input.tier === 'hourly') {
+    const sourceRevisionChecksum = input.sourceRevisionChecksum;
+    if (input.eventIds.length > 0 && sourceRevisionChecksum === undefined) {
+      throw new Error('context document requires source revision checksum');
+    }
+    if (input.eventIds.length > 0) {
       const current = this.#database
         .prepare(
           `select exists(
@@ -130,7 +134,7 @@ export class ContextStore {
           input.periodStart,
           input.periodEnd,
           input.timeZone,
-          input.sourceRevisionChecksum,
+          sourceRevisionChecksum,
         );
       if (current !== 1) {
         throw new Error('context document source revision changed');

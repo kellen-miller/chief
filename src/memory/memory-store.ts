@@ -465,19 +465,39 @@ export class SqliteMemoryStore {
     readonly consolidatedMemories: number;
     readonly deletedSources: number;
   } {
-    const result = this.#database
-      .prepare(
-        `delete from source_events
-         where retention_deadline <= ? and not exists (
-           select 1 from memory_jobs j where j.source_event_id = source_events.id
-             and j.status != 'completed'
-         )`,
-      )
-      .run(now);
-    return {
-      consolidatedMemories: this.#consolidateExactDuplicates(now),
-      deletedSources: result.changes,
-    };
+    return this.#database.transaction(() => {
+      this.#database
+        .prepare(
+          `delete from memory_jobs
+           where status = 'completed' and source_event_id in (
+             select id from source_events where retention_deadline <= ?
+           )`,
+        )
+        .run(now);
+      this.#database
+        .prepare(
+          `update source_events set content = ''
+           where retention_deadline <= ? and content != '' and exists (
+             select 1 from memories m where m.source_event_id = source_events.id
+           )`,
+        )
+        .run(now);
+      const result = this.#database
+        .prepare(
+          `delete from source_events
+           where retention_deadline <= ? and not exists (
+             select 1 from memories m where m.source_event_id = source_events.id
+           ) and not exists (
+             select 1 from memory_jobs j where j.source_event_id = source_events.id
+               and j.status != 'completed'
+           )`,
+        )
+        .run(now);
+      return {
+        consolidatedMemories: this.#consolidateExactDuplicates(now),
+        deletedSources: result.changes,
+      };
+    })();
   }
 
   public async backup(destination: string): Promise<void> {

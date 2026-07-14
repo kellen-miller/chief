@@ -368,6 +368,10 @@ export class ConversationOrchestrator {
     });
   }
 
+  public hasTextSource(messageId: string): boolean {
+    return this.#context.hasSource(messageId);
+  }
+
   public deleteTextSource(input: {
     readonly deletedAt: number;
     readonly messageId: string;

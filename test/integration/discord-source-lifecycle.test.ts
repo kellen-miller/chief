@@ -234,6 +234,47 @@ describe('Discord source lifecycle', () => {
     database.close();
   });
 
+  it('revokes durable memory on Discord delete after raw retention', () => {
+    const { context, database, memory } = createHarness();
+    const applied = context.apply(source());
+    if (applied.status !== 'applied' || applied.memorySourceEventId === null) {
+      throw new Error('expected a memory source');
+    }
+    const job = memory.leaseNextJob(1_000, 60_000);
+    if (job === null) throw new Error('expected an extraction job');
+    memory.completeJob(job.id);
+    memory.applyMemory({
+      canonicalText: 'Project Marigold launches Friday.',
+      confidence: 0.9,
+      embedding: new Float32Array(1_536),
+      kind: 'fact',
+      provenance: { platformSourceId: messageId },
+      sourceEventId: applied.memorySourceEventId,
+      timestamp: 1_500,
+    });
+
+    const retainedAt = 1_001 + 30 * 24 * 60 * 60 * 1_000;
+    memory.maintain(retainedAt);
+    context.maintain(retainedAt);
+    expect(
+      database
+        .prepare('select content from source_events where id = ?')
+        .pluck()
+        .get(applied.memorySourceEventId),
+    ).toBe('');
+    context.apply({
+      deletedAt: retainedAt + 1,
+      messageId,
+      reason: 'discord-deleted',
+      type: 'delete',
+    });
+
+    expect(
+      database.prepare('select count(*) from memories').pluck().get(),
+    ).toBe(0);
+    database.close();
+  });
+
   it('keeps the newest Discord revision under duplicates and reordering', () => {
     const { context, database } = createHarness();
     context.apply(source());

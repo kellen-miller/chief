@@ -11,6 +11,6 @@
    pnpm chief -- register-commands
    ```
 
-Commands are guild-scoped so updates appear quickly. Chief fails closed if the configured guild or either channel is missing, if a command is invoked elsewhere, or if a message comes from a DM, thread, webhook, or another bot. Chief retains its own delivered messages by their Discord snowflakes so reply history, edits, deletes, and reconciliation use the same source lifecycle.
+Commands are guild-scoped so updates appear quickly. Chief fails closed if the configured guild or either channel is missing, if a command is invoked elsewhere, or if a message comes from a DM, thread, webhook, or another bot. Chief retains its own delivered messages by their Discord snowflakes and durable chunk order so reply history, edits, deletes, prompt assembly, and reconciliation use the same source lifecycle.
 
 Never commit the bot token. Production reads it from the `chief-discord-token` Secret Manager resource.
