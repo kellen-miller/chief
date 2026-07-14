@@ -181,15 +181,13 @@ export class ConversationOrchestrator {
   ): Promise<ConversationResult | null> {
     let eventId: number;
     let explicit: ExplicitTurn | undefined;
+    const intent =
+      turn.kind === 'request' ? detectExplicitMemoryIntent(turn.content) : null;
+    const confirmationNonce =
+      turn.kind === 'request'
+        ? detectForgetConfirmationNonce(turn.content)
+        : null;
     try {
-      const intent =
-        turn.kind === 'request'
-          ? detectExplicitMemoryIntent(turn.content)
-          : null;
-      const confirmationNonce =
-        turn.kind === 'request'
-          ? detectForgetConfirmationNonce(turn.content)
-          : null;
       const applied = this.#context.apply({
         attachmentMetadataJson: turn.attachmentMetadataJson ?? '[]',
         canModerateContext: turn.canModerateContext ?? false,
@@ -251,6 +249,13 @@ export class ConversationOrchestrator {
         };
       }
     } catch {
+      if (turn.kind === 'observe') return Promise.resolve(null);
+      if (turn.kind === 'greeting') {
+        return Promise.resolve(
+          this.#recordLocalReply('At your service, Mr. President', 'completed'),
+        );
+      }
+      if (intent === null) return this.#handlePaidText(turn);
       return Promise.resolve(this.#lostThread());
     }
     if (turn.kind === 'observe') return Promise.resolve(null);
@@ -299,7 +304,7 @@ export class ConversationOrchestrator {
 
   async #handlePaidText(
     turn: NormalizedTextTurn & { readonly kind: 'request' },
-    eventId: number,
+    eventId?: number,
   ): Promise<ConversationResult> {
     return this.#enqueue(async () => {
       const reservation = this.#budget.reserve(
@@ -315,7 +320,7 @@ export class ConversationOrchestrator {
       let context: PreparedContext;
       try {
         context = await this.#assembler.assemble({
-          beforeEventId: eventId,
+          ...(eventId === undefined ? {} : { beforeEventId: eventId }),
           now: this.#now(),
           prompt: turn.prompt,
         });
@@ -426,8 +431,8 @@ export class ConversationOrchestrator {
   public deleteTextSource(input: {
     readonly deletedAt: number;
     readonly messageId: string;
-  }): ContextApplyResult {
-    return this.#context.apply({
+  }): Promise<ContextApplyResult> {
+    return this.#context.applyAuthoritativeSuppression({
       deletedAt: input.deletedAt,
       messageId: input.messageId,
       reason: 'discord-deleted',

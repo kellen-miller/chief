@@ -46,6 +46,9 @@ export interface ContextDeletionResult {
 
 export interface ContextAuthoritativeDeletionResult {
   readonly eventId: number | null;
+  readonly journal: ContextForgetJournalEntry;
+  readonly journalId: number;
+  readonly journalUploaded: boolean;
 }
 
 export interface PendingContextForgetJournal {
@@ -504,7 +507,42 @@ export class ContextDeletionStore {
           checksum,
           JSON.stringify(payload),
         );
-      return { eventId: sources[0]?.id ?? null };
+      const journalRow = this.#database
+        .prepare(
+          `select id, journal_key as journalKey, occurred_at as occurredAt,
+                  checksum, payload_json as payloadJson,
+                  upload_status as uploadStatus
+           from context_forget_journal where journal_key = ?`,
+        )
+        .get(journalKey) as {
+        readonly checksum: string;
+        readonly id: number;
+        readonly journalKey: string;
+        readonly occurredAt: number;
+        readonly payloadJson: string;
+        readonly uploadStatus: string;
+      };
+      const journal = {
+        checksum: journalRow.checksum,
+        journalKey: journalRow.journalKey,
+        occurredAt: journalRow.occurredAt,
+        payload: parseJournalPayload(journalRow.payloadJson),
+      };
+      if (
+        digest({
+          journalKey: journal.journalKey,
+          occurredAt: journal.occurredAt,
+          payload: journal.payload,
+        }) !== journal.checksum
+      ) {
+        throw new Error('context forget journal checksum mismatch');
+      }
+      return {
+        eventId: sources[0]?.id ?? null,
+        journal,
+        journalId: journalRow.id,
+        journalUploaded: journalRow.uploadStatus === 'uploaded',
+      };
     })();
   }
 

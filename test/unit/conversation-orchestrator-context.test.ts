@@ -14,6 +14,104 @@ import { SqliteMemoryStore } from '../../src/memory/memory-store.js';
 import { UsageBudget } from '../../src/usage/usage-budget.js';
 
 describe('ConversationOrchestrator prepared context', () => {
+  it('answers from readable context when live indexing fails', async () => {
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const conversation = new ConversationStore(database);
+    conversation.record({
+      content: 'The launch date is Friday.',
+      medium: 'text',
+      occurredAt: 800,
+      platformEventId: '52345678901234558',
+      requestId: null,
+      retentionDeadline: 10_000,
+      role: 'human',
+      speakerId: '42345678901234567',
+      speakerName: 'President Test',
+    });
+    const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
+    const answerText = vi.fn<ChiefAgent['answerText']>(() =>
+      Promise.resolve({
+        citations: [],
+        content: 'Friday',
+        usageUsd: 0.01,
+      }),
+    );
+    const memory = new MemoryService({
+      budget,
+      embed: () =>
+        Promise.resolve({
+          embedding: new Float32Array(1_536).fill(0.25),
+          usageUsd: 0.001,
+        }),
+      estimateUsd: 0.1,
+      extract: vi.fn(),
+      store: new SqliteMemoryStore(database),
+    });
+    const context = new ChannelContextService({
+      channelId: '22345678901234567',
+      conversation,
+      database,
+      guildId: '32345678901234567',
+      now: () => 1_000,
+      timeZone: 'America/New_York',
+    });
+    vi.spyOn(context, 'apply').mockImplementation(() => {
+      throw new Error('FTS unavailable');
+    });
+    const orchestrator = new ConversationOrchestrator({
+      agent: {
+        answerText,
+        interruptVoice: vi.fn(),
+        openVoice: vi.fn(),
+        transcribe: vi.fn(),
+      },
+      assembler: new ContextAssembler({
+        channelId: '22345678901234567',
+        conversation,
+        database,
+        embed: () =>
+          Promise.resolve({
+            embedding: new Float32Array(1_536).fill(0.25),
+            usageUsd: 0.001,
+          }),
+        guildId: '32345678901234567',
+        memory,
+        timeZone: 'America/New_York',
+      }),
+      budget,
+      context,
+      conversation,
+      memory,
+      now: () => 1_000,
+    });
+
+    await expect(
+      orchestrator.handleText({
+        content: 'Chief, when is launch?',
+        kind: 'request',
+        occurredAt: 900,
+        platformSourceId: '52345678901234559',
+        prompt: 'when is launch?',
+        requestId: '52345678901234559',
+        speakerId: '42345678901234567',
+        speakerName: 'President Test',
+      }),
+    ).resolves.toEqual({
+      citations: [],
+      content: 'Friday Mr. President',
+      status: 'completed',
+    });
+    expect(answerText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recentConversation: [
+          expect.objectContaining({ content: 'The launch date is Friday.' }),
+        ],
+      }),
+    );
+    database.close();
+  });
+
   it('keeps lost-thread behavior when recent history cannot be read', async () => {
     const database = openChiefDatabase(':memory:');
     migrateChiefDatabase(database);

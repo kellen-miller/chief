@@ -227,10 +227,12 @@ describe('DiscordTextController', () => {
       memorySourceEventId: null,
       status: 'applied' as const,
     }));
-    const deleteTextSource = vi.fn(() => ({
-      eventId: 1,
-      status: 'suppressed' as const,
-    }));
+    const deleteTextSource = vi.fn(() =>
+      Promise.resolve({
+        eventId: 1,
+        status: 'suppressed' as const,
+      }),
+    );
     const handleText = vi.fn(() => Promise.resolve(null));
     const hasTextSource = vi.fn(() => true);
     const reply = vi.fn();
@@ -260,7 +262,7 @@ describe('DiscordTextController', () => {
       content: 'Corrected delivered answer.',
       editedAt: 1_500,
     });
-    controller.handleDelete({
+    await controller.handleDelete({
       channelId: allowed.channelId,
       deletedAt: 1_750,
       guildId: allowed.guildId,
@@ -282,6 +284,40 @@ describe('DiscordTextController', () => {
     });
     expect(handleText).not.toHaveBeenCalled();
     expect(reply).not.toHaveBeenCalled();
+  });
+
+  it('waits for authoritative delete durability', async () => {
+    let releaseDelete: (() => void) | undefined;
+    const deleteTextSource = vi.fn(
+      () =>
+        new Promise<{ eventId: number; status: 'suppressed' }>((resolve) => {
+          releaseDelete = () => {
+            resolve({ eventId: 1, status: 'suppressed' });
+          };
+        }),
+    );
+    const controller = new DiscordTextController(allowed, {
+      deleteTextSource,
+      handleText: vi.fn(() => Promise.resolve(null)),
+      recordDeliveredReply: vi.fn(),
+    });
+    let settled = false;
+
+    const pending = controller
+      .handleDelete({
+        channelId: allowed.channelId,
+        deletedAt: 1_750,
+        guildId: allowed.guildId,
+        messageId: message('').id,
+      })
+      .finally(() => {
+        settled = true;
+      });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseDelete?.();
+    await expect(pending).resolves.toBeUndefined();
   });
 
   it('recovers an unrecorded Chief create without generation', async () => {

@@ -22,6 +22,10 @@ import {
 } from './context-deletion-store.js';
 import { ContextStore } from './context-store.js';
 import {
+  extractLexicalTermSet,
+  hasCompleteLexicalAnchor,
+} from './lexical-relevance.js';
+import {
   contextSummaryResultSchema,
   type ContextSummarizer,
   type ContextSummaryResult,
@@ -231,6 +235,7 @@ interface ContextSummaryPlan {
   readonly finalResult: ContextSummaryResult;
   readonly segments: readonly ContextSummarySegment[];
   readonly suppliedSourceIds: readonly string[];
+  readonly topicProposals: ContextSummaryResult['topicProposals'];
   readonly visibleInputTokens: number;
   readonly visibleOutputTokens: number;
   readonly visibleUsageUsd: number;
@@ -239,6 +244,7 @@ interface ContextSummaryPlan {
 interface SummaryNode {
   readonly leafIndexes: readonly number[];
   readonly result: ContextSummaryResult;
+  readonly topicProposals: ContextSummaryResult['topicProposals'];
 }
 
 export class ChannelContextService {
@@ -349,6 +355,34 @@ export class ChannelContextService {
         ? this.#applyUpsert(change)
         : this.#applySuppression(change),
     )();
+  }
+
+  public async applyAuthoritativeSuppression(
+    change: ContextSourceSuppression,
+  ): Promise<ContextApplyResult> {
+    const deletion = new ContextDeletionStore({
+      channelId: this.#channelId,
+      database: this.#database,
+      guildId: this.#guildId,
+      memory: this.#memory,
+      timeZone: this.#timeZone,
+    });
+    const result = this.#database.transaction(() =>
+      this.#suppress(change, deletion),
+    )();
+    if (!result.journalUploaded) {
+      try {
+        if (this.#uploadForgetJournal === undefined) {
+          throw new Error('forget journal uploader is unavailable');
+        }
+        await this.#uploadForgetJournal(result.journal);
+        deletion.markJournalUploaded(result.journalId, change.deletedAt);
+      } catch (error) {
+        deletion.markJournalFailed(result.journalId, change.deletedAt);
+        throw error;
+      }
+    }
+    return { eventId: result.eventId, status: 'suppressed' };
   }
 
   #applyFromBackfill(
@@ -1010,7 +1044,8 @@ export class ChannelContextService {
           this.#scheduleDownstream(
             job,
             documentId,
-            plan.finalResult.topicProposals,
+            plan.topicProposals,
+            plan.finalResult.summary,
             now,
           );
         }
@@ -1055,6 +1090,10 @@ export class ChannelContextService {
         suppliedSourceIds: [
           ...new Set(sourceGroups[0]?.map(({ id }) => sourceBaseId(id)) ?? []),
         ],
+        topicProposals: finalResult.topicProposals.map((proposal) => ({
+          ...proposal,
+          sourceIds: [...new Set(proposal.sourceIds.map(sourceBaseId))],
+        })),
         visibleInputTokens: finalResult.inputTokens,
         visibleOutputTokens: finalResult.outputTokens,
         visibleUsageUsd: finalResult.usageUsd,
@@ -1070,7 +1109,7 @@ export class ChannelContextService {
       ];
       const leafIndex = segments.length;
       segments.push({ originalSourceIds, result });
-      nodes.push({ leafIndexes: [leafIndex], result });
+      nodes.push({ leafIndexes: [leafIndex], result, topicProposals: [] });
     }
 
     let visibleInputTokens = 0;
@@ -1088,9 +1127,9 @@ export class ChannelContextService {
         visibleInputTokens += result.inputTokens;
         visibleOutputTokens += result.outputTokens;
         visibleUsageUsd += result.usageUsd;
-        const referenced = new Set(result.sourceIds.map(sourceBaseId));
-        nextNodes.push({
-          leafIndexes: [
+        const referencedLeafIndexes = (sourceIds: readonly string[]) => {
+          const referenced = new Set(sourceIds.map(sourceBaseId));
+          return [
             ...new Set(
               nodes.flatMap((node, index) =>
                 referenced.has(`segment:${String(round)}:${String(index)}`)
@@ -1098,8 +1137,22 @@ export class ChannelContextService {
                   : [],
               ),
             ),
-          ],
+          ];
+        };
+        const leafIndexes = referencedLeafIndexes(result.sourceIds);
+        nextNodes.push({
+          leafIndexes,
           result,
+          topicProposals: result.topicProposals.map((proposal) => ({
+            label: proposal.label,
+            sourceIds: [
+              ...new Set(
+                referencedLeafIndexes(proposal.sourceIds).flatMap(
+                  (leafIndex) => segments[leafIndex]?.originalSourceIds ?? [],
+                ),
+              ),
+            ],
+          })),
         });
       }
       if (nextNodes.length === 1) {
@@ -1113,6 +1166,7 @@ export class ChannelContextService {
               ),
             ),
           ],
+          topicProposals: nextNodes[0]?.topicProposals ?? [],
           visibleInputTokens,
           visibleOutputTokens,
           visibleUsageUsd,
@@ -1326,6 +1380,7 @@ export class ChannelContextService {
     job: ContextJobRow,
     documentId: number,
     topicProposals: ContextSummaryResult['topicProposals'],
+    summary: string,
     now: number,
   ): void {
     if (job.tier === 'hourly') {
@@ -1359,9 +1414,13 @@ export class ChannelContextService {
         job.backfillRunId,
       );
       for (const proposal of topicProposals) {
+        const sourceDocumentIds = parseSourceLineage(
+          proposal.sourceIds,
+        ).parentDocumentIds;
+        if (sourceDocumentIds.length === 0) continue;
         this.#upsertTopicJob(
           proposal.label,
-          [documentId],
+          sourceDocumentIds,
           job.periodStart,
           now,
           undefined,
@@ -1384,6 +1443,14 @@ export class ChannelContextService {
         readonly topicLabel: string;
       }[];
       for (const topic of topics) {
+        if (
+          !hasCompleteLexicalAnchor(
+            extractLexicalTermSet(topic.topicLabel).relevance,
+            summary,
+          )
+        ) {
+          continue;
+        }
         this.#upsertTopicJob(
           topic.topicLabel,
           [documentId],
@@ -1674,6 +1741,23 @@ export class ChannelContextService {
   }
 
   #applySuppression(change: ContextSourceSuppression): ContextApplyResult {
+    const result = this.#suppress(
+      change,
+      new ContextDeletionStore({
+        channelId: this.#channelId,
+        database: this.#database,
+        guildId: this.#guildId,
+        memory: this.#memory,
+        timeZone: this.#timeZone,
+      }),
+    );
+    return { eventId: result.eventId, status: 'suppressed' };
+  }
+
+  #suppress(
+    change: ContextSourceSuppression,
+    deletion: ContextDeletionStore,
+  ): ReturnType<ContextDeletionStore['suppressSource']> {
     const reason = change.reason;
     if (
       (change.type === 'delete' && reason !== 'discord-deleted') ||
@@ -1681,18 +1765,11 @@ export class ChannelContextService {
     ) {
       throw new Error('context suppression type and reason do not match');
     }
-    const result = new ContextDeletionStore({
-      channelId: this.#channelId,
-      database: this.#database,
-      guildId: this.#guildId,
-      memory: this.#memory,
-      timeZone: this.#timeZone,
-    }).suppressSource({
+    return deletion.suppressSource({
       now: change.deletedAt,
       reason,
       sourceScopeId: this.#sourceScopeId(change.messageId),
     });
-    return { eventId: result.eventId, status: 'suppressed' };
   }
 
   #scheduleHourlyJobs(

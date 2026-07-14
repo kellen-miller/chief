@@ -53,7 +53,7 @@ export interface DiscordTextDependencies {
   readonly deleteTextSource?: (input: {
     readonly deletedAt: number;
     readonly messageId: string;
-  }) => ContextApplyResult;
+  }) => Promise<ContextApplyResult>;
   readonly handleText: (
     turn: NormalizedTextTurn,
   ) => Promise<ConversationResult | null>;
@@ -156,14 +156,14 @@ export class DiscordTextController {
     this.#dependencies.applyTextSource?.(source);
   }
 
-  public handleDelete(message: DiscordDeletedMessage): void {
+  public async handleDelete(message: DiscordDeletedMessage): Promise<void> {
     if (
       message.guildId !== this.#allowed.guildId ||
       message.channelId !== this.#allowed.channelId
     ) {
-      return;
+      return Promise.resolve();
     }
-    this.#dependencies.deleteTextSource?.({
+    await this.#dependencies.deleteTextSource?.({
       deletedAt: message.deletedAt,
       messageId: message.messageId,
     });

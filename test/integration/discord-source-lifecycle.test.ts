@@ -16,7 +16,13 @@ const guildId = '32345678901234567';
 const channelId = '22345678901234567';
 const messageId = '52345678901234567';
 
-function createHarness() {
+function createHarness(
+  options: {
+    readonly uploadForgetJournal?: (
+      entry: import('../../src/context/context-deletion-store.js').ContextForgetJournalEntry,
+    ) => Promise<void>;
+  } = {},
+) {
   const database = openChiefDatabase(':memory:');
   migrateChiefDatabase(database);
   const memory = new SqliteMemoryStore(database);
@@ -28,6 +34,9 @@ function createHarness() {
     memory,
     now: () => 1_999,
     timeZone: 'America/New_York',
+    ...(options.uploadForgetJournal === undefined
+      ? {}
+      : { uploadForgetJournal: options.uploadForgetJournal }),
   });
   return { context, database, memory };
 }
@@ -237,6 +246,82 @@ describe('Discord source lifecycle', () => {
         .pluck()
         .get(),
     ).toBe(1);
+    database.close();
+  });
+
+  it('awaits durable journal upload for an authoritative delete', async () => {
+    let releaseUpload: (() => void) | undefined;
+    const uploadForgetJournal = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseUpload = resolve;
+        }),
+    );
+    const { context, database } = createHarness({ uploadForgetJournal });
+    context.apply(source());
+
+    let settled = false;
+    const pending = context
+      .applyAuthoritativeSuppression({
+        deletedAt: 1_750,
+        messageId,
+        reason: 'discord-deleted',
+        type: 'delete',
+      })
+      .finally(() => {
+        settled = true;
+      });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(uploadForgetJournal).toHaveBeenCalledOnce();
+    expect(
+      database
+        .prepare('select upload_status from context_forget_journal')
+        .pluck()
+        .get(),
+    ).toBe('pending');
+
+    releaseUpload?.();
+    await expect(pending).resolves.toMatchObject({ status: 'suppressed' });
+    expect(
+      database
+        .prepare('select upload_status from context_forget_journal')
+        .pluck()
+        .get(),
+    ).toBe('uploaded');
+    database.close();
+  });
+
+  it('rejects an authoritative delete when journal upload fails', async () => {
+    const { context, database } = createHarness({
+      uploadForgetJournal: () => Promise.reject(new Error('GCS unavailable')),
+    });
+    context.apply(source());
+
+    await expect(
+      context.applyAuthoritativeSuppression({
+        deletedAt: 1_750,
+        messageId,
+        reason: 'discord-deleted',
+        type: 'delete',
+      }),
+    ).rejects.toThrow('GCS unavailable');
+    expect(
+      database
+        .prepare(
+          `select content_state as contentState,
+                  content_state_reason as reason
+           from conversation_events`,
+        )
+        .get(),
+    ).toEqual({ contentState: 'scrubbed', reason: 'discord-deleted' });
+    expect(
+      database
+        .prepare('select upload_status from context_forget_journal')
+        .pluck()
+        .get(),
+    ).toBe('failed');
     database.close();
   });
 

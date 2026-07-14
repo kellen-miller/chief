@@ -123,13 +123,11 @@ export class DiscordReconciliationService {
   }
 
   public diagnostics(): {
-    readonly highWaterMessageId: string | null;
     readonly lagMs: number | null;
     readonly lastCompleteAt: number | null;
   } {
     const state = this.#state();
     return {
-      highWaterMessageId: state.highWaterMessageId,
       lagMs:
         state.lastCompleteAt === null
           ? null
@@ -201,13 +199,17 @@ export class DiscordReconciliationService {
       state.coveredOldestMessageId !== null &&
       state.coveredNewestMessageId !== null
     ) {
-      this.#inferCoveredDeletions(
-        stateScopeId,
-        passKey,
-        state.coveredOldestMessageId,
-        state.coveredNewestMessageId,
-        startedAt,
-      );
+      try {
+        await this.#inferCoveredDeletions(
+          stateScopeId,
+          passKey,
+          state.coveredOldestMessageId,
+          state.coveredNewestMessageId,
+          startedAt,
+        );
+      } catch {
+        return { status: 'failed' };
+      }
     }
     this.#completePass(mode, stateScopeId, passKey, startedAt);
     return { status: 'completed' };
@@ -270,13 +272,13 @@ export class DiscordReconciliationService {
       .run(page.nextCursor, oldest, newest, now, stateScopeId);
   }
 
-  #inferCoveredDeletions(
+  async #inferCoveredDeletions(
     stateScopeId: string,
     passKey: string,
     oldestMessageId: string,
     newestMessageId: string,
     deletedAt: number,
-  ): void {
+  ): Promise<void> {
     const seen = new Set(
       this.#database
         .prepare(
@@ -314,7 +316,7 @@ export class DiscordReconciliationService {
         withinSnowflakeRange(messageId, oldestMessageId, newestMessageId) &&
         !seen.has(messageId)
       ) {
-        this.#lifecycle.deleteTextSource({ deletedAt, messageId });
+        await this.#lifecycle.deleteTextSource({ deletedAt, messageId });
       }
     }
   }

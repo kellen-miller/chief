@@ -122,7 +122,7 @@ resource "google_storage_bucket" "backups" {
       type = "Delete"
     }
     condition {
-      age            = 30
+      age            = 28
       matches_prefix = ["backups/"]
       matches_suffix = [".db"]
     }
@@ -133,7 +133,7 @@ resource "google_storage_bucket" "backups" {
       type = "Delete"
     }
     condition {
-      age            = 30
+      age            = 28
       matches_suffix = [".db"]
     }
   }
@@ -153,7 +153,7 @@ resource "google_storage_bucket" "backups" {
       type = "Delete"
     }
     condition {
-      days_since_noncurrent_time = 30
+      days_since_noncurrent_time = 1
       matches_suffix             = [".db"]
     }
   }

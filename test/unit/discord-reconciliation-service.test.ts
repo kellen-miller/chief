@@ -259,7 +259,13 @@ describe('DiscordReconciliationService', () => {
     seedAvailable(database, deletedId, 'Deleted while offline.');
     seedAvailable(database, editedId, 'Old wording.');
     const applyTextSource = vi.fn();
-    const deleteTextSource = vi.fn();
+    let releaseDelete: (() => void) | undefined;
+    const deleteTextSource = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseDelete = resolve;
+        }),
+    );
     const fetchPage = vi.fn(({ mode }: { mode: string }) =>
       Promise.resolve(
         mode === 'incremental'
@@ -313,7 +319,16 @@ describe('DiscordReconciliationService', () => {
       now: () => 2_000,
     });
 
-    await expect(service.reconcileAfterGap()).resolves.toEqual({
+    let settled = false;
+    const pending = service.reconcileAfterGap().finally(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => {
+      expect(deleteTextSource).toHaveBeenCalledOnce();
+    });
+    expect(settled).toBe(false);
+    releaseDelete?.();
+    await expect(pending).resolves.toEqual({
       status: 'completed',
     });
 
@@ -439,7 +454,6 @@ describe('DiscordReconciliationService', () => {
       expect.objectContaining({ cursor: editedId, mode: 'incremental' }),
     );
     expect(service.diagnostics()).toEqual({
-      highWaterMessageId: createdId,
       lagMs: 0,
       lastCompleteAt: 2_000,
     });
@@ -536,7 +550,6 @@ describe('DiscordReconciliationService', () => {
     });
 
     expect(service.diagnostics()).toEqual({
-      highWaterMessageId: null,
       lagMs: null,
       lastCompleteAt: null,
     });

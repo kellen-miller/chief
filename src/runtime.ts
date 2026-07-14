@@ -214,7 +214,10 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
         );
       } catch (error) {
         budget.reconcile(reservation.id, 0.05);
-        logger.error({ err: error }, 'chief_voice_suffix_generation_failed');
+        logger.error(
+          { errorName: runtimeErrorName(error) },
+          'chief_voice_suffix_generation_failed',
+        );
       }
     });
   }
@@ -235,8 +238,13 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     void reconciliation
       .reconcileWeeklyIdentity()
       .then((result) => {
+        const diagnostics = reconciliation?.diagnostics();
         logger.info(
-          { ...reconciliation?.diagnostics(), status: result.status },
+          {
+            lagMs: diagnostics?.lagMs ?? null,
+            lastCompleteAt: diagnostics?.lastCompleteAt ?? null,
+            status: result.status,
+          },
           'discord_reconciliation_health',
         );
       })
@@ -328,7 +336,10 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
         }
       })
       .catch((error: unknown) => {
-        logger.error({ err: error }, 'background_worker_failed');
+        logger.error(
+          { errorName: runtimeErrorName(error) },
+          'background_worker_failed',
+        );
       })
       .finally(() => {
         workerRunning = false;
@@ -342,7 +353,10 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
         context.maintain(now);
         maintenanceAt = now;
       } catch (error) {
-        logger.error({ err: error }, 'memory_maintenance_failed');
+        logger.error(
+          { errorName: runtimeErrorName(error) },
+          'memory_maintenance_failed',
+        );
       }
     },
     24 * 60 * 60 * 1_000,
@@ -355,8 +369,13 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
       void reconciliation
         .reconcileAfterGap()
         .then((result) => {
+          const diagnostics = reconciliation?.diagnostics();
           logger.info(
-            { ...reconciliation?.diagnostics(), status: result.status },
+            {
+              lagMs: diagnostics?.lagMs ?? null,
+              lastCompleteAt: diagnostics?.lastCompleteAt ?? null,
+              status: result.status,
+            },
             'discord_reconciliation_health',
           );
           if (result.status === 'completed') scheduleWeeklyReconciliation();
@@ -449,4 +468,8 @@ function checkDatabase(
 async function checkDisk(path: string): Promise<boolean> {
   const stats = await statfs(path);
   return stats.bavail * stats.bsize >= 100 * 1024 * 1024;
+}
+
+function runtimeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : 'UnknownError';
 }

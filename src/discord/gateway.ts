@@ -87,7 +87,10 @@ export class DiscordGateway {
   public async start(): Promise<void> {
     this.#client.on(Events.MessageCreate, (message) => {
       void this.#handleCreate(message).catch((error: unknown) => {
-        this.#options.logger.error({ err: error }, 'discord_message_failed');
+        this.#options.logger.error(
+          { errorName: errorName(error) },
+          'discord_message_failed',
+        );
       });
     });
     this.#client.on(Events.MessageUpdate, (_oldMessage, message) => {
@@ -99,10 +102,22 @@ export class DiscordGateway {
       });
     });
     this.#client.on(Events.MessageDelete, (message) => {
-      this.#handleDelete(message);
+      void this.#handleDelete(message).catch((error: unknown) => {
+        this.#options.logger.error(
+          { errorName: errorName(error), retryable: true },
+          'discord_message_delete_failed',
+        );
+      });
     });
     this.#client.on(Events.MessageBulkDelete, (messages) => {
-      for (const message of messages.values()) this.#handleDelete(message);
+      for (const message of messages.values()) {
+        void this.#handleDelete(message).catch((error: unknown) => {
+          this.#options.logger.error(
+            { errorName: errorName(error), retryable: true },
+            'discord_message_delete_failed',
+          );
+        });
+      }
     });
     this.#client.on(Events.Error, (error) => {
       this.#options.logger.error(
@@ -131,7 +146,10 @@ export class DiscordGateway {
     this.#client.on(Events.InteractionCreate, (interaction) => {
       if (!interaction.isChatInputCommand()) return;
       void this.#handleCommand(interaction).catch((error: unknown) => {
-        this.#options.logger.error({ err: error }, 'discord_command_failed');
+        this.#options.logger.error(
+          { errorName: errorName(error) },
+          'discord_command_failed',
+        );
       });
     });
     const ready = once(this.#client, Events.ClientReady);
@@ -218,8 +236,8 @@ export class DiscordGateway {
     text.handleUpdate(this.#messageCandidate(resolved));
   }
 
-  #handleDelete(message: Message | PartialMessage): void {
-    this.#text?.handleDelete({
+  async #handleDelete(message: Message | PartialMessage): Promise<void> {
+    await this.#text?.handleDelete({
       channelId: message.channelId,
       deletedAt: Date.now(),
       guildId: message.guildId,
@@ -237,11 +255,8 @@ export class DiscordGateway {
     } catch (error) {
       this.#options.logger.warn(
         {
-          channelId: message.channelId,
           errorName: errorName(error),
           event,
-          guildId: message.guildId,
-          messageId: message.id,
           retryable: true,
         },
         'discord_partial_message_retryable',

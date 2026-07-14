@@ -8,6 +8,18 @@ import { describe, expect, it } from 'vitest';
 const read = (path: string): Promise<string> => readFile(path, 'utf8');
 
 describe('repository policy', () => {
+  it('keeps Discord identifiers and error payloads out of logs', async () => {
+    const gateway = await read('src/discord/gateway.ts');
+    const runtime = await read('src/runtime.ts');
+
+    expect(gateway).not.toContain('logger.error({ err: error }');
+    expect(gateway).not.toMatch(
+      /logger\.warn\(\s*\{[^}]*\b(?:channelId|guildId|messageId)\b/su,
+    );
+    expect(runtime).not.toContain('...reconciliation?.diagnostics()');
+    expect(runtime).not.toContain('logger.error({ err: error }');
+  });
+
   it('packages context policy without exposing retention or tier knobs', async () => {
     const environment = await read('.env.example');
     const variables = await read('infra/app/variables.tf');
@@ -240,7 +252,13 @@ describe('repository policy', () => {
     expect(app).toContain('matches_prefix = ["backups/"]');
     expect(app).toContain('matches_prefix = ["forget-journal/"]');
     expect(app).toContain('matches_suffix = [".db"]');
+    expect(app).toContain('age            = 28');
+    expect(app).toContain('days_since_noncurrent_time = 1');
+    expect(app).toContain('age            = 60');
     expect(app).toContain('days_since_noncurrent_time = 60');
+    expect(startup).toContain('chief-recovery-prune.timer');
+    expect(startup).toContain('/var/lib/chief/backups');
+    expect(startup).toContain('-mmin +43139 -delete');
     expect(app).toContain(
       'resource "google_service_account_iam_member" "deploy_act_as"',
     );

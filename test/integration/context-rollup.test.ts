@@ -399,7 +399,11 @@ describe('ChannelContextService rollups', () => {
                 ? [
                     {
                       label: 'Project Marigold',
-                      sourceIds: input.sources.map(({ id }) => id),
+                      sourceIds: [input.sources[0]?.id ?? 'missing'],
+                    },
+                    {
+                      label: 'Project Juniper',
+                      sourceIds: [input.sources[0]?.id ?? 'missing'],
                     },
                   ]
                 : [],
@@ -440,6 +444,13 @@ describe('ChannelContextService rollups', () => {
       .prepare(
         `select id from context_documents
          where tier = 'daily' and state = 'active'`,
+      )
+      .pluck()
+      .get() as number;
+    const hourlyId = database
+      .prepare(
+        `select id from context_documents
+         where tier = 'hourly' and completeness = 'final' and state = 'active'`,
       )
       .pluck()
       .get() as number;
@@ -489,6 +500,41 @@ describe('ChannelContextService rollups', () => {
       tier: 'long-term',
     });
     expect(topicJob.topicKey).not.toBe('');
+    expect(
+      database
+        .prepare(
+          `select source_document_ids_json from context_jobs
+             where tier = 'long-term'`,
+        )
+        .pluck()
+        .all() as string[],
+    ).toEqual([JSON.stringify([hourlyId]), JSON.stringify([hourlyId])]);
+    expect(hourlyId).not.toBe(dailyId);
+
+    await expect(service.runNext(current)).resolves.toMatchObject({
+      status: 'completed',
+      tier: 'long-term',
+    });
+    await expect(service.runNext(current)).resolves.toMatchObject({
+      status: 'completed',
+      tier: 'long-term',
+    });
+    current = week.end;
+    await expect(service.runNext(current)).resolves.toMatchObject({
+      status: 'completed',
+      tier: 'weekly',
+    });
+    expect(
+      database
+        .prepare(
+          `select topic_label as topicLabel, status from context_jobs
+           where tier = 'long-term' order by topic_label`,
+        )
+        .all(),
+    ).toEqual([
+      { status: 'completed', topicLabel: 'Project Juniper' },
+      { status: 'pending', topicLabel: 'Project Marigold' },
+    ]);
     database.close();
   });
 
