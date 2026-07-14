@@ -5,9 +5,9 @@ umask 077
 # These environment files are provisioned on the VM before this script runs.
 CONFIG_FILE="${CHIEF_CONFIG_FILE:-/etc/chief/chief.env}"
 DEPLOY_STATE_FILE="${CHIEF_DEPLOY_STATE_FILE:-/var/lib/chief/deploy.env}"
-# shellcheck disable=SC1091
+# shellcheck disable=SC1090
 source "$CONFIG_FILE"
-# shellcheck disable=SC1091
+# shellcheck disable=SC1090
 source "$DEPLOY_STATE_FILE"
 DATA_DIR="${CHIEF_DATA_DIR:-/var/lib/chief}"
 DATA_UID="${CHIEF_DATA_UID:-1000}"
