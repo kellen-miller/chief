@@ -69,14 +69,24 @@ export class SqliteUsageLedger implements UsageLedger {
 
   public reconcile(id: string, actualUsd: number, reconciledAt: number): void {
     this.#database.transaction(() => {
-      const runId = this.#database
+      const reservation = this.#database
         .prepare(
-          `select backfill_run_id from usage_ledger
-           where id = ? and actual_usd is null`,
+          `select l.backfill_run_id as backfillRunId,
+                  exists(
+                    select 1 from context_accounting_holds h
+                    where h.reservation_id = l.id
+                  ) as held
+           from usage_ledger l where l.id = ? and l.actual_usd is null`,
         )
-        .pluck()
-        .get(id) as number | null | undefined;
-      if (runId === undefined) throw new Error('unknown usage reservation');
+        .get(id) as
+        | { readonly backfillRunId: number | null; readonly held: 0 | 1 }
+        | undefined;
+      if (reservation === undefined) {
+        throw new Error('unknown usage reservation');
+      }
+      if (reservation.held === 1) {
+        throw new Error('usage reservation is held for accounting rebuild');
+      }
       const result = this.#database
         .prepare(
           `update usage_ledger set actual_usd = ?, reconciled_at = ?
@@ -84,14 +94,14 @@ export class SqliteUsageLedger implements UsageLedger {
         )
         .run(actualUsd, reconciledAt, id);
       if (result.changes !== 1) throw new Error('unknown usage reservation');
-      if (runId !== null) {
+      if (reservation.backfillRunId !== null) {
         const run = this.#database
           .prepare(
             `update context_backfills
              set actual_usage_usd = actual_usage_usd + ?, updated_at = ?
              where id = ?`,
           )
-          .run(actualUsd, reconciledAt, runId);
+          .run(actualUsd, reconciledAt, reservation.backfillRunId);
         if (run.changes !== 1) throw new Error('unknown backfill run');
       }
     })();

@@ -1028,6 +1028,29 @@ describe('Chief database', () => {
       reason: 'migration-accounting-ambiguous',
       reservationId: 'ambiguous-reservation',
     });
+    const accounting = new UsageBudget({
+      ceilingUsd: 10,
+      indexingCeilingUsd: 3,
+      ledger: new SqliteUsageLedger(database),
+      now: () => now,
+      warningUsd: 5,
+    });
+    expect(() => {
+      accounting.reconcileConservatively('ambiguous-reservation');
+    }).toThrow('usage reservation is held for accounting rebuild');
+    expect(accounting.snapshot().reservedUsd).toBe(0.02);
+    expect(
+      database
+        .prepare(
+          `select actual_usd as actualUsd,
+                  (select actual_usage_usd from context_backfills where id = ?)
+                    as runActualUsd,
+                  (select count(*) from context_accounting_holds
+                   where reservation_id = usage_ledger.id) as holdCount
+           from usage_ledger where id = 'ambiguous-reservation'`,
+        )
+        .get(runId),
+    ).toEqual({ actualUsd: null, holdCount: 1, runActualUsd: 0 });
     const context = emptyMigrationContext(database, now);
     expect(context.nextDeadline(now)).toBeNull();
     expect(context.status(now)).toMatchObject({
