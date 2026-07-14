@@ -24,6 +24,7 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 - [x] (2026-07-14 11:43Z) Task 5 implemented redacted cross-store candidate discovery, current self/admin authorization, single-use broad confirmation, one synchronous atomic deletion shared by local and authoritative Discord suppression, immutable GCS upload/retry, content-free migration-safe replay, complete revision scrubbing, and stale-job-safe lineage rebuild; 362 tests and final review passed after three correction loops.
 - [x] (2026-07-14 12:22Z) Task 6 added an aggregate-only reverse manifest, owner-confirmed activation, GET-only Discord REST history, bounded derived-only expired-history processing, oldest-first resumable segment commits, tombstone/revision guards, and shared queue/budget execution; 388 tests and the repository gate passed.
 - [x] (2026-07-14 12:58Z) Task 6 review correction attributed every induced rollup and reservation to its run, kept runs active through their complete hierarchy, enforced hard provider-cost contracts, anchored refetch to exact manifest ranges, made segment identity source-derived, and reduced same-hour aggregation to a bounded rolling pair; 396 tests and coverage passed.
+- [x] (2026-07-14 13:19Z) Task 6 re-review correction returned coalesced live work from non-active backfills to live ownership while preserving conservative reservations, and added an append-only lifecycle migration that pauses and attributes ambiguous populated-0006 work before explicit resume; 400 tests and coverage passed.
 - [ ] Milestone 7: expose degraded health, document operations, and validate rollback.
 - [ ] Milestone 8: complete deterministic, quality, container, and live acceptance evidence.
 
@@ -105,6 +106,10 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
   Evidence: Task 6 review inserted more than one REST page of newer concurrent creates. Processing now starts below the manifest ceiling and follows cursors until it proves coverage through the manifest page's oldest boundary.
 - Observation: segment ordinals and all-prior-child aggregation are unstable under refetch changes and grow quadratically.
   Evidence: Task 6 review shifted an old page by removing one source and reproduced a skipped middle source, then split one hour into many segments and reproduced unbounded aggregation input. Segment keys now digest source identity and revision/text checksums; each new private leaf folds with only the active public hourly aggregate.
+- Observation: a deterministic context job key can outlive the backfill run that first owned it.
+  Evidence: Task 6 re-review reproduced newer live work coalescing into jobs owned by paused, failed, and replaced runs; the due and lease filters then excluded all three. Live conflict upserts now detach any non-active owner while retaining an old reservation for conservative recovery before live-paid work.
+- Observation: adding nullable run attribution cannot reconstruct induced-job ownership in a populated legacy database.
+  Evidence: a real 0006 fixture with an exhausted active run, pending and leased induced jobs, and an outstanding context reservation upgraded through 0007 with no attribution. Append-only migration 0008 now pauses the ambiguous run, attributes unfinished jobs and linked reservations conservatively, and requires explicit resume; additional ambiguous runs require rebuild.
 
 ## Decision Log
 
@@ -177,6 +182,12 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 - Decision: identify backfill segments by their source content and fold same-hour segments through one active aggregate plus one new leaf.
   Rationale: refetched page membership may shift, so ordinal idempotence can skip work; a rolling two-source hierarchy preserves bounded provider input without rereading every prior segment.
   Date/Author: 2026-07-14, Codex from Task 6 implementation review.
+- Decision: live work may retain an active backfill owner, but it takes live ownership when the existing owner is no longer active.
+  Rationale: charging shared active work to the run is conservative, while preserving ownership by a paused, failed, or replaced run makes newer live work permanently ineligible. Any outstanding old reservation remains attached to its ledger row and is conservatively recovered before a new live reservation.
+  Date/Author: 2026-07-14, Codex from Task 6 implementation re-review.
+- Decision: preserve migration 0007 and use append-only migration 0008 to guard ambiguous legacy accounting.
+  Rationale: old job rows do not prove which pending work was induced by which run. Pausing and conservatively attributing unfinished work prevents false completion or unbounded spend, while the existing resume path provides an explicit operator boundary.
+  Date/Author: 2026-07-14, Codex from Task 6 implementation re-review.
 - Decision: require confirmation for every broad scope, store only a nonce checksum and stable candidate IDs, and reevaluate authorization when the confirmation is presented.
   Rationale: candidate counts and target text do not belong in an authorization response, a leaked database must not reveal a usable nonce, and administrator authority may change during the confirmation window.
   Date/Author: 2026-07-14, Codex during Task 5 implementation.
@@ -186,7 +197,7 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 
 ## Outcomes & Retrospective
 
-Milestones 1 through 6 are implemented. Task 6 can inventory accessible channel history without persisting message content, obtain explicit owner activation and a per-run ceiling, then use the running process's existing protected queue and budget to process oldest-first history. Recent sources follow normal ingestion; expired sources become only scrubbed identities plus derived, provenance-backed documents. The complete induced rollup hierarchy remains run-attributed and ceiling-bound; tombstones, live revisions, exact manifest ranges, restart reservations, rate limits, shifting segments, duplicates, and page/segment replay remain safe. The repository gate passes 396 deterministic tests with no provider or live Discord calls. Operational and live acceptance remain in Milestones 7 and 8; no live acceptance is claimed.
+Milestones 1 through 6 are implemented. Task 6 can inventory accessible channel history without persisting message content, obtain explicit owner activation and a per-run ceiling, then use the running process's existing protected queue and budget to process oldest-first history. Recent sources follow normal ingestion; expired sources become only scrubbed identities plus derived, provenance-backed documents. The complete induced rollup hierarchy remains run-attributed and ceiling-bound; non-active ownership cannot strand newer live work, and populated legacy accounting is paused before explicit resume. Tombstones, live revisions, exact manifest ranges, restart reservations, rate limits, shifting segments, duplicates, and page/segment replay remain safe. The repository gate passes 400 deterministic tests with no provider or live Discord calls. Operational and live acceptance remain in Milestones 7 and 8; no live acceptance is claimed.
 
 ## Context and Orientation
 
@@ -477,3 +488,4 @@ Current relevant dependencies are `discord.js` 14.26.5, `openai` 6.46.0, `@opena
 - 2026-07-14: Task 5 implemented the planned synchronous deletion seam and refined confirmation-time permission checks, broad no-match redaction, supersession-chain scrubbing, and artifact-independent tombstone replay from executable regressions. These changes preserve the approved policy while closing concrete permission-loss, FTS, and older-backup failure modes.
 - 2026-07-14: Task 6 implemented the content-free reverse manifest and runtime-owned backfill seam. Resume refetches prior page boundaries to preserve privacy, expired raw content exists only in bounded memory before an atomic derived commit, and restart admission conservatively charges unresolved reservations before any new provider call.
 - 2026-07-14: Task 6 review correction extended run attribution through every induced rollup, enforced hard cost and exact manifest-range contracts, replaced ordinal segment idempotence with source-derived identity, and made same-hour aggregation a bounded rolling fold.
+- 2026-07-14: Task 6 re-review correction detached live conflicts from non-active runs without losing old reservation accounting, and added append-only migration 0008 to pause and conservatively attribute ambiguous populated-0006 lifecycle state before resume.

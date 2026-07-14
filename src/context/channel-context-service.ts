@@ -1410,6 +1410,13 @@ export class ChannelContextService {
            backfill_run_id = case
              when excluded.backfill_run_id is not null
              then excluded.backfill_run_id
+             when context_jobs.backfill_run_id is not null
+               and not exists(
+                 select 1 from context_backfills b
+                 where b.id = context_jobs.backfill_run_id
+                   and b.status = 'active'
+               )
+             then null
              when context_jobs.status = 'completed' then null
              else context_jobs.backfill_run_id end`,
       )
@@ -1481,6 +1488,13 @@ export class ChannelContextService {
            backfill_run_id = case
              when excluded.backfill_run_id is not null
              then excluded.backfill_run_id
+             when context_jobs.backfill_run_id is not null
+               and not exists(
+                 select 1 from context_backfills b
+                 where b.id = context_jobs.backfill_run_id
+                   and b.status = 'active'
+               )
+             then null
              when context_jobs.status = 'completed' then null
              else context_jobs.backfill_run_id end`,
       )
@@ -1727,6 +1741,13 @@ export class ChannelContextService {
            backfill_run_id = case
              when excluded.backfill_run_id is not null
              then excluded.backfill_run_id
+             when context_jobs.backfill_run_id is not null
+               and not exists(
+                 select 1 from context_backfills b
+                 where b.id = context_jobs.backfill_run_id
+                   and b.status = 'active'
+               )
+             then null
              when context_jobs.status = 'completed' then null
              else context_jobs.backfill_run_id end`,
       )

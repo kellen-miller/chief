@@ -22,6 +22,7 @@ import {
 } from '../../src/memory/database.js';
 import { MemoryService } from '../../src/memory/memory-service.js';
 import { SqliteMemoryStore } from '../../src/memory/memory-store.js';
+import { SqliteUsageLedger } from '../../src/usage/sqlite-usage-ledger.js';
 import { UsageBudget } from '../../src/usage/usage-budget.js';
 
 const guildId = '32345678901234567';
@@ -300,6 +301,139 @@ describe('ChannelContextService', () => {
     );
     database.close();
   });
+
+  it.each([
+    ['paused', 'paused', 'run-budget'],
+    ['failed', 'failed', 'induced-job-failed'],
+    ['replaced', 'failed', 'replaced'],
+  ] as const)(
+    'returns live work from a %s backfill to live ownership',
+    async (_label, runStatus, pauseReason) => {
+      const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+      const now = occurredAt + 2 * 60 * 60 * 1_000;
+      const database = openChiefDatabase(':memory:');
+      migrateChiefDatabase(database);
+      const budget = new UsageBudget({
+        ceilingUsd: 10,
+        indexingCeilingUsd: 3,
+        ledger: new SqliteUsageLedger(database),
+        now: () => now,
+        warningUsd: 5,
+      });
+      const service = new ChannelContextService({
+        backfillPricing: {
+          embeddingInputPerMillionUsd: 0,
+          summaryInputPerMillionUsd: 0,
+          summaryOutputPerMillionUsd: 0,
+        },
+        budget,
+        channelId,
+        conversation: new ConversationStore(database),
+        database,
+        embed: () =>
+          Promise.resolve({ embedding: embedding(0.2), usageUsd: 0 }),
+        estimateUsd: 0.01,
+        guildId,
+        now: () => now,
+        summarizer: {
+          summarize: ({ sources }) =>
+            Promise.resolve({
+              confidence: 0.9,
+              inputTokens: 1,
+              outputTokens: 1,
+              sourceIds: sources.map(({ id }) => id),
+              summary: 'Live ownership summary.',
+              topicProposals: [],
+              usageUsd: 0,
+            }),
+        },
+        timeZone,
+      });
+      service.apply(source(occurredAt));
+      const runId = Number(
+        database
+          .prepare(
+            `insert into context_backfills
+               (run_key, scope_id, status, maximum_usage_usd, created_at,
+                updated_at, pause_reason)
+             values (?, ?, ?, 1, ?, ?, ?)`,
+          )
+          .run(
+            `stale-${pauseReason}`,
+            `${guildId}/${channelId}`,
+            runStatus,
+            now,
+            now,
+            pauseReason,
+          ).lastInsertRowid,
+      );
+      const staleReservation = budget.reserve('context-rollup', 0.01, {
+        backfillRunId: runId,
+        priority: 'background',
+        workCategory: 'indexing',
+      });
+      if (!staleReservation.allowed) {
+        throw new Error('expected stale backfill reservation');
+      }
+      database
+        .prepare(
+          `update context_jobs
+           set backfill_run_id = ?, status = 'leased', lease_expires_at = ?,
+               usage_reservation_id = ?
+           where completeness = 'final'`,
+        )
+        .run(runId, now + 60_000, staleReservation.id);
+
+      service.apply(
+        source(occurredAt + 1_000, {
+          content: 'Project Juniper now launches Tuesday.',
+          messageId: '52345678901234568',
+          platformEventId: 'new-live-source',
+        }),
+      );
+
+      expect(
+        database
+          .prepare(
+            `select backfill_run_id as backfillRunId, status,
+                    usage_reservation_id as usageReservationId
+             from context_jobs where completeness = 'final'`,
+          )
+          .get(),
+      ).toEqual({
+        backfillRunId: null,
+        status: 'pending',
+        usageReservationId: staleReservation.id,
+      });
+      expect(service.nextDeadline(now)).not.toBeNull();
+      await expect(service.runNext(now)).resolves.toMatchObject({
+        completeness: 'final',
+        status: 'completed',
+        tier: 'hourly',
+      });
+      expect(
+        database
+          .prepare(
+            'select actual_usage_usd from context_backfills where id = ?',
+          )
+          .pluck()
+          .get(runId),
+      ).toBe(0.01);
+      expect(
+        database
+          .prepare(
+            `select actual_usd as actualUsd,
+                    backfill_run_id as backfillRunId
+             from usage_ledger order by rowid`,
+          )
+          .all(),
+      ).toEqual([
+        { actualUsd: 0.01, backfillRunId: runId },
+        { actualUsd: 0, backfillRunId: null },
+      ]);
+      database.close();
+    },
+  );
 
   it('rejects context output prepared against a stale source checksum', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');

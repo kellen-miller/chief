@@ -561,6 +561,12 @@ export const CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_ID =
   '0007_context_backfill_accounting';
 export const CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_CHECKSUM = 'chief-0007-v1';
 
+const CONTEXT_BACKFILL_LIFECYCLE_MIGRATION = `select 1;`;
+
+export const CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_ID =
+  '0008_context_backfill_lifecycle';
+export const CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_CHECKSUM = 'chief-0008-v1';
+
 interface Migration {
   readonly checksum: string;
   readonly id: string;
@@ -609,6 +615,12 @@ const MIGRATIONS: readonly Migration[] = [
     checksum: CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_CHECKSUM,
     id: CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_ID,
     sql: CONTEXT_BACKFILL_ACCOUNTING_MIGRATION,
+  },
+  {
+    checksum: CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_CHECKSUM,
+    id: CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_ID,
+    migrate: guardLegacyBackfillAccounting,
+    sql: CONTEXT_BACKFILL_LIFECYCLE_MIGRATION,
   },
 ];
 
@@ -663,6 +675,55 @@ export function migrateChiefDatabase(
     }
     if (migration.id === throughMigrationId) break;
   }
+}
+
+function guardLegacyBackfillAccounting(database: Database.Database): void {
+  const unfinishedRunIds = database
+    .prepare(
+      `select id from context_backfills
+       where status in ('active', 'paused')
+       order by id desc`,
+    )
+    .pluck()
+    .all() as number[];
+  const guardRunId = unfinishedRunIds[0];
+  if (guardRunId === undefined) return;
+
+  const now = Date.now();
+  database
+    .prepare(
+      `update context_backfills
+       set status = 'failed',
+           pause_reason = 'migration-accounting-rebuild-required',
+           updated_at = ?
+       where status in ('active', 'paused') and id != ?`,
+    )
+    .run(now, guardRunId);
+  database
+    .prepare(
+      `update context_backfills
+       set status = 'paused',
+           pause_reason = 'migration-accounting-resume-required',
+           updated_at = ?
+       where id = ? and status in ('active', 'paused')`,
+    )
+    .run(now, guardRunId);
+  database
+    .prepare(
+      `update context_jobs set backfill_run_id = ?
+       where backfill_run_id is null and status in ('pending', 'leased')`,
+    )
+    .run(guardRunId);
+  database
+    .prepare(
+      `update usage_ledger set backfill_run_id = ?
+       where actual_usd is null and backfill_run_id is null
+         and id in (
+           select usage_reservation_id from context_jobs
+           where backfill_run_id = ? and usage_reservation_id is not null
+         )`,
+    )
+    .run(guardRunId, guardRunId);
 }
 
 function backfillContextForgetJournals(database: Database.Database): void {
@@ -751,6 +812,16 @@ export function verifyContextDatabaseSchema(
       .pluck()
       .get(CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_ID);
     if (accountingChecksum !== CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_CHECKSUM) {
+      return false;
+    }
+    const backfillLifecycleChecksum = database
+      .prepare('select checksum from schema_migrations where id = ?')
+      .pluck()
+      .get(CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_ID);
+    if (
+      backfillLifecycleChecksum !==
+      CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_CHECKSUM
+    ) {
       return false;
     }
     for (const table of [

@@ -4,13 +4,20 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { ChannelContextService } from '../../src/context/channel-context-service.js';
+import { ContextBackfillService } from '../../src/context/context-backfill.js';
+import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import {
+  CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_ID,
+  CONTEXT_BACKFILL_MIGRATION_ID,
   migrateChiefDatabase,
   openChiefDatabase,
   verifyContextDatabaseSchema,
 } from '../../src/memory/database.js';
 import { backupChiefDatabase } from '../../src/memory/backup.js';
 import { SqliteMemoryStore } from '../../src/memory/memory-store.js';
+import { SqliteUsageLedger } from '../../src/usage/sqlite-usage-ledger.js';
+import { UsageBudget } from '../../src/usage/usage-budget.js';
 
 const directories: string[] = [];
 
@@ -82,8 +89,159 @@ describe('Chief database', () => {
       '0005_context_forgetting',
       '0006_context_backfill',
       '0007_context_backfill_accounting',
+      '0008_context_backfill_lifecycle',
     ]);
     expect(verifyContextDatabaseSchema(database)).toBe(true);
+    database.close();
+  });
+
+  it('guards populated 0006 backfill work during accounting upgrade', async () => {
+    const database = openChiefDatabase(':memory:');
+    const now = Date.UTC(2026, 6, 14, 12);
+    migrateChiefDatabase(database, CONTEXT_BACKFILL_MIGRATION_ID);
+    const runId = Number(
+      database
+        .prepare(
+          `insert into context_backfills
+             (run_key, scope_id, status, maximum_usage_usd, created_at,
+              updated_at, activated_at, next_page_index)
+           values ('legacy-active', 'guild/channel', 'active', 0.1, ?, ?, ?,
+                   null)`,
+        )
+        .run(now, now, now).lastInsertRowid,
+    );
+    database
+      .prepare(
+        `insert into usage_ledger
+           (id, operation, work_category, priority, reservation_usd,
+            actual_usd, occurred_at, occurrence_month, backfill_run_id,
+            reconciled_at)
+         values ('legacy-context-reservation', 'context-rollup', 'indexing',
+                 'background', 0.05, null, ?, ?, null, null)`,
+      )
+      .run(now, Date.UTC(2026, 6, 1));
+    database
+      .prepare(
+        `insert into context_jobs
+           (job_key, tier, period_start, period_end, timezone, topic_key,
+            completeness, source_revision_checksum, not_before,
+            freshness_deadline)
+         values ('legacy-induced-daily', 'daily', 0, 100,
+                 'America/New_York', null, 'final', 'legacy-checksum', 100,
+                 200)`,
+      )
+      .run();
+    database
+      .prepare(
+        `insert into context_jobs
+           (job_key, tier, period_start, period_end, timezone, topic_key,
+            completeness, source_revision_checksum, not_before,
+            freshness_deadline, usage_reservation_id, status,
+            lease_expires_at)
+         values ('legacy-induced-weekly', 'weekly', 0, 100,
+                 'America/New_York', null, 'final', 'legacy-checksum', 100,
+                 300, 'legacy-context-reservation', 'leased', ?)`,
+      )
+      .run(now - 1);
+
+    migrateChiefDatabase(database, CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_ID);
+    expect(
+      database
+        .prepare('select status from context_backfills where id = ?')
+        .pluck()
+        .get(runId),
+    ).toBe('active');
+    expect(
+      database
+        .prepare(
+          `select count(*) from context_jobs where backfill_run_id is null`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(2);
+
+    migrateChiefDatabase(database);
+
+    expect(
+      database
+        .prepare(
+          `select status, pause_reason as pauseReason
+           from context_backfills where id = ?`,
+        )
+        .get(runId),
+    ).toEqual({
+      pauseReason: 'migration-accounting-resume-required',
+      status: 'paused',
+    });
+    expect(
+      database
+        .prepare(
+          `select backfill_run_id as backfillRunId
+           from context_jobs order by job_key`,
+        )
+        .all(),
+    ).toEqual([{ backfillRunId: runId }, { backfillRunId: runId }]);
+    expect(
+      database
+        .prepare(
+          `select actual_usd as actualUsd,
+                  backfill_run_id as backfillRunId
+           from usage_ledger where id = 'legacy-context-reservation'`,
+        )
+        .get(),
+    ).toEqual({ actualUsd: null, backfillRunId: runId });
+
+    const backfill = new ContextBackfillService({
+      channelId: 'channel',
+      database,
+      guildId: 'guild',
+      now: () => now,
+      pricing: {
+        embeddingInputPerMillionUsd: 0,
+        summaryInputPerMillionUsd: 0,
+        summaryOutputPerMillionUsd: 0,
+      },
+    });
+    await expect(backfill.resume(runId)).resolves.toMatchObject({
+      pauseReason: null,
+      status: 'active',
+    });
+    const context = new ChannelContextService({
+      budget: new UsageBudget({
+        ceilingUsd: 10,
+        indexingCeilingUsd: 3,
+        ledger: new SqliteUsageLedger(database),
+        now: () => now,
+        warningUsd: 5,
+      }),
+      channelId: 'channel',
+      conversation: new ConversationStore(database),
+      database,
+      embed: () =>
+        Promise.resolve({ embedding: new Float32Array(1536), usageUsd: 0 }),
+      guildId: 'guild',
+      now: () => now,
+      summarizer: {
+        summarize: () => {
+          throw new Error('empty legacy job must not call the provider');
+        },
+      },
+      timeZone: 'America/New_York',
+    });
+    await expect(context.runNext(now)).resolves.toEqual({ status: 'idle' });
+    await expect(context.runNext(now)).resolves.toEqual({ status: 'idle' });
+    await expect(backfill.runNext(now)).resolves.toEqual({
+      runId,
+      status: 'completed',
+    });
+    expect(
+      database
+        .prepare(
+          `select actual_usage_usd as actualUsageUsd, status
+           from context_backfills where id = ?`,
+        )
+        .get(runId),
+    ).toEqual({ actualUsageUsd: 0.05, status: 'completed' });
     database.close();
   });
 
