@@ -2,9 +2,9 @@
   "id": "channel-context-indexing",
   "title": "Index channel context across time horizons",
   "stage": "implementation",
-  "state": "active",
+  "state": "completed",
   "created_at": "2026-07-14T03:08:25Z",
-  "updated_at": "2026-07-14T04:58:31Z",
+  "updated_at": "2026-07-14T17:11:55Z",
   "worktree": {
     "path": "/Users/kellen/development/github/kellen-miller/chief/.worktrees/channel-context-indexing",
     "branch": "codex/channel-context-indexing",
