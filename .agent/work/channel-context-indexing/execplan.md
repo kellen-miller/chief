@@ -21,7 +21,7 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 - [x] (2026-07-14 06:41Z) Task 2 normalized live Discord creates, edits, partials, single/bulk deletes, and delivered Chief chunks; synchronized edit/delete effects across source, memory, and context state; added resumable gap and weekly identity reconciliation with persisted coverage proof; and passed 267 tests plus a clean final review after three correction loops.
 - [x] (2026-07-14 08:05Z) Task 3 added one protected paid-work queue, fair deadline-ordered background scheduling, categorized/month-safe budget accounting, provisional/final hourly plus daily/weekly/topic rollups, strict bounded summarization and segmentation, tiered retention, non-readiness lag diagnostics, and graceful draining; 300 tests and final review passed after two correction loops.
 - [x] (2026-07-14 09:39Z) Task 4 assembled one bounded text/Realtime context with one embedding per query, per-tier source and rollup retrieval, recent/history budgeting, provenance links, deterministic replay, privacy/as-of boundaries, and utterance-safe voice recall; 331 tests and final review passed after three correction loops.
-- [x] (2026-07-14 10:11Z) Milestone 5 implemented redacted cross-store candidate discovery, current self/admin authorization, single-use broad confirmation, one synchronous atomic deletion, content-free upload/retry/replay, durable suppression across restore, and stale-job-safe lineage rebuild; 345 tests pass.
+- [x] (2026-07-14 11:43Z) Task 5 implemented redacted cross-store candidate discovery, current self/admin authorization, single-use broad confirmation, one synchronous atomic deletion shared by local and authoritative Discord suppression, immutable GCS upload/retry, content-free migration-safe replay, complete revision scrubbing, and stale-job-safe lineage rebuild; 362 tests and final review passed after three correction loops.
 - [ ] Milestone 6: add dry-run and resumable full-history backfill.
 - [ ] Milestone 7: expose degraded health, document operations, and validate rollback.
 - [ ] Milestone 8: complete deterministic, quality, container, and live acceptance evidence.
@@ -82,6 +82,14 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
   Evidence: a requester could lose administrator authority during the five-minute confirmation window. Task 5 now reevaluates the current permission snapshot before it consumes the confirmation, while ordinary self-authorship remains independently valid.
 - Observation: a verified forget journal must carry enough policy identity to suppress rows that do not exist in the restored artifact.
   Evidence: a pre-deletion backup can predate the selected source, document, or memory. Task 5 replay recreates source/document/topic tombstones from the content-free payload before scrubbing whichever referenced rows are present.
+- Observation: aggregate-document lineage is provenance, not authorization to delete every contributing raw source.
+  Evidence: Task 5 review reproduced a matched mixed-topic rollup deleting an unrelated same-hour message. Candidate selection now requires independently relevant raw sources while suppressing and rebuilding affected derived documents from surviving lineage.
+- Observation: recovery journals cannot treat SQLite integer row IDs as stable across snapshots.
+  Evidence: Task 5 review reassigned a document ID in a restored database and reproduced unrelated suppression. Replay now uses stable document keys and payload memory identities, including when source rows or lineage are absent.
+- Observation: deletion replay payloads must be self-describing across both current emission and append-only migration.
+  Evidence: Task 5 upgrade fixtures found invalid legacy payloads and loss of `locally-forgotten` reason. Migration 0005 now backfills content-free payloads, exact known reasons, and recomputed checksums before flush/replay.
+- Observation: production acknowledgement semantics require a real outbox uploader and retry loop, not only an injectable service seam.
+  Evidence: Task 5 review found runtime would otherwise leave every journal pending. Runtime now writes immutable GCS journal objects and drains pending rows on startup and in the background; host-wide fail-closed replay remains Task 7.
 - Observation: an external-content FTS row for a superseded durable memory was already removed when the replacement became active.
   Evidence: deleting that index row again produced `SQLITE_CORRUPT_VTAB`. Task 5 traverses and scrubs the full predecessor chain but removes FTS/vector entries only for active indexed versions.
 
@@ -147,7 +155,7 @@ The complexity dividend is one deep context assembly seam. Today the orchestrato
 
 ## Outcomes & Retrospective
 
-Milestones 1 through 5 are implemented. Task 5 makes natural-language forgetting a redacted, authorized, confirmation-aware operation that removes selected material from active local SQL, search, vectors, durable memory, private extraction snapshots, assembled context, and restored backups after journal replay. The repository gate passes 345 deterministic tests with no provider or live Discord calls. Production upload/startup integration and lifecycle policy remain in the operational milestone; no live acceptance is claimed.
+Milestones 1 through 5 are implemented. Task 5 makes natural-language forgetting a redacted, authorized, confirmation-aware operation that removes selected material from active local SQL, search, vectors, durable memory, private extraction snapshots, assembled context, and restored backups after journal replay. The runtime uploads immutable content-free journals and retries its outbox on startup/background; the operational milestone still owns the unconditional host preflight, lifecycle policy, and rollback validation. The repository gate passes 362 deterministic tests with no provider or live Discord calls. No live acceptance is claimed.
 
 ## Context and Orientation
 
