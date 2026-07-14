@@ -64,8 +64,15 @@ describe('repository policy', () => {
     const runtime = await read('src/runtime.ts');
     const deployScript = await read('scripts/deploy.sh');
     const runContainerScript = await read('scripts/run-container.sh');
-    expect(startup).toContain('google-cloud-ops-agent-bookworm-all main');
-    expect(startup).not.toContain('cloud-sdk-bookworm main');
+    const aptScript = await read('scripts/configure-google-cloud-apt.sh');
+    for (const suite of [
+      'google-compute-engine-bookworm-stable',
+      'cloud-sdk-bookworm',
+      'google-cloud-packages-archive-keyring-bookworm-stable',
+      'google-cloud-ops-agent-bookworm-all',
+    ]) {
+      expect(aptScript).toContain(suite);
+    }
     const staleSourceCleanup = startup.indexOf(
       'rm -f /etc/apt/sources.list.d/google-cloud-ops-agent.list',
     );
@@ -77,12 +84,21 @@ describe('repository policy', () => {
       ),
     );
     expect(app).toContain('startup-script = templatefile(');
+    expect(app).toContain(
+      'configure_google_cloud_apt_script = file("${path.module}/../../scripts/configure-google-cloud-apt.sh")',
+    );
     expect(app).not.toContain('metadata_startup_script');
     expect(deploy).toContain('/opt/chief/run-container.sh');
     expect(deploy).toContain('scripts/run-container.sh');
+    expect(deploy).toContain('scripts/configure-google-cloud-apt.sh');
     expect(deploy).toContain(
       'install -m 0750 /tmp/run-container.sh /opt/chief/run-container.sh',
     );
+    expect(deploy).toContain(
+      'install -m 0750 /tmp/configure-google-cloud-apt.sh /opt/chief/configure-google-cloud-apt.sh',
+    );
+    expect(deploy).toContain('sudo /opt/chief/configure-google-cloud-apt.sh');
+    expect(deploy).toContain('--command="set -e');
     expect(deploy).toContain('google-startup-scripts.service');
     expect(deploy).toContain("--image '${{ steps.image.outputs.reference }}'");
     expect(deploy).not.toContain("--image='");
@@ -95,6 +111,10 @@ describe('repository policy', () => {
       'http://metadata.google.internal/computeMetadata/v1/project/project-id',
     );
     expect(runContainerScript).toContain('Metadata-Flavor: Google');
+    expect(startup).toContain("<<'CHIEF_GOOGLE_APT_SCRIPT'");
+    expect(startup).toContain('${configure_google_cloud_apt_script}');
+    expect(startup).toContain('/opt/chief/configure-google-cloud-apt.sh');
+    expect(aptScript).toContain('chief-google-cloud.list');
   });
 
   it('uses short-lived scoped WIF without secret or plan artifacts', async () => {
