@@ -979,9 +979,6 @@ function repairBackfillOwnership(database: Database.Database): void {
     }
 
     assignJob.run(null, job.id);
-    if (job.usageReservationId !== null) {
-      assignReservation.run(null, job.usageReservationId);
-    }
   }
 
   const now = Date.now();
@@ -990,7 +987,13 @@ function repairBackfillOwnership(database: Database.Database): void {
      set status = 'paused', completed_at = null,
          pause_reason = 'migration-accounting-resume-required',
          updated_at = ?
-     where id = ?`,
+     where id = ? and (
+       status in ('active', 'paused', 'completed')
+       or pause_reason in (
+         'migration-accounting-resume-required',
+         'migration-accounting-rebuild-required'
+       )
+     )`,
   );
   for (const runId of recoveredRunIds) recover.run(now, runId);
 }
@@ -1057,7 +1060,13 @@ function exactJobDocumentIds(
     readonly id: number;
     readonly revision: number;
   }[];
-  return rows.length > 0 && migrationDigest(rows) === job.sourceRevisionChecksum
+  if (rows.length === 0) return [];
+  const revisionRows = rows.map(({ id, revision }) => ({ id, revision }));
+  const legacyIdOrderedRows = [...revisionRows].sort(
+    (left, right) => left.id - right.id,
+  );
+  return migrationDigest(revisionRows) === job.sourceRevisionChecksum ||
+    migrationDigest(legacyIdOrderedRows) === job.sourceRevisionChecksum
     ? rows.map(({ id }) => id)
     : [];
 }

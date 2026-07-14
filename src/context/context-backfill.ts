@@ -1159,7 +1159,7 @@ export class ContextBackfillService {
          where tier = 'hourly' and completeness = 'final'
            and state = 'active' and content_state = 'available'
            and is_internal = 0 and period_start >= ? and period_end <= ?
-         order by id`,
+         order by period_start, id`,
       )
       .all(period.start, period.end);
     const checksum = digest(sourceDocuments);

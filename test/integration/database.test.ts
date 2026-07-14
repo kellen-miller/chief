@@ -599,6 +599,203 @@ describe('Chief database', () => {
     database.close();
   });
 
+  it('preserves legacy id-ordered ownership with mixed hourly inputs', () => {
+    const database = openChiefDatabase(':memory:');
+    const now = 1_000;
+    migrateChiefDatabase(database, CONTEXT_BACKFILL_TARGETING_MIGRATION_ID);
+    const runId = insertMigrationBackfillRun(database, {
+      now,
+      runKey: 'id-ordered-inputs',
+    });
+    const segmentDocumentId = insertLegacyBackfillSegment(database, runId);
+    const backfillDocumentId = insertPublicContextDocument(database, {
+      documentKey: 'id-first-backfill-hourly',
+      parentDocumentId: segmentDocumentId,
+      periodEnd: 90,
+      periodStart: 80,
+      tier: 'hourly',
+    });
+    const liveDocumentId = insertPublicContextDocument(database, {
+      documentKey: 'id-second-live-hourly',
+      parentDocumentId: null,
+      periodEnd: 20,
+      periodStart: 10,
+      tier: 'hourly',
+    });
+    database
+      .prepare(
+        `insert into usage_ledger
+           (id, operation, work_category, priority, reservation_usd,
+            actual_usd, occurred_at, occurrence_month, backfill_run_id,
+            reconciled_at)
+         values ('id-ordered-reservation', 'context-rollup', 'indexing',
+                 'background', 0.02, null, ?, 0, ?, null)`,
+      )
+      .run(now, runId);
+    database
+      .prepare(
+        `insert into context_jobs
+           (job_key, tier, period_start, period_end, timezone, topic_key,
+            completeness, source_revision_checksum, not_before,
+            freshness_deadline, usage_reservation_id, status,
+            lease_expires_at, backfill_run_id)
+         values ('id-ordered-daily', 'daily', 0, 100, 'America/New_York',
+                 null, 'final', ?, 0, 100, 'id-ordered-reservation', 'leased',
+                 ?, ?)`,
+      )
+      .run(
+        testDigest([
+          { id: backfillDocumentId, revision: 1 },
+          { id: liveDocumentId, revision: 1 },
+        ]),
+        now + 1,
+        runId,
+      );
+
+    migrateChiefDatabase(database);
+
+    expect(
+      database
+        .prepare(
+          `select backfill_run_id from context_jobs
+           where job_key = 'id-ordered-daily'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(runId);
+    expect(
+      database
+        .prepare(
+          `select backfill_run_id from usage_ledger
+           where id = 'id-ordered-reservation'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(runId);
+    database.close();
+  });
+
+  it('retains old-run accounting for a detached live conflict', async () => {
+    const database = openChiefDatabase(':memory:');
+    const now = 1_000;
+    migrateChiefDatabase(database, CONTEXT_BACKFILL_TARGETING_MIGRATION_ID);
+    const runId = insertMigrationBackfillRun(database, {
+      now,
+      runKey: 'detached-live-reservation',
+    });
+    database
+      .prepare(
+        `update context_backfills
+         set status = 'paused', pause_reason = 'run-budget' where id = ?`,
+      )
+      .run(runId);
+    database
+      .prepare(
+        `insert into usage_ledger
+           (id, operation, work_category, priority, reservation_usd,
+            actual_usd, occurred_at, occurrence_month, backfill_run_id,
+            reconciled_at)
+         values ('detached-live-reservation', 'context-rollup', 'indexing',
+                 'background', 0.02, null, ?, 0, ?, null)`,
+      )
+      .run(now, runId);
+    database
+      .prepare(
+        `insert into context_jobs
+           (job_key, tier, period_start, period_end, timezone, topic_key,
+            completeness, source_revision_checksum, not_before,
+            freshness_deadline, usage_reservation_id, status,
+            lease_expires_at, backfill_run_id)
+         values ('detached-live-hourly', 'hourly', 1000, 2000,
+                 'America/New_York', null, 'final', ?, 0, 50,
+                 'detached-live-reservation', 'leased', ?, null)`,
+      )
+      .run(testDigest([]), now - 1);
+
+    migrateChiefDatabase(database);
+
+    expect(
+      database
+        .prepare(
+          `select backfill_run_id from context_jobs
+           where job_key = 'detached-live-hourly'`,
+        )
+        .pluck()
+        .get(),
+    ).toBeNull();
+    expect(
+      database
+        .prepare(
+          `select backfill_run_id from usage_ledger
+           where id = 'detached-live-reservation'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(runId);
+    const context = emptyMigrationContext(database, now);
+    await expect(context.runNext(now)).resolves.toEqual({ status: 'idle' });
+    expect(
+      database
+        .prepare(`select actual_usage_usd from context_backfills where id = ?`)
+        .pluck()
+        .get(runId),
+    ).toBe(0.02);
+    database.close();
+  });
+
+  it('does not reopen an intentionally replaced exact owner', () => {
+    const database = openChiefDatabase(':memory:');
+    const now = 1_000;
+    migrateChiefDatabase(database, CONTEXT_BACKFILL_TARGETING_MIGRATION_ID);
+    const runId = insertMigrationBackfillRun(database, {
+      now,
+      runKey: 'intentional-replacement',
+    });
+    const segmentDocumentId = insertLegacyBackfillSegment(database, runId);
+    const sourceDocumentId = insertPublicBackfillDocument(
+      database,
+      runId,
+      segmentDocumentId,
+    );
+    database
+      .prepare(
+        `update context_backfills
+         set status = 'failed', pause_reason = 'replaced' where id = ?`,
+      )
+      .run(runId);
+    database
+      .prepare(
+        `insert into context_jobs
+           (job_key, tier, period_start, period_end, timezone, topic_key,
+            completeness, source_revision_checksum, not_before,
+            freshness_deadline, backfill_run_id)
+         values ('replaced-owner-daily', 'daily', 0, 100,
+                 'America/New_York', null, 'final', ?, 0, 100, ?)`,
+      )
+      .run(testDigest([{ id: sourceDocumentId, revision: 1 }]), runId);
+
+    migrateChiefDatabase(database);
+
+    expect(
+      database
+        .prepare(
+          `select status, pause_reason as pauseReason
+           from context_backfills where id = ?`,
+        )
+        .get(runId),
+    ).toEqual({ pauseReason: 'replaced', status: 'failed' });
+    expect(
+      database
+        .prepare(
+          `select backfill_run_id from context_jobs
+           where job_key = 'replaced-owner-daily'`,
+        )
+        .pluck()
+        .get(),
+    ).toBe(runId);
+    database.close();
+  });
+
   it('recovers a pre-0007 recent-only hourly manifest job', () => {
     const database = openChiefDatabase(':memory:');
     const now = 1_000;
@@ -776,7 +973,7 @@ describe('Chief database', () => {
         )
         .pluck()
         .get(),
-    ).toBeNull();
+    ).toBe(runId);
     const context = emptyMigrationContext(database, now);
     expect(context.nextDeadline(now)).not.toBeNull();
     await expect(context.runNext(now)).resolves.toEqual({ status: 'idle' });
@@ -788,6 +985,12 @@ describe('Chief database', () => {
         )
         .pluck()
         .get(),
+    ).toBe(0.02);
+    expect(
+      database
+        .prepare(`select actual_usage_usd from context_backfills where id = ?`)
+        .pluck()
+        .get(runId),
     ).toBe(0.02);
     database.close();
   });
@@ -1029,6 +1232,25 @@ function insertPublicBackfillDocument(
   parentDocumentId: number | null,
   tier: 'daily' | 'hourly' = 'hourly',
 ): number {
+  return insertPublicContextDocument(database, {
+    documentKey: `public-${tier}-${runId.toString()}`,
+    parentDocumentId,
+    periodEnd: 100,
+    periodStart: 0,
+    tier,
+  });
+}
+
+function insertPublicContextDocument(
+  database: ReturnType<typeof openChiefDatabase>,
+  input: {
+    readonly documentKey: string;
+    readonly parentDocumentId: number | null;
+    readonly periodEnd: number;
+    readonly periodStart: number;
+    readonly tier: 'daily' | 'hourly';
+  },
+): number {
   const documentId = Number(
     database
       .prepare(
@@ -1038,19 +1260,20 @@ function insertPublicBackfillDocument(
             content_state_reason, summary, confidence, retention_deadline,
             created_at, updated_at, generation_input_tokens,
             generation_output_tokens, generation_usage_usd, is_internal)
-         values (?, ?, 0, 100, 'America/New_York', null, 1, 'final',
+         values (?, ?, ?, ?, 'America/New_York', null, 1, 'final',
                  'active', 'available', 'retained', 'Public descendant.', 0.9,
                  null, 100, 100, 1, 1, 0, 0)`,
       )
-      .run(`public-${tier}-${runId.toString()}`, tier).lastInsertRowid,
+      .run(input.documentKey, input.tier, input.periodStart, input.periodEnd)
+      .lastInsertRowid,
   );
-  if (parentDocumentId !== null) {
+  if (input.parentDocumentId !== null) {
     database
       .prepare(
         `insert into context_document_parents (document_id, parent_document_id)
          values (?, ?)`,
       )
-      .run(documentId, parentDocumentId);
+      .run(documentId, input.parentDocumentId);
   }
   return documentId;
 }
