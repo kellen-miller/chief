@@ -312,7 +312,10 @@ resource "google_compute_instance" "chief" {
   }
 
   lifecycle {
-    ignore_changes = [metadata["ssh-keys"]]
+    ignore_changes = [
+      boot_disk[0].initialize_params[0].image,
+      metadata["ssh-keys"],
+    ]
   }
 
   depends_on = [
