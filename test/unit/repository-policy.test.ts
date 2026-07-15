@@ -220,6 +220,12 @@ describe('repository policy', () => {
     expect(planGrant).not.toContain('Admin');
   });
 
+  it('ignores routine boot image drift for the protected VM', async () => {
+    const app = await read('infra/app/main.tf');
+
+    expect(app).toContain('boot_disk[0].initialize_params[0].image');
+  });
+
   it('guards protected resources and immutable deployment input', async () => {
     const policy = await read('scripts/check-terraform-plan.sh');
     const deploy = await read('scripts/deploy.sh');
