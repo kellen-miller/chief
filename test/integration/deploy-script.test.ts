@@ -17,6 +17,16 @@ const previous = `registry/chief@sha256:${'a'.repeat(64)}`;
 const deployScript = resolve('scripts/deploy.sh');
 
 describe('deploy transaction', () => {
+  it('syncs the backup bucket before starting the service', async () => {
+    const fixture = await createFixture();
+    const result = await runDeploy(fixture);
+
+    expect(result.code).toBe(0);
+    expect(await readFile(fixture.config, 'utf8')).toBe(
+      'EXISTING_SETTING=preserved\nCHIEF_BACKUP_BUCKET=chief-backups\n',
+    );
+  });
+
   it('accepts a healthy immutable candidate', async () => {
     const fixture = await createFixture();
     const result = await runDeploy(fixture);
@@ -143,6 +153,7 @@ interface FixtureOptions {
 async function createFixture(options: FixtureOptions = {}): Promise<{
   readonly bin: string;
   readonly commandLog: string;
+  readonly config: string;
   readonly data: string;
   readonly failCandidate: boolean;
   readonly failMigration: boolean;
@@ -153,6 +164,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<{
   const root = await mkdtemp(join(tmpdir(), 'chief-deploy-test-'));
   const bin = join(root, 'bin');
   const commandLog = join(root, 'commands.log');
+  const config = join(root, 'chief.env');
   const data = join(root, 'data');
   const runtime = join(root, 'run');
   await mkdir(bin);
@@ -160,6 +172,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<{
   await mkdir(runtime);
   await writeFile(join(data, 'chief.db'), 'original');
   await writeFile(join(data, 'deploy.env'), `IMAGE=${previous}\n`);
+  await writeFile(config, 'EXISTING_SETTING=preserved\n');
   await executable(
     join(bin, 'docker'),
     `#!/usr/bin/env bash
@@ -216,6 +229,7 @@ exit 0
   return {
     bin,
     commandLog,
+    config,
     data,
     failCandidate: options.failCandidate ?? false,
     failMigration: options.failMigration ?? false,
@@ -233,6 +247,7 @@ async function executable(path: string, content: string): Promise<void> {
 async function runDeploy(fixture: {
   readonly bin: string;
   readonly commandLog: string;
+  readonly config: string;
   readonly data: string;
   readonly failCandidate: boolean;
   readonly failMigration: boolean;
@@ -241,29 +256,34 @@ async function runDeploy(fixture: {
   readonly runtime: string;
 }): Promise<{ readonly code: number | null; readonly stderr: string }> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn('bash', [deployScript, '--image', candidate], {
-      env: {
-        ...process.env,
-        CHIEF_DATA_GID:
-          typeof process.getgid === 'function'
-            ? process.getgid().toString()
-            : '1000',
-        CHIEF_DATA_DIR: fixture.data,
-        CHIEF_DATA_UID:
-          typeof process.getuid === 'function'
-            ? process.getuid().toString()
-            : '1000',
-        CHIEF_RUNTIME_DIR: fixture.runtime,
-        COMMAND_LOG: fixture.commandLog,
-        DOCKER_CONFIG: '',
-        FAIL_CANDIDATE: fixture.failCandidate ? '1' : '0',
-        FAIL_MIGRATION: fixture.failMigration ? '1' : '0',
-        FAIL_PRUNE: fixture.failPrune ? '1' : '0',
-        FAIL_TAG: fixture.failTag ? '1' : '0',
-        PATH: `${fixture.bin}:${process.env.PATH ?? ''}`,
+    const child = spawn(
+      'bash',
+      [deployScript, '--image', candidate, '--backup-bucket', 'chief-backups'],
+      {
+        env: {
+          ...process.env,
+          CHIEF_CONFIG_FILE: fixture.config,
+          CHIEF_DATA_GID:
+            typeof process.getgid === 'function'
+              ? process.getgid().toString()
+              : '1000',
+          CHIEF_DATA_DIR: fixture.data,
+          CHIEF_DATA_UID:
+            typeof process.getuid === 'function'
+              ? process.getuid().toString()
+              : '1000',
+          CHIEF_RUNTIME_DIR: fixture.runtime,
+          COMMAND_LOG: fixture.commandLog,
+          DOCKER_CONFIG: '',
+          FAIL_CANDIDATE: fixture.failCandidate ? '1' : '0',
+          FAIL_MIGRATION: fixture.failMigration ? '1' : '0',
+          FAIL_PRUNE: fixture.failPrune ? '1' : '0',
+          FAIL_TAG: fixture.failTag ? '1' : '0',
+          PATH: `${fixture.bin}:${process.env.PATH ?? ''}`,
+        },
+        stdio: ['ignore', 'ignore', 'pipe'],
       },
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
+    );
     let stderr = '';
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => {

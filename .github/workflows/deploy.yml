@@ -102,7 +102,9 @@ jobs:
             sudo /opt/chief/configure-google-cloud-apt.sh
             sudo install -m 0750 /tmp/run-container.sh /opt/chief/run-container.sh
             sudo install -m 0750 /tmp/deploy.sh /opt/chief/deploy.sh
-            sudo /opt/chief/deploy.sh --image '${{ steps.image.outputs.reference }}'"
+            sudo /opt/chief/deploy.sh \
+              --image '${{ steps.image.outputs.reference }}' \
+              --backup-bucket '${{ vars.CHIEF_BACKUP_BUCKET }}'"
 
       - name: Record deployment evidence
         env:
