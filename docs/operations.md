@@ -25,6 +25,40 @@ backfill counts, and one bounded reason: `provider`, `overall-budget`,
 `indexing-budget`, `run-budget`, or `backlog`. It never includes source IDs,
 speaker IDs, topics, summaries, prompts, or provider errors.
 
+## Discord monitoring
+
+`#chief-monitoring` is visible to everyone in the server. The host-side
+`chief-monitoring.timer` checks once a minute, independently of the bot process.
+It posts a daily report at the first check after 09:00 America/New_York, including
+readiness, context backlog/lag, UTC-month AI spending and reservations, model
+names, disk space, backup status, and observed error counts. No LLM calls are used.
+
+Alerts report changed health, context, backup, disk, and budget problems and their
+recovery. Only allowlisted error event names and aggregate counts are forwarded
+from Docker/journald; repeated events are throttled for one hour. Prompts,
+transcripts, raw errors, provider payloads, and secrets never enter reports.
+Delivery receipts persist in `/var/lib/chief/monitoring.json`; failed Discord sends
+remain unacknowledged and retry next minute. A failed monitoring run also emits
+`chief_monitoring_failed` to the existing GCP email alert path. Email remains the
+fallback when the VM or Discord is unavailable.
+
+Set repository variable `DISCORD_MONITORING_CHANNEL_ID` before merging. Chief
+needs View Channel and Send Messages there. The deploy workflow installs the
+monitor and timer on existing VMs; the startup template installs them on new VMs.
+It validates the destination belongs to the configured guild before sending.
+
+```bash
+systemctl status chief-monitoring.timer
+journalctl -u chief-monitoring.service --since yesterday
+```
+
+Context jobs keep five fast retries, then remain degraded and retry once daily
+through the normal indexing budget and lease gates. Existing provider-failed jobs
+become eligible automatically after deployment. Invalidated-source jobs are not
+retried, and obsolete provisional work completes without a provider call. The
+oldest failing jobs can contain expired evidence; recovery uses only evidence
+still available under normal retention and deletion rules.
+
 ## Usage and memory jobs
 
 The SQLite usage ledger is the authoritative local month record. Outstanding reservations remain charged after a crash until reconciled or month rollover. Inspect operational counts without reading private content:

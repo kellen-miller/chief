@@ -4,7 +4,7 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 rm -f /etc/apt/sources.list.d/google-cloud-ops-agent.list
 apt-get update
-apt-get install --yes --no-install-recommends ca-certificates curl docker.io gnupg
+apt-get install --yes --no-install-recommends ca-certificates curl docker.io gnupg python3
 
 if [[ ! -f /swapfile ]]; then
   fallocate -l 2G /swapfile
@@ -221,3 +221,13 @@ systemctl enable --now docker chief-health.timer chief-backup.timer \
   chief-recovery-prune.timer
 systemctl enable chief.service
 if [[ -f /var/lib/chief/deploy.env ]]; then systemctl restart chief.service; fi
+
+cat >/opt/chief/monitor.py <<'CHIEF_MONITOR_SCRIPT'
+${monitor_script}
+CHIEF_MONITOR_SCRIPT
+chmod 0750 /opt/chief/monitor.py
+cat >/opt/chief/install-monitoring.sh <<'CHIEF_INSTALL_MONITOR_SCRIPT'
+${install_monitoring_script}
+CHIEF_INSTALL_MONITOR_SCRIPT
+chmod 0750 /opt/chief/install-monitoring.sh
+/opt/chief/install-monitoring.sh '${discord_monitoring_channel_id}' '${discord_guild_id}' '${project_id}'

@@ -77,3 +77,14 @@ variable "discord_voice_channel_id" {
   type        = string
   nullable    = false
 }
+
+variable "discord_monitoring_channel_id" {
+  description = "Discord text channel for daily reports and operational alerts."
+  type        = string
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^[0-9]{17,20}$", var.discord_monitoring_channel_id))
+    error_message = "Monitoring channel ID must be a Discord snowflake."
+  }
+}

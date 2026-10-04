@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { Temporal } from '@js-temporal/polyfill';
 
-export const DEFAULT_TEXT_MODEL = 'gpt-5.6-luna';
+export const DEFAULT_TEXT_MODEL = 'gpt-6-luna';
 
 const snowflake = z
   .string()
@@ -24,7 +24,7 @@ const environmentSchema = z.object({
   CHIEF_DATA_DIR: z.string().min(1).default('/var/lib/chief'),
   CHIEF_HEALTH_PORT: z.coerce.number().int().min(1).max(65_535).default(8_080),
   CHIEF_MODEL_EMBEDDING: z.string().min(1).default('text-embedding-3-small'),
-  CHIEF_MODEL_MEMORY: z.string().min(1).default('gpt-5.4-nano'),
+  CHIEF_MODEL_MEMORY: z.string().min(1).default('gpt-6-luna'),
   CHIEF_MODEL_TEXT: z.string().min(1).default(DEFAULT_TEXT_MODEL),
   CHIEF_MODEL_TRANSCRIPTION: z
     .string()
@@ -32,16 +32,16 @@ const environmentSchema = z.object({
     .default('gpt-4o-mini-transcribe-2025-12-15'),
   CHIEF_MODEL_VOICE: z.string().min(1).default('gpt-realtime-2.1-mini'),
   CHIEF_PRICE_EMBEDDING_INPUT: z.coerce.number().nonnegative().default(0.02),
-  CHIEF_PRICE_MEMORY_INPUT: z.coerce.number().nonnegative().default(0.2),
-  CHIEF_PRICE_MEMORY_OUTPUT: z.coerce.number().nonnegative().default(1.25),
+  CHIEF_PRICE_MEMORY_INPUT: z.coerce.number().nonnegative().default(0.1),
+  CHIEF_PRICE_MEMORY_OUTPUT: z.coerce.number().nonnegative().default(0.5),
   CHIEF_PRICE_SEARCH_CALL: z.coerce.number().nonnegative().default(0.01),
-  CHIEF_PRICE_TEXT_CACHED_INPUT: z.coerce.number().nonnegative().default(0.1),
+  CHIEF_PRICE_TEXT_CACHED_INPUT: z.coerce.number().nonnegative().default(0.01),
   CHIEF_PRICE_TEXT_CACHE_WRITE_INPUT: z.coerce
     .number()
     .nonnegative()
-    .default(1.25),
-  CHIEF_PRICE_TEXT_INPUT: z.coerce.number().nonnegative().default(1),
-  CHIEF_PRICE_TEXT_OUTPUT: z.coerce.number().nonnegative().default(6),
+    .default(0.125),
+  CHIEF_PRICE_TEXT_INPUT: z.coerce.number().nonnegative().default(0.1),
+  CHIEF_PRICE_TEXT_OUTPUT: z.coerce.number().nonnegative().default(0.5),
   CHIEF_PRICE_TRANSCRIPTION_FALLBACK_MINUTE: z.coerce
     .number()
     .nonnegative()

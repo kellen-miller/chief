@@ -11,6 +11,12 @@
    pnpm chief -- register-commands
    ```
 
+7. Create a text channel named `chief-monitoring`, visible to everyone. Allow the
+   Chief role View Channel and Send Messages. Set repository Actions variable
+   `DISCORD_MONITORING_CHANNEL_ID` to its ID; use the same value for Terraform's
+   `discord_monitoring_channel_id`. Operational reports are posted by the host
+   monitor; this channel never enters Chief's conversational memory.
+
 Commands are guild-scoped so updates appear quickly. Chief fails closed if the configured guild or either channel is missing, if a command is invoked elsewhere, or if a message comes from a DM, thread, webhook, or another bot. Chief retains its own delivered messages by their Discord snowflakes and durable chunk order so reply history, edits, deletes, prompt assembly, and reconciliation use the same source lifecycle.
 
 Only eligible human messages and Chief's own delivered messages in the configured

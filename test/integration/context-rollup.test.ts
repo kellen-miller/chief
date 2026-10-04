@@ -984,6 +984,117 @@ describe('ChannelContextService rollups', () => {
     database.close();
   });
 
+  it('recovers failed provider jobs after a day without retrying invalidated sources', async () => {
+    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
+    let current = occurredAt + 1_000;
+    let providerAvailable = false;
+    const database = openChiefDatabase(':memory:');
+    migrateChiefDatabase(database);
+    const budget = new UsageBudget({
+      ceilingUsd: 10,
+      indexingCeilingUsd: 3,
+      ledger: new SqliteUsageLedger(database),
+      now: () => current,
+      warningUsd: 5,
+    });
+    const summarize = vi.fn(
+      (input: { readonly sources: readonly { readonly id: string }[] }) => {
+        if (!providerAvailable)
+          return Promise.reject(new Error('provider unavailable'));
+
+        return Promise.resolve({
+          confidence: 0.9,
+          inputTokens: 20,
+          outputTokens: 8,
+          sourceIds: input.sources.map(({ id }) => id),
+          summary: 'Project Marigold launches Friday.',
+          topicProposals: [],
+          usageUsd: 0.001,
+        });
+      },
+    );
+    const service = new ChannelContextService({
+      budget,
+      channelId,
+      conversation: new ConversationStore(database),
+      database,
+      embed: () =>
+        Promise.resolve({
+          embedding: new Float32Array(1_536).fill(0.25),
+          usageUsd: 0.001,
+        }),
+      estimateUsd: 0.05,
+      guildId,
+      now: () => current,
+      summarizer: { summarize },
+      timeZone,
+    });
+    service.apply({
+      content: 'Project Marigold launches Friday.',
+      messageId: '52345678901234567',
+      occurredAt,
+      requestId: '52345678901234567',
+      role: 'human',
+      speakerId: '42345678901234567',
+      speakerName: 'President Test',
+      type: 'upsert',
+    });
+    current = Date.parse('2026-07-14T16:10:00Z');
+    database
+      .prepare(
+        "update context_jobs set status = 'failed', last_error_category = 'source-invalidated' where completeness = 'provisional'",
+      )
+      .run();
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const result = await service.runNext(current);
+      if (result.status === 'retry') current = result.notBefore;
+      else expect(result).toEqual({ status: 'failed' });
+    }
+
+    const notBefore = database
+      .prepare(
+        "select not_before from context_jobs where completeness = 'final'",
+      )
+      .pluck()
+      .get() as number;
+    expect(notBefore).toBe(current + 24 * 60 * 60 * 1_000);
+    expect(service.nextDeadline(notBefore - 1)).toBeNull();
+    await expect(service.runNext(notBefore - 1)).resolves.toEqual({
+      status: 'idle',
+    });
+    expect(summarize).toHaveBeenCalledTimes(5);
+    expect(service.status(current)).toMatchObject({
+      degraded: true,
+      failedJobs: 2,
+    });
+    providerAvailable = true;
+    current = notBefore;
+    expect(service.nextDeadline(current)).not.toBeNull();
+    await expect(service.runNext(current)).resolves.toMatchObject({
+      status: 'completed',
+      tier: 'hourly',
+    });
+    expect(
+      database
+        .prepare(
+          "select status from context_jobs where completeness = 'final' and tier = 'hourly'",
+        )
+        .pluck()
+        .get(),
+    ).toBe('completed');
+    expect(
+      database
+        .prepare(
+          "select last_error_category from context_jobs where completeness = 'provisional'",
+        )
+        .pluck()
+        .get(),
+    ).toBe('source-invalidated');
+    expect(budget.snapshot().reservedUsd).toBe(0);
+    expect(budget.snapshot().actualUsd).toBeCloseTo(0.252);
+    database.close();
+  });
+
   it('recovers an expired lease and reconciles its stale reservation', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;

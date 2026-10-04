@@ -21,7 +21,7 @@ if (apiKey === undefined || apiKey.length === 0) {
 }
 
 const textModel = process.env.CHIEF_MODEL_TEXT ?? DEFAULT_TEXT_MODEL;
-const memoryModel = process.env.CHIEF_MODEL_MEMORY ?? 'gpt-5.4-nano';
+const memoryModel = process.env.CHIEF_MODEL_MEMORY ?? 'gpt-6-luna';
 const evaluatorModel = process.env.CHIEF_MODEL_EVALUATOR ?? textModel;
 const gradePinnedCorpus = process.argv.includes('--grade-pinned-corpus');
 const execute = createExecution(apiKey, textModel);
