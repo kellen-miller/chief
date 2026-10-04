@@ -29,6 +29,8 @@ speaker IDs, topics, summaries, prompts, or provider errors.
 
 `#chief-monitoring` is visible to everyone in the server. The host-side
 `chief-monitoring.timer` checks once a minute, independently of the bot process.
+Reports use native Discord embeds with grouped fields, timestamps, and green
+healthy/recovery, yellow error, or red alert indicators.
 It posts a daily report at the first check after 09:00 America/New_York, including
 readiness, context backlog/lag, UTC-month AI spending and reservations, model
 names, disk space, backup status, and observed error counts. No LLM calls are used.
@@ -43,7 +45,7 @@ remain unacknowledged and retry next minute. A failed monitoring run also emits
 fallback when the VM or Discord is unavailable.
 
 Set repository variable `DISCORD_MONITORING_CHANNEL_ID` before merging. Chief
-needs View Channel and Send Messages there. The deploy workflow installs the
+needs View Channel, Send Messages, and Embed Links there. The deploy workflow installs the
 monitor and timer on existing VMs; the startup template installs them on new VMs.
 It validates the destination belongs to the configured guild before sending.
 

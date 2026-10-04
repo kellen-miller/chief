@@ -12,7 +12,7 @@
    ```
 
 7. Create a text channel named `chief-monitoring`, visible to everyone. Allow the
-   Chief role View Channel and Send Messages. Set repository Actions variable
+   Chief role View Channel, Send Messages, and Embed Links. Set repository Actions variable
    `DISCORD_MONITORING_CHANNEL_ID` to its ID; use the same value for Terraform's
    `discord_monitoring_channel_id`. Operational reports are posted by the host
    monitor; this channel never enters Chief's conversational memory.

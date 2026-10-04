@@ -152,20 +152,41 @@ def build_reports(snapshot, events, state, now, timezone):
         if diagnostic not in diagnostics and key in previous:
             problems[key] = previous[key]
 
-    changes = ["ALERT: " + text for key, text in problems.items() if previous.get(key) != text]
-    changes += ["RECOVERED: " + key for key in previous if key not in problems]
+    alerts = [text for key, text in problems.items() if previous.get(key) != text]
+    recovered = [key.replace("-", " ").capitalize() for key in previous if key not in problems]
+    errors = []
     error_alerts = state.get("error_alerts", {}).copy()
     counts = state.get("error_counts", {}).copy()
     for event, count in sorted(events.items()):
         counts[event] = counts.get(event, 0) + count
         if now - error_alerts.get(event, 0) >= 3600:
-            changes.append(f"ERROR: {event} ({count} observed; repeats throttled for 1 hour)")
+            errors.append(f"`{event}` · {count} observed")
             error_alerts[event] = now
 
     messages = []
-    if changes:
-        text = "Chief monitoring\n" + "\n".join(changes)
-        messages += [text[index:index + 1900] for index in range(0, len(text), 1900)]
+    timestamp = dt.datetime.fromtimestamp(now, dt.timezone.utc).isoformat()
+    # Bound each section to Discord's field limit; never split an event name.
+    sections = []
+    for title, lines in (("⚠️ Needs attention", alerts), ("✅ Recovered", recovered),
+                         ("🔎 Errors observed", errors)):
+        value = ""
+        for line in lines:
+            if len(value) + len(line) + 1 > 1024:
+                sections.append({"name": title, "value": value})
+                value = ""
+
+            value += ("\n" if value else "") + line
+
+        if value:
+            sections.append({"name": title, "value": value})
+
+    if sections:
+        messages.append({"embeds": [{
+            "title": "Chief · Needs attention" if alerts or errors else "Chief · Recovered",
+            "color": 0xED4245 if alerts else (0xFEE75C if errors else 0x57F287),
+            "fields": sections, "timestamp": timestamp,
+            "footer": {"text": "Chief monitoring · Repeat errors limited to once per hour"},
+        }], "allowed_mentions": {"parse": []}})
 
     report_date = state.get("report_date")
     if local.hour >= 9 and report_date != local.date().isoformat():
@@ -180,19 +201,24 @@ def build_reports(snapshot, events, state, now, timezone):
         lag = context.get("ageSecondsByTier", {})
         usage_text = (f"${number(usage.get('actualUsd')):.4f} spent + ${number(usage.get('reservedUsd')):.4f} reserved / ${ceiling:.2f}"
                       if usage else "unavailable")
-        messages.append("\n".join([
-            f"Chief daily report — {local.date().isoformat()} ({timezone})",
-            "Health: " + ("ready" if health.get("ready") is True else "NOT READY"),
-            "Problems: " + ("; ".join(problems.values()) or "none"),
-            (f"Context: {int(number(context.get('pendingJobs')))} pending / {int(number(context.get('failedJobs')))} failed jobs" if context else "Context: unavailable"),
-            (f"Memory: {int(number(memory.get('pending')))} pending / {int(number(memory.get('failed')))} failed jobs" if memory else "Memory: unavailable"),
-            ("Context lag: " + ", ".join(f"{tier} {number(lag.get(tier)) / 3600:.1f}h" for tier in ("hourly", "daily", "weekly", "long-term")) if lag else "Context lag: unavailable"),
-            "AI usage (UTC month): " + usage_text,
-            "Latest backup: " + ("OK" if snapshot["backup_ok"] else "PROBLEM") + f"; age {backup_age}",
-            "Disk free: " + ", ".join(f"{name} {free:.1f} GiB" for name, free in snapshot["disk_free_gib"].items()),
-            "Models: " + "; ".join(model_names),
-            f"Errors observed since previous report: {sum(counts.values())}",
-        ]))
+        messages.append({"embeds": [{
+            "title": "Chief · Daily report",
+            "description": "⚠️ " + "\n⚠️ ".join(problems.values()) if problems else "✅ All systems healthy",
+            "color": 0xED4245 if problems else 0x57F287,
+            "fields": [
+                {"name": "Health", "value": "Ready" if health.get("ready") is True else "Not ready", "inline": True},
+                {"name": "Context jobs", "value": f"{int(number(context.get('pendingJobs')))} pending · {int(number(context.get('failedJobs')))} failed" if context else "Unavailable", "inline": True},
+                {"name": "Memory jobs", "value": f"{int(number(memory.get('pending')))} pending · {int(number(memory.get('failed')))} failed" if memory else "Unavailable", "inline": True},
+                {"name": "AI usage (UTC month)", "value": usage_text, "inline": True},
+                {"name": "Latest backup", "value": ("✅ OK" if snapshot["backup_ok"] else "⚠️ Check backup") + f" · {backup_age} ago", "inline": True},
+                {"name": "Disk free", "value": "\n".join(f"{name.capitalize()}: {free:.1f} GiB" for name, free in snapshot["disk_free_gib"].items()), "inline": True},
+                {"name": "Context lag", "value": " · ".join(f"{tier} {number(lag.get(tier)) / 3600:.1f}h" for tier in ("hourly", "daily", "weekly", "long-term")) if lag else "Unavailable"},
+                {"name": "Models", "value": "\n".join(model_names)},
+                {"name": "Errors since previous report", "value": str(sum(counts.values()))},
+            ],
+            "timestamp": timestamp,
+            "footer": {"text": f"Chief monitoring · Daily at 9 AM · {timezone}"},
+        }], "allowed_mentions": {"parse": []}})
         report_date = local.date().isoformat()
         counts = {}
 
@@ -223,7 +249,7 @@ def main():
             raise ValueError("monitoring channel is outside the configured guild")
 
         for message in messages:
-            body = json.dumps({"content": message, "allowed_mentions": {"parse": []}}).encode()
+            body = json.dumps(message).encode()
             with urllib.request.urlopen(urllib.request.Request(channel_url + "/messages", data=body, headers=headers), timeout=10):
                 pass
 
