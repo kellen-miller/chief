@@ -36,7 +36,10 @@ readiness, context backlog/lag, UTC-month AI spending and reservations, model
 names, disk space, backup status, and observed error counts. No LLM calls are used.
 
 Alerts report changed health, context, backup, disk, and budget problems and their
-recovery. Only allowlisted error event names and aggregate counts are forwarded
+recovery. Discord disconnections must persist across checks for at least one
+minute before alerting; routine reconnect/resume events stay in local logs and
+are excluded from error reports. Gateway and shard errors still alert immediately.
+Only allowlisted error event names and aggregate counts are forwarded
 from Docker/journald; repeated events are throttled for one hour. Prompts,
 transcripts, raw errors, provider payloads, and secrets never enter reports.
 Delivery receipts persist in `/var/lib/chief/monitoring.json`; failed Discord sends

@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 ERROR_EVENTS = frozenset({
     "background_worker_failed", "memory_maintenance_failed",
     "context_forget_journal_upload_failed", "discord_command_failed",
-    "discord_gateway_error", "discord_shard_error", "discord_shard_reconnecting",
+    "discord_gateway_error", "discord_shard_error",
     "discord_message_failed", "discord_message_update_failed",
     "discord_message_delete_failed", "discord_partial_message_retryable",
     "discord_reconciliation_failed", "discord_reconciliation_incomplete",
@@ -111,10 +111,23 @@ def build_reports(snapshot, events, state, now, timezone):
     memory = diagnostics.get("memoryJobs", {})
     checks = health.get("criticalChecks", {})
     problems = {}
+    discord_unready_since = None
+    if checks.get("discord") is False:
+        discord_unready_since = state.get("discord_unready_since")
+        if discord_unready_since is None:
+            discord_unready_since = now
+
     if health.get("ready") is not True:
         failed = [name for name in ("database", "discord", "disk", "maintenance")
                   if checks.get(name) is False]
-        problems["health"] = "Not ready: " + ", ".join(failed) if failed else "Health/readiness unavailable"
+        if "discord" in failed and now - discord_unready_since < 60:
+            failed.remove("discord")
+
+        if failed:
+            problems["health"] = "Not ready: " + ", ".join(failed)
+        elif not (checks.get("discord") is False and all(
+                checks.get(name) is True for name in ("database", "disk", "maintenance"))):
+            problems["health"] = "Health/readiness unavailable"
 
     if context.get("degraded") is True:
         reason = context.get("reason")
@@ -225,6 +238,7 @@ def build_reports(snapshot, events, state, now, timezone):
     return messages, {
         "problems": problems, "error_alerts": error_alerts, "error_counts": counts,
         "report_date": report_date, "cursor": now,
+        "discord_unready_since": discord_unready_since,
     }
 
 
