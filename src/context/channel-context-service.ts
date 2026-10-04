@@ -723,7 +723,8 @@ export class ChannelContextService {
           `select min(freshness_deadline) from context_jobs
            where not_before <= ?
              and (status = 'pending'
-               or (status = 'leased' and lease_expires_at <= ?))
+               or (status = 'leased' and lease_expires_at <= ?)
+               or (status = 'failed' and last_error_category = 'provider'))
              and not exists(
                select 1 from context_accounting_holds h
                where h.job_id = context_jobs.id
@@ -1191,7 +1192,8 @@ export class ChannelContextService {
            from context_jobs
            where not_before <= ?
              and (status = 'pending'
-               or (status = 'leased' and lease_expires_at <= ?))
+               or (status = 'leased' and lease_expires_at <= ?)
+               or (status = 'failed' and last_error_category = 'provider'))
              and not exists(
                select 1 from context_accounting_holds h
                where h.job_id = context_jobs.id
@@ -2207,6 +2209,8 @@ function nextUtcMonth(timestamp: number): number {
 }
 
 function retryDelay(attemptCount: number): number {
+  if (attemptCount >= DEFAULT_MAX_ATTEMPTS) return 24 * 60 * 60 * 1_000;
+
   return Math.min(3_600_000, 1_000 * 2 ** Math.max(0, attemptCount - 1));
 }
 

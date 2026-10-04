@@ -296,6 +296,24 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     }),
     diagnostics: () =>
       Promise.resolve({
+        memoryJobs: database
+          .prepare(
+            `select
+               count(*) filter (where status = 'failed') as failed,
+               count(*) filter (where status in ('pending', 'leased')) as pending
+             from memory_jobs`,
+          )
+          .get() as { readonly failed: number; readonly pending: number },
+        models: {
+          text: config.models.text,
+          memory: config.models.memory,
+          voice: config.models.voice,
+        },
+        usage: {
+          ...budget.snapshot(),
+          ceilingUsd: config.usage.ceilingUsd,
+          warningUsd: config.usage.warningUsd,
+        },
         context: contextHealthDiagnostics(
           context.status(Date.now()),
           reconciliation?.diagnostics().lagMs ?? null,

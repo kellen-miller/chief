@@ -5,6 +5,7 @@ locals {
     "chief_budget_warning",
     "chief_disk_low",
     "chief_health_failed",
+    "chief_monitoring_failed",
     "chief_recovery_failed",
     "chief_voice_underrun",
   ])
@@ -294,6 +295,9 @@ resource "google_compute_instance" "chief" {
       discord_guild_id                  = var.discord_guild_id
       discord_text_channel_id           = var.discord_text_channel_id
       discord_voice_channel_id          = var.discord_voice_channel_id
+      discord_monitoring_channel_id     = var.discord_monitoring_channel_id
+      monitor_script                    = file("${path.module}/../../scripts/monitor.py")
+      install_monitoring_script         = file("${path.module}/../../scripts/install-monitoring.sh")
       project_id                        = var.project_id
       run_container_script              = file("${path.module}/../../scripts/run-container.sh")
       usage_indexing_ceiling_usd        = var.usage_indexing_ceiling_usd

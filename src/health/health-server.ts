@@ -1,5 +1,7 @@
 import { createServer, type Server } from 'node:http';
 
+import type { UsageSnapshot } from '../usage/usage-budget.js';
+
 export type ContextDiagnosticReason =
   'backlog' | 'indexing-budget' | 'overall-budget' | 'provider' | 'run-budget';
 
@@ -26,6 +28,19 @@ export interface HealthCriticalChecks {
 
 export interface HealthDiagnostics {
   readonly context?: ContextHealthDiagnostics;
+  readonly memoryJobs?: {
+    readonly failed: number;
+    readonly pending: number;
+  };
+  readonly models?: {
+    readonly text: string;
+    readonly memory: string;
+    readonly voice: string;
+  };
+  readonly usage?: UsageSnapshot & {
+    readonly ceilingUsd: number;
+    readonly warningUsd: number;
+  };
 }
 
 interface ContextStatusInput {

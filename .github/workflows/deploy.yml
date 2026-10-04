@@ -25,6 +25,7 @@ jobs:
       TF_VAR_discord_guild_id: ${{ vars.DISCORD_GUILD_ID }}
       TF_VAR_discord_text_channel_id: ${{ vars.DISCORD_MAIN_TEXT_CHANNEL_ID }}
       TF_VAR_discord_voice_channel_id: ${{ vars.DISCORD_MAIN_VOICE_CHANNEL_ID }}
+      TF_VAR_discord_monitoring_channel_id: ${{ vars.DISCORD_MONITORING_CHANNEL_ID }}
       TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
       TF_VAR_region: ${{ vars.GCP_REGION }}
       TF_VAR_zone: ${{ vars.GCP_ZONE }}
@@ -80,7 +81,7 @@ jobs:
 
       - name: Install deployment transaction
         run: |
-          gcloud compute scp scripts/configure-google-cloud-apt.sh scripts/deploy.sh scripts/run-container.sh \
+          gcloud compute scp scripts/configure-google-cloud-apt.sh scripts/deploy.sh scripts/run-container.sh scripts/monitor.py scripts/install-monitoring.sh \
             "chief:/tmp/" \
             --project="${{ vars.GCP_PROJECT_ID }}" \
             --zone="${{ vars.GCP_ZONE }}" \
@@ -102,6 +103,12 @@ jobs:
             sudo /opt/chief/configure-google-cloud-apt.sh
             sudo install -m 0750 /tmp/run-container.sh /opt/chief/run-container.sh
             sudo install -m 0750 /tmp/deploy.sh /opt/chief/deploy.sh
+            sudo install -m 0750 /tmp/monitor.py /opt/chief/monitor.py
+            sudo install -m 0750 /tmp/install-monitoring.sh /opt/chief/install-monitoring.sh
+            sudo /opt/chief/install-monitoring.sh \
+              '${{ vars.DISCORD_MONITORING_CHANNEL_ID }}' \
+              '${{ vars.DISCORD_GUILD_ID }}' \
+              '${{ vars.GCP_PROJECT_ID }}'
             sudo /opt/chief/deploy.sh \
               --image '${{ steps.image.outputs.reference }}' \
               --backup-bucket '${{ vars.CHIEF_BACKUP_BUCKET }}'"

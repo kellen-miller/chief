@@ -28,6 +28,7 @@ jobs:
       TF_VAR_discord_guild_id: ${{ vars.DISCORD_GUILD_ID }}
       TF_VAR_discord_text_channel_id: ${{ vars.DISCORD_MAIN_TEXT_CHANNEL_ID }}
       TF_VAR_discord_voice_channel_id: ${{ vars.DISCORD_MAIN_VOICE_CHANNEL_ID }}
+      TF_VAR_discord_monitoring_channel_id: ${{ vars.DISCORD_MONITORING_CHANNEL_ID }}
       TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
       TF_VAR_region: ${{ vars.GCP_REGION }}
       TF_VAR_zone: ${{ vars.GCP_ZONE }}

@@ -13,6 +13,12 @@ Chief replies in the configured text channel only when directly mentioned or inv
   hourly, daily, weekly, and long-term historical context
 - One serialized paid-generation queue and a persistent UTC-month usage ledger
 - One GCP `e2-micro` VM with a durable standard disk, Artifact Registry, Secret Manager, GCS backups, and GitHub WIF deployment
+- Host-side Discord monitoring: daily reports at 09:00 Eastern and deduplicated
+  operational alerts, including when the bot process is unavailable
+
+Text, web research, memory extraction, and context summaries use `gpt-6-luna`.
+Voice uses `gpt-realtime-2.1-mini`; transcription and embeddings keep their
+dedicated models. Model aliases and matching prices remain configurable.
 
 SQLite is deliberate: Chief is a single process with a small private-server dataset. It avoids a second always-on database while still providing relational provenance, full-text search, vector ranking, online backup, and crash-safe jobs.
 
