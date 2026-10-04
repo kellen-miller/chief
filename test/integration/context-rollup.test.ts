@@ -380,6 +380,7 @@ describe('ChannelContextService rollups', () => {
       now: () => current,
       warningUsd: 5,
     });
+    const suppliedSourceIds: string[][] = [];
     const service = new ChannelContextService({
       budget,
       channelId,
@@ -394,8 +395,10 @@ describe('ChannelContextService rollups', () => {
       guildId,
       now: () => current,
       summarizer: {
-        summarize: (input) =>
-          Promise.resolve({
+        summarize: (input) => {
+          suppliedSourceIds.push(input.sources.map(({ id }) => id));
+
+          return Promise.resolve({
             confidence: 0.9,
             inputTokens: 20,
             outputTokens: 8,
@@ -415,7 +418,8 @@ describe('ChannelContextService rollups', () => {
                   ]
                 : [],
             usageUsd: 0.02,
-          }),
+          });
+        },
       },
       timeZone,
     });
@@ -542,6 +546,38 @@ describe('ChannelContextService rollups', () => {
       { status: 'completed', topicLabel: 'Project Juniper' },
       { status: 'pending', topicLabel: 'Project Marigold' },
     ]);
+    await expect(service.runNext(current)).resolves.toMatchObject({
+      status: 'completed',
+      tier: 'long-term',
+    });
+    const activeTopicId = database
+      .prepare(
+        "select id from context_documents where tier = 'long-term' and topic_label = 'Project Marigold' and state = 'active'",
+      )
+      .pluck()
+      .get() as number;
+    const weeklyId = database
+      .prepare(
+        "select id from context_documents where tier = 'weekly' and state = 'active'",
+      )
+      .pluck()
+      .get() as number;
+    database
+      .prepare(
+        "update context_jobs set status = 'failed', last_error_category = 'provider', attempt_count = 5, not_before = ? where tier = 'long-term' and topic_label = 'Project Marigold'",
+      )
+      .run(current);
+
+    await expect(service.runNext(current)).resolves.toMatchObject({
+      status: 'completed',
+      tier: 'long-term',
+    });
+    expect(suppliedSourceIds.at(-1)?.sort()).toEqual(
+      [
+        `document:${String(activeTopicId)}`,
+        `document:${String(weeklyId)}`,
+      ].sort(),
+    );
     database.close();
   });
 

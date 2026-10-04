@@ -94,6 +94,8 @@ class ChiefMonitoringTest(unittest.TestCase):
         snapshot["health"] = {}
         messages, receipt = monitor.build_reports(snapshot, {}, state, self.now, "America/New_York")
         self.assertNotIn("RECOVERED: context", "\n".join(messages))
+        self.assertIn("Health/readiness unavailable", "\n".join(messages))
+        self.assertNotIn("Not ready: database", "\n".join(messages))
         self.assertIn("AI usage (UTC month): unavailable", "\n".join(messages))
         self.assertEqual(receipt["problems"]["context"], state["problems"]["context"])
 

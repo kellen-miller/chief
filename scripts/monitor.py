@@ -113,8 +113,8 @@ def build_reports(snapshot, events, state, now, timezone):
     problems = {}
     if health.get("ready") is not True:
         failed = [name for name in ("database", "discord", "disk", "maintenance")
-                  if checks.get(name) is not True]
-        problems["health"] = "Not ready: " + ", ".join(failed)
+                  if checks.get(name) is False]
+        problems["health"] = "Not ready: " + ", ".join(failed) if failed else "Health/readiness unavailable"
 
     if context.get("degraded") is True:
         reason = context.get("reason")
