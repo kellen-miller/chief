@@ -1274,10 +1274,15 @@ export class ChannelContextService {
     const placeholders = ids.map(() => '?').join(', ');
     return this.#database
       .prepare(
-        `select 'document:' || id as id, summary as text
-         from context_documents
-         where id in (${placeholders}) and content_state = 'available'
-         order by period_start, id`,
+        `select distinct 'document:' || current.id as id, current.summary as text
+         from context_documents configured
+         join context_documents current
+           on current.document_key = configured.document_key
+         where configured.id in (${placeholders})
+           and configured.state in ('active', 'superseded')
+           and configured.content_state = 'available'
+           and current.state = 'active' and current.content_state = 'available'
+         order by current.period_start, current.id`,
       )
       .all(...ids) as ContextSummarySource[];
   }
