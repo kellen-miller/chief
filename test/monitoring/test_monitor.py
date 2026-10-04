@@ -35,7 +35,10 @@ class ChiefMonitoringTest(unittest.TestCase):
         self.assertEqual(messages, [])
         messages, state = monitor.build_reports(self.snapshot, {}, state, self.now, "America/New_York")
         self.assertEqual(len(messages), 1)
-        self.assertIn("$1.0000 spent + $0.2000 reserved / $10.00", messages[0])
+        self.assertIn("$1.0000 spent + $0.2000 reserved / $10.00", json.dumps(messages[0]))
+        self.assertEqual(messages[0]["allowed_mentions"], {"parse": []})
+        self.assertEqual(messages[0]["embeds"][0]["color"], 0x57F287)
+        self.assertEqual(messages[0]["embeds"][0]["timestamp"], "2026-10-04T13:00:00+00:00")
         restored = json.loads(json.dumps(state))
         self.assertEqual(monitor.build_reports(self.snapshot, {}, restored, self.now + 60, "America/New_York")[0], [])
         winter = int(dt.datetime.fromisoformat("2026-11-02T14:00:00+00:00").timestamp())
@@ -51,12 +54,13 @@ class ChiefMonitoringTest(unittest.TestCase):
         broken["backup_ok"] = False
         broken["disk_free_gib"]["boot"] = 0.1
         messages, state = monitor.build_reports(broken, {}, {}, self.now - 3600, "America/New_York")
-        text = "\n".join(messages)
+        text = json.dumps(messages)
         for expected in ("Not ready: discord", "provider; 6 failed jobs", "Backup failed", "budget ceiling", "0.5 GiB"):
             self.assertIn(expected, text)
         self.assertEqual(monitor.build_reports(broken, {}, state, self.now - 3500, "America/New_York")[0], [])
         recovered, state = monitor.build_reports(self.snapshot, {}, state, self.now - 3400, "America/New_York")
-        self.assertIn("RECOVERED: context", recovered[0])
+        self.assertIn("Context", json.dumps(recovered[0]))
+        self.assertEqual(recovered[0]["embeds"][0]["color"], 0x57F287)
         self.assertEqual(monitor.build_reports(self.snapshot, {}, state, self.now - 3300, "America/New_York")[0], [])
 
     def test_log_payloads_never_reach_discord_and_repeat_errors_are_throttled(self):
@@ -72,11 +76,11 @@ class ChiefMonitoringTest(unittest.TestCase):
         snapshot["health"]["diagnostics"]["context"].update(degraded=True, reason="PRIVATE")
         snapshot["health"]["diagnostics"]["models"]["text"] = "SECRET @everyone"
         messages, state = monitor.build_reports(snapshot, events, {}, self.now, "America/New_York")
-        self.assertNotIn("PRIVATE", "\n".join(messages))
-        self.assertNotIn("SECRET", "\n".join(messages))
+        self.assertNotIn("PRIVATE", json.dumps(messages))
+        self.assertNotIn("SECRET", json.dumps(messages))
         self.assertEqual(monitor.build_reports(snapshot, events, state, self.now + 60, "America/New_York")[0], [])
         messages, state = monitor.build_reports(snapshot, events, state, self.now + 3600, "America/New_York")
-        self.assertIn("discord_message_failed", messages[0])
+        self.assertIn("discord_message_failed", json.dumps(messages[0]))
 
     def test_http_503_retains_critical_checks(self):
         error = monitor.urllib.error.HTTPError("http://localhost", 503, "unavailable", {}, None)
@@ -93,10 +97,10 @@ class ChiefMonitoringTest(unittest.TestCase):
         snapshot = copy.deepcopy(self.snapshot)
         snapshot["health"] = {}
         messages, receipt = monitor.build_reports(snapshot, {}, state, self.now, "America/New_York")
-        self.assertNotIn("RECOVERED: context", "\n".join(messages))
-        self.assertIn("Health/readiness unavailable", "\n".join(messages))
-        self.assertNotIn("Not ready: database", "\n".join(messages))
-        self.assertIn("AI usage (UTC month): unavailable", "\n".join(messages))
+        self.assertNotIn("✅ Recovered", [field["name"] for message in messages for embed in message["embeds"] for field in embed["fields"]])
+        self.assertIn("Health/readiness unavailable", json.dumps(messages))
+        self.assertNotIn("Not ready: database", json.dumps(messages))
+        self.assertIn("unavailable", json.dumps(messages))
         self.assertEqual(receipt["problems"]["context"], state["problems"]["context"])
 
     def test_delivery_failure_does_not_acknowledge_report(self):
@@ -111,7 +115,7 @@ class ChiefMonitoringTest(unittest.TestCase):
                  patch.object(monitor, "collect_snapshot", return_value=self.snapshot), \
                  patch.object(monitor, "collect_errors", return_value={}), \
                  patch.object(monitor, "command", return_value="SECRET"), \
-                 patch.object(monitor, "build_reports", return_value=(["report"], {"report_date": "2026-10-04"})), \
+                 patch.object(monitor, "build_reports", return_value=([{"embeds": [{"title": "Report"}]}], {"report_date": "2026-10-04"})), \
                  patch.object(monitor.urllib.request, "urlopen", side_effect=OSError("SECRET")):
                 with self.assertRaises(OSError):
                     monitor.main()
