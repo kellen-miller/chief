@@ -53,7 +53,7 @@ class ChiefMonitoringTest(unittest.TestCase):
         broken["health"]["diagnostics"]["usage"]["actualUsd"] = 10
         broken["backup_ok"] = False
         broken["disk_free_gib"]["boot"] = 0.1
-        messages, state = monitor.build_reports(broken, {}, {}, self.now - 3600, "America/New_York")
+        messages, state = monitor.build_reports(broken, {}, {"discord_unready_since": self.now - 3660}, self.now - 3600, "America/New_York")
         text = json.dumps(messages)
         for expected in ("Not ready: discord", "provider; 6 failed jobs", "Backup failed", "budget ceiling", "0.5 GiB"):
             self.assertIn(expected, text)
@@ -81,6 +81,36 @@ class ChiefMonitoringTest(unittest.TestCase):
         self.assertEqual(monitor.build_reports(snapshot, events, state, self.now + 60, "America/New_York")[0], [])
         messages, state = monitor.build_reports(snapshot, events, state, self.now + 3600, "America/New_York")
         self.assertIn("discord_message_failed", json.dumps(messages[0]))
+
+    def test_routine_reconnects_are_not_errors(self):
+        logs = "\n".join(json.dumps({"msg": event}) for event in (
+            "discord_shard_reconnecting", "discord_shard_resumed",
+            "discord_gateway_error", "discord_shard_error",
+        ))
+        with patch.object(monitor, "command", side_effect=[logs, ""]):
+            events = monitor.collect_errors(self.now - 60, self.now)
+        self.assertEqual(events, {"discord_gateway_error": 1, "discord_shard_error": 1})
+
+    def test_discord_disconnect_alert_requires_one_minute_and_recovers(self):
+        offline = copy.deepcopy(self.snapshot)
+        offline["health"]["ready"] = False
+        offline["health"]["criticalChecks"]["discord"] = False
+        start = self.now - 3600
+        messages, state = monitor.build_reports(offline, {}, {}, start, "America/New_York")
+        self.assertEqual(messages, [])
+        resumed, receipt = monitor.build_reports(self.snapshot, {}, state, start + 2, "America/New_York")
+        self.assertEqual(resumed, [])
+        self.assertIsNone(receipt["discord_unready_since"])
+        messages, state = monitor.build_reports(offline, {}, state, start + 59, "America/New_York")
+        self.assertEqual(messages, [])
+        messages, state = monitor.build_reports(offline, {}, state, start + 60, "America/New_York")
+        self.assertIn("Not ready: discord", json.dumps(messages))
+        messages, state = monitor.build_reports(self.snapshot, {}, state, start + 61, "America/New_York")
+        self.assertIn("Health", json.dumps(messages))
+        self.assertIsNone(state["discord_unready_since"])
+        offline["health"]["criticalChecks"]["database"] = False
+        messages, _ = monitor.build_reports(offline, {}, state, start + 62, "America/New_York")
+        self.assertIn("Not ready: database", json.dumps(messages))
 
     def test_http_503_retains_critical_checks(self):
         error = monitor.urllib.error.HTTPError("http://localhost", 503, "unavailable", {}, None)
