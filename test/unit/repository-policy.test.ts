@@ -142,7 +142,7 @@ describe('repository policy', () => {
     expect(deploy).toContain('--recurse src/ops');
     expect(deploy).toContain('scripts/configure-google-cloud-apt.sh');
     expect(deploy).toContain(
-      'install -m 0640 /tmp/chief-ops-${GITHUB_SHA}/*.ts /opt/chief/ops/',
+      'install -m 0640 /tmp/chief-ops-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/*.ts /opt/chief/ops/',
     );
     expect(deploy).toContain(
       'install -m 0750 /tmp/configure-google-cloud-apt.sh /opt/chief/configure-google-cloud-apt.sh',

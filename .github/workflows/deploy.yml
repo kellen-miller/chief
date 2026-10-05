@@ -91,7 +91,7 @@ jobs:
             --zone="${{ vars.GCP_ZONE }}" \
             --tunnel-through-iap --quiet
           gcloud compute scp --recurse src/ops \
-            "chief:/tmp/chief-ops-${GITHUB_SHA}" \
+            "chief:/tmp/chief-ops-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --project="${{ vars.GCP_PROJECT_ID }}" \
             --zone="${{ vars.GCP_ZONE }}" \
             --tunnel-through-iap --quiet
@@ -113,7 +113,7 @@ jobs:
             sudo install -m 0750 /tmp/install-node.sh /opt/chief/install-node.sh
             sudo /opt/chief/install-node.sh
             sudo install -d -m 0750 /opt/chief/ops
-            sudo install -m 0640 /tmp/chief-ops-${GITHUB_SHA}/*.ts /opt/chief/ops/
+            sudo install -m 0640 /tmp/chief-ops-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/*.ts /opt/chief/ops/
             sudo /opt/chief/node/bin/node /opt/chief/ops/cli.ts install-services
             sudo /opt/chief/node/bin/node /opt/chief/ops/cli.ts install-monitoring \
               '${{ vars.DISCORD_MONITORING_CHANNEL_ID }}' \
