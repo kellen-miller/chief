@@ -40,7 +40,7 @@ it after readiness or rollback. Expected health outages and their log events do
 not generate outage/recovery notifications; daily reports wait until deployment
 finishes. Disk, backup, and real error alerts remain enabled. Failed deployments
 and maintenance lasting over 15 minutes alert normally, including abandoned runs.
-The window is recorded in `/run/chief/deployment-monitoring.json`.
+The window is recorded in `/var/lib/chief/deployment-monitoring.json`.
 
 Alerts report changed health, context, backup, disk, and budget problems and their
 recovery. Discord disconnections must persist across checks for at least one
