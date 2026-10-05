@@ -77,7 +77,7 @@ sync_backup_bucket
 docker logout "$REGISTRY" >/dev/null 2>&1 || true
 install -d -m 0700 "$RUNTIME_DIR"
 DEPLOY_STARTED=""
-DEPLOY_MONITORING="$RUNTIME_DIR/deployment-monitoring.json"
+DEPLOY_MONITORING="$DATA_DIR/deployment-monitoring.json"
 DOCKER_CONFIG="$(mktemp -d "$RUNTIME_DIR/docker-config.XXXXXX")"
 export DOCKER_CONFIG
 cleanup() {

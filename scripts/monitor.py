@@ -71,7 +71,7 @@ def collect_snapshot(now):
         backup_at = 0
 
     try:
-        deployment = json.loads(Path("/run/chief/deployment-monitoring.json").read_text())
+        deployment = json.loads(Path("/var/lib/chief/deployment-monitoring.json").read_text())
         if not isinstance(deployment, dict):
             deployment = {}
     except (OSError, ValueError):

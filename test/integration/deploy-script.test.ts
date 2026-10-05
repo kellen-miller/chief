@@ -39,14 +39,12 @@ describe('deploy transaction', () => {
       'migrated',
     );
     const maintenance = JSON.parse(
-      await readFile(
-        join(fixture.runtime, 'deployment-monitoring.json'),
-        'utf8',
-      ),
+      await readFile(join(fixture.data, 'deployment-monitoring.json'), 'utf8'),
     ) as { started: number; ended: number; status: string };
     expect(maintenance.status).toBe(result.code === 0 ? 'completed' : 'failed');
     expect(maintenance.ended).toBeGreaterThanOrEqual(maintenance.started);
     const commands = await readFile(fixture.commandLog, 'utf8');
+    expect(commands).toContain('maintenance-active-after-runtime-removal');
     expect(commands.indexOf('docker logout')).toBeGreaterThanOrEqual(0);
     expect(commands.indexOf('docker logout')).toBeLessThan(
       commands.indexOf('docker login'),
@@ -89,10 +87,7 @@ describe('deploy transaction', () => {
       'original',
     );
     const maintenance = JSON.parse(
-      await readFile(
-        join(fixture.runtime, 'deployment-monitoring.json'),
-        'utf8',
-      ),
+      await readFile(join(fixture.data, 'deployment-monitoring.json'), 'utf8'),
     ) as { started: number; ended: number; status: string };
     expect(maintenance.status).toBe(result.code === 0 ? 'completed' : 'failed');
     expect(maintenance.ended).toBeGreaterThanOrEqual(maintenance.started);
@@ -230,7 +225,20 @@ esac
 `,
   );
   await executable(join(bin, 'gcloud'), '#!/usr/bin/env bash\nprintf token\n');
-  await executable(join(bin, 'systemctl'), '#!/usr/bin/env bash\nexit 0\n');
+  await executable(
+    join(bin, 'systemctl'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == stop ]]; then
+  rm -rf "$CHIEF_RUNTIME_DIR"
+  mkdir -p "$CHIEF_RUNTIME_DIR"
+  if grep -q '"status":"active"' "$CHIEF_DATA_DIR/deployment-monitoring.json"; then
+    printf 'maintenance-active-after-runtime-removal\\n' >>"$COMMAND_LOG"
+  fi
+fi
+exit 0
+`,
+  );
   await executable(join(bin, 'sleep'), '#!/usr/bin/env bash\nexit 0\n');
   await executable(
     join(bin, 'curl'),
