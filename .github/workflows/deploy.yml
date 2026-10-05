@@ -47,6 +47,10 @@ jobs:
         with:
           terraform_version: 1.15.8
 
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
+
       - name: Plan and apply the merged commit
         working-directory: infra/app
         run: |
@@ -81,8 +85,13 @@ jobs:
 
       - name: Install deployment transaction
         run: |
-          gcloud compute scp scripts/configure-google-cloud-apt.sh scripts/deploy.sh scripts/run-container.sh scripts/monitor.py scripts/install-monitoring.sh \
+          gcloud compute scp scripts/configure-google-cloud-apt.sh scripts/install-node.sh \
             "chief:/tmp/" \
+            --project="${{ vars.GCP_PROJECT_ID }}" \
+            --zone="${{ vars.GCP_ZONE }}" \
+            --tunnel-through-iap --quiet
+          gcloud compute scp --recurse src/ops \
+            "chief:/tmp/chief-ops-${GITHUB_SHA}" \
             --project="${{ vars.GCP_PROJECT_ID }}" \
             --zone="${{ vars.GCP_ZONE }}" \
             --tunnel-through-iap --quiet
@@ -92,24 +101,25 @@ jobs:
             --tunnel-through-iap --quiet \
             --command="set -e
             for _ in \$(seq 1 60); do
-              sudo test -x /opt/chief/run-container.sh && break
+              sudo test -f /etc/systemd/system/chief.service && break
               sleep 5
             done
-            if ! sudo test -x /opt/chief/run-container.sh; then
+            if ! sudo test -f /etc/systemd/system/chief.service; then
               sudo journalctl -u google-startup-scripts.service --no-pager --lines=100
               exit 1
             fi
             sudo install -m 0750 /tmp/configure-google-cloud-apt.sh /opt/chief/configure-google-cloud-apt.sh
             sudo /opt/chief/configure-google-cloud-apt.sh
-            sudo install -m 0750 /tmp/run-container.sh /opt/chief/run-container.sh
-            sudo install -m 0750 /tmp/deploy.sh /opt/chief/deploy.sh
-            sudo install -m 0750 /tmp/monitor.py /opt/chief/monitor.py
-            sudo install -m 0750 /tmp/install-monitoring.sh /opt/chief/install-monitoring.sh
-            sudo /opt/chief/install-monitoring.sh \
+            sudo install -m 0750 /tmp/install-node.sh /opt/chief/install-node.sh
+            sudo /opt/chief/install-node.sh
+            sudo install -d -m 0750 /opt/chief/ops
+            sudo install -m 0640 /tmp/chief-ops-${GITHUB_SHA}/*.ts /opt/chief/ops/
+            sudo /opt/chief/node/bin/node /opt/chief/ops/cli.ts install-services
+            sudo /opt/chief/node/bin/node /opt/chief/ops/cli.ts install-monitoring \
               '${{ vars.DISCORD_MONITORING_CHANNEL_ID }}' \
               '${{ vars.DISCORD_GUILD_ID }}' \
               '${{ vars.GCP_PROJECT_ID }}'
-            sudo /opt/chief/deploy.sh \
+            sudo /opt/chief/node/bin/node /opt/chief/ops/cli.ts deploy \
               --image '${{ steps.image.outputs.reference }}' \
               --backup-bucket '${{ vars.CHIEF_BACKUP_BUCKET }}'"
 

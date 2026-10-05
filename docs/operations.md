@@ -167,7 +167,7 @@ immutable target-image capability label. A current-schema database is refused
 for an older or unlabeled target image:
 
 ```bash
-sudo /opt/chief/restore.sh IMAGE@sha256:DIGEST /var/lib/chief/backups/KNOWN.db /var/lib/chief/chief.db
+sudo /opt/chief/node/bin/node /opt/chief/ops/cli.ts restore IMAGE@sha256:DIGEST /var/lib/chief/backups/KNOWN.db /var/lib/chief/chief.db
 ```
 
 Run `scripts/restore-drill.sh` against a scratch directory before relying on a new backup path. A local fake rollback test proves control flow; only an owner-run GCP drill proves actual IAP, disk, bucket, and five-minute recovery behavior.
@@ -181,7 +181,7 @@ file, and records each generation plus checksum in its mode-0600 receipt. It
 then replays them idempotently through `RECOVERY_IMAGE`, verifies the database,
 checks the target-image capability, and only then reads secrets and starts
 `IMAGE`. An older image remains valid only with its compatible pre-migration
-database. Never bypass `/opt/chief/run-container.sh` after replacing a file.
+database. Never bypass `/opt/chief/node/bin/node /opt/chief/ops/cli.ts run-container` after replacing a file.
 
 Local `pre-deploy/*.db`, `chief.db.failed.*`, and bucket backups are encrypted at
 rest but can contain logically plaintext bytes forgotten after they were
@@ -232,3 +232,29 @@ failure leaves the existing application available and fails the deployment.
 - To forget memory or historical context, ask Chief naturally. A successful acknowledgement states that active/searchable state is gone and older encrypted recovery bytes can remain for at most 30 days. Discord source messages are not deleted.
 
 Do not use `terraform force-unlock` until the owning process or CI run is proven dead. Preserve the lock ID and incident evidence.
+
+## Host operations
+
+The VM runs `/opt/chief/node/bin/node /opt/chief/ops/cli.ts COMMAND` independently
+of Chief's container. Commands include `deploy`, `run-container`, `backup`,
+`restore`, `restore-drill`, `monitor`, `health-watchdog`, and `prune-recovery`.
+The TypeScript source has only Node built-in dependencies and runs with native
+Node.js 24 type stripping; no pnpm/npm installation is required on the host.
+
+Deployment installs the checksum-pinned Node runtime and all operations sources,
+updates existing systemd entrypoints, then executes the deployment transaction.
+New hosts receive the same source and runtime through Terraform's startup
+metadata. Monitoring remains a separate one-shot service/timer and never depends
+on the bot's process or database modules.
+
+Local `scripts/*.sh` operational commands remain four-line forwarders using Node
+24 or later. `CHIEF_OPS_NODE` selects a local Node executable if needed. Host
+commands use argument arrays instead of evaluating shell/env-file expressions.
+Deployment credentials use a private temporary directory on the durable data
+filesystem so stopping `chief.service` cannot erase Docker authentication; the
+transaction removes that directory on completion or failure.
+
+To change ordinary database queries, edit `sql/queries.sql`, then run
+`pnpm generate:sql` with sqlc 1.31.1 before `pnpm verify`. Never edit generated
+schema/statements. Migration execution and recovery checks remain in
+`src/memory/database.ts` and `src/memory/recovery.ts`.

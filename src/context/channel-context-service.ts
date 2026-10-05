@@ -1,3 +1,4 @@
+import * as queries from '../database/queries.js';
 import { createHash, randomBytes } from 'node:crypto';
 
 import type Database from 'better-sqlite3';
@@ -604,11 +605,9 @@ export class ChannelContextService {
       throw new Error('delivered replies require Discord message snowflakes');
     }
     this.#database.transaction(() => {
-      const existingOccurredAt = this.#database
-        .prepare(
-          `select min(occurred_at) from conversation_events
-           where guild_id = ? and channel_id = ?
-             and logical_response_id = ?`,
+      const existingOccurredAt = queries
+        .channelContextRecordDeliveredReplySelectConversationEvents(
+          this.#database,
         )
         .pluck()
         .get(this.#guildId, this.#channelId, input.logicalResponseId) as
@@ -634,17 +633,9 @@ export class ChannelContextService {
           input.logicalResponseId,
         );
         if (applied.eventId !== null && applied.status !== 'suppressed') {
-          this.#database
-            .prepare(
-              `update conversation_events set
-                 request_id = case when logical_response_id is null
-                                   then ? else request_id end,
-                 reply_to_message_id = case when logical_response_id is null
-                                            then ? else reply_to_message_id end,
-                 logical_response_id = coalesce(logical_response_id, ?),
-                 response_chunk_index = ?,
-                 platform_event_id = ?
-               where id = ? and role = 'chief'`,
+          queries
+            .channelContextRecordDeliveredReplyUpdateConversationEvents(
+              this.#database,
             )
             .run(
               input.requestId,
@@ -661,25 +652,18 @@ export class ChannelContextService {
 
   public maintain(now: number): { readonly deletedEvents: number } {
     return this.#database.transaction(() => {
-      const expiringIds = this.#database
-        .prepare(
-          `select id from conversation_events
-           where medium = 'text' and content_state = 'available'
-             and retention_deadline <= ?`,
-        )
+      const expiringIds = queries
+        .channelContextMaintainSelectConversationEvents(this.#database)
         .pluck()
-        .all(now) as number[];
+        .all(now);
       const result = this.#conversation.maintain(now);
       for (const eventId of expiringIds) {
         this.#invalidateEventJobs(eventId, true);
       }
-      const expiringDocumentIds = this.#database
-        .prepare(
-          `select id from context_documents
-           where content_state = 'available' and retention_deadline <= ?`,
-        )
+      const expiringDocumentIds = queries
+        .channelContextMaintainSelectContextDocuments(this.#database)
         .pluck()
-        .all(now) as number[];
+        .all(now);
       const deleteFts = this.#database.prepare(
         'delete from context_document_fts where rowid = ?',
       );
@@ -702,11 +686,8 @@ export class ChannelContextService {
           )
           .run(now, ...expiringDocumentIds);
       }
-      this.#database
-        .prepare(
-          `delete from context_deletion_requests
-           where status = 'pending' and expires_at <= ?`,
-        )
+      queries
+        .channelContextMaintainDeleteContextDeletionRequests(this.#database)
         .run(now);
       return result;
     })();
@@ -718,34 +699,16 @@ export class ChannelContextService {
   ): number | null {
     if (lane === 'backfill') return this.#backfill.nextDeadline();
     return (
-      (this.#database
-        .prepare(
-          `select min(freshness_deadline) from context_jobs
-           where not_before <= ?
-             and (status = 'pending'
-               or (status = 'leased' and lease_expires_at <= ?)
-               or (status = 'failed' and last_error_category = 'provider'))
-             and not exists(
-               select 1 from context_accounting_holds h
-               where h.job_id = context_jobs.id
-             )
-             and (backfill_run_id is null or exists(
-               select 1 from context_backfills b
-               where b.id = context_jobs.backfill_run_id
-                 and b.status = 'active'
-             ))`,
-        )
+      (queries
+        .channelContextNextDeadlineSelectContextJobs(this.#database)
         .pluck()
         .get(now, now) as number | null) ?? null
     );
   }
 
   public status(now: number): ContextStatus {
-    const backfillRows = this.#database
-      .prepare(
-        `select status, count(*) as count from context_backfills
-         where status in ('active', 'failed', 'paused') group by status`,
-      )
+    const backfillRows = queries
+      .channelContextStatusSelectContextBackfills(this.#database)
       .all() as { readonly count: number; readonly status: string }[];
     const backfillCounts = { active: 0, failed: 0, paused: 0 };
     for (const row of backfillRows) {
@@ -754,54 +717,37 @@ export class ChannelContextService {
       }
     }
     const pendingJobs = Number(
-      this.#database
-        .prepare(
-          `select count(*) from context_jobs
-           where status in ('pending', 'leased')`,
-        )
+      queries
+        .channelContextStatusSelectContextJobs(this.#database)
         .pluck()
         .get(),
     );
     const failedJobs = Number(
-      this.#database
-        .prepare(`select count(*) from context_jobs where status = 'failed'`)
+      queries
+        .channelContextStatusSelectContextJobs2(this.#database)
         .pluck()
         .get(),
     );
     const accountingHeld =
-      this.#database
-        .prepare('select exists(select 1 from context_accounting_holds)')
+      queries
+        .channelContextStatusSelectContextAccountingHolds(this.#database)
         .pluck()
         .get() === 1;
     const lagMsByTier = Object.fromEntries(
       (['hourly', 'daily', 'weekly', 'long-term'] as const).map((tier) => {
-        const deadline = this.#database
-          .prepare(
-            `select min(freshness_deadline) from context_jobs
-             where tier = ? and status != 'completed'
-               and freshness_deadline <= ?`,
-          )
+        const deadline = queries
+          .channelContextStatusSelectContextJobs3(this.#database)
           .pluck()
           .get(tier, now) as number | null;
         return [tier, deadline === null ? 0 : Math.max(0, now - deadline)];
       }),
     ) as Record<ContextTier, number>;
-    const overdue = this.#database
-      .prepare(
-        `select last_error_category as error
-         from context_jobs
-         where status != 'completed' and freshness_deadline <= ?
-         order by freshness_deadline, id limit 1`,
-      )
+    const overdue = queries
+      .channelContextStatusSelectContextJobs4(this.#database)
       .get(now) as { readonly error: string | null } | undefined;
     const journalPending =
-      this.#database
-        .prepare(
-          `select exists(
-             select 1 from context_forget_journal
-             where upload_status in ('pending', 'failed')
-           )`,
-        )
+      queries
+        .channelContextStatusSelectContextForgetJournal(this.#database)
         .pluck()
         .get() === 1;
     const reason = journalPending
@@ -852,10 +798,8 @@ export class ChannelContextService {
           throw error;
         }
       }
-      this.#database
-        .prepare(
-          `update context_jobs set usage_reservation_id = null where id = ?`,
-        )
+      queries
+        .channelContextRunNextUpdateContextJobs(this.#database)
         .run(job.id);
     }
     if (this.#provisionalObsolete(job, now)) {
@@ -904,8 +848,8 @@ export class ChannelContextService {
       }
       return { notBefore, reason, status: 'budget-deferred' };
     }
-    this.#database
-      .prepare(`update context_jobs set usage_reservation_id = ? where id = ?`)
+    queries
+      .channelContextRunNextUpdateContextJobs2(this.#database)
       .run(reservation.id, job.id);
 
     try {
@@ -920,11 +864,8 @@ export class ChannelContextService {
         embedded.usageUsd;
       if (usageUsd > reservation.reservedUsd) {
         budget.reconcileConservatively(reservation.id);
-        this.#database
-          .prepare(
-            `update context_jobs set usage_reservation_id = null
-             where id = ? and usage_reservation_id = ?`,
-          )
+        queries
+          .channelContextRunNextUpdateContextJobs3(this.#database)
           .run(job.id, reservation.id);
         this.#deferJob(
           job.id,
@@ -950,20 +891,14 @@ export class ChannelContextService {
         }
         const documentKey = job.jobKey.replace(/:(?:final|provisional)$/u, '');
         const revision =
-          ((this.#database
-            .prepare(
-              `select max(revision) from context_documents
-               where document_key = ?`,
-            )
+          ((queries
+            .channelContextRunNextSelectContextDocuments(this.#database)
             .pluck()
             .get(documentKey) as number | null) ?? 0) + 1;
-        const previousDocumentIds = this.#database
-          .prepare(
-            `select id from context_documents
-             where document_key = ? and state = 'active'`,
-          )
+        const previousDocumentIds = queries
+          .channelContextRunNextSelectContextDocuments2(this.#database)
           .pluck()
-          .all(documentKey) as number[];
+          .all(documentKey);
         this.#suppressDocumentDescendants(
           previousDocumentIds,
           'retention-expired',
@@ -974,11 +909,8 @@ export class ChannelContextService {
           const lineage = parseSourceLineage(segment.originalSourceIds);
           const segmentKey = `${documentKey}:segment:${String(index)}`;
           const segmentRevision =
-            ((this.#database
-              .prepare(
-                `select max(revision) from context_documents
-                 where document_key = ?`,
-              )
+            ((queries
+              .channelContextRunNextSelectContextDocuments3(this.#database)
               .pluck()
               .get(segmentKey) as number | null) ?? 0) + 1;
           return store.activateDocumentRevision({
@@ -1031,13 +963,8 @@ export class ChannelContextService {
           topicKey: job.topicKey,
           topicLabel: job.topicLabel,
         });
-        this.#database
-          .prepare(
-            `update context_jobs
-             set status = 'completed', lease_expires_at = null,
-                 usage_reservation_id = null, last_error_category = null
-             where id = ?`,
-          )
+        queries
+          .channelContextRunNextUpdateContextJobs4(this.#database)
           .run(job.id);
         if (job.completeness === 'final') {
           this.#scheduleDownstream(
@@ -1060,11 +987,8 @@ export class ChannelContextService {
       };
     } catch {
       budget.reconcileConservatively(reservation.id);
-      this.#database
-        .prepare(
-          `update context_jobs set usage_reservation_id = null
-           where id = ? and usage_reservation_id = ?`,
-        )
+      queries
+        .channelContextRunNextUpdateContextJobs5(this.#database)
         .run(job.id, reservation.id);
       const notBefore = now + retryDelay(job.attemptCount);
       const status = this.#retryJob(job, notBefore, 'provider');
@@ -1178,42 +1102,12 @@ export class ChannelContextService {
 
   #leaseNextJob(now: number): ContextJobRow | null {
     return this.#database.transaction(() => {
-      const row = this.#database
-        .prepare(
-          `select id, job_key as jobKey, tier, period_start as periodStart,
-                  period_end as periodEnd, timezone as timeZone,
-                  topic_key as topicKey, topic_label as topicLabel,
-                  source_document_ids_json as sourceDocumentIdsJson,
-                  usage_reservation_id as usageReservationId,
-                  completeness,
-                  source_revision_checksum as sourceRevisionChecksum,
-                  attempt_count as attemptCount,
-                  backfill_run_id as backfillRunId
-           from context_jobs
-           where not_before <= ?
-             and (status = 'pending'
-               or (status = 'leased' and lease_expires_at <= ?)
-               or (status = 'failed' and last_error_category = 'provider'))
-             and not exists(
-               select 1 from context_accounting_holds h
-               where h.job_id = context_jobs.id
-             )
-             and (backfill_run_id is null or exists(
-               select 1 from context_backfills b
-               where b.id = context_jobs.backfill_run_id
-                 and b.status = 'active'
-             ))
-           order by freshness_deadline, id limit 1`,
-        )
+      const row = queries
+        .channelContextLeaseNextJobSelectContextJobs(this.#database)
         .get(now, now) as ContextJobRow | undefined;
       if (row === undefined) return null;
-      this.#database
-        .prepare(
-          `update context_jobs
-           set status = 'leased', lease_expires_at = ?,
-               attempt_count = attempt_count + 1
-           where id = ?`,
-        )
+      queries
+        .channelContextLeaseNextJobUpdateContextJobs(this.#database)
         .run(now + DEFAULT_LEASE_MS, row.id);
       return { ...row, attemptCount: row.attemptCount + 1 };
     })();
@@ -1221,15 +1115,8 @@ export class ChannelContextService {
 
   #jobSources(job: ContextJobRow): ContextSummarySource[] {
     if (job.tier === 'hourly') {
-      return this.#database
-        .prepare(
-          `select 'event:' || id as id, content as text
-           from conversation_events
-           where guild_id = ? and channel_id = ? and medium = 'text'
-             and content_state = 'available'
-             and occurred_at >= ? and occurred_at < ?
-           order by occurred_at, id`,
-        )
+      return queries
+        .channelContextJobSourcesSelectConversationEvents(this.#database)
         .all(
           this.#guildId,
           this.#channelId,
@@ -1240,15 +1127,8 @@ export class ChannelContextService {
     const childTier =
       job.tier === 'daily' ? 'hourly' : job.tier === 'weekly' ? 'daily' : null;
     if (childTier !== null) {
-      return this.#database
-        .prepare(
-          `select 'document:' || id as id, summary as text
-           from context_documents
-           where tier = ? and completeness = 'final' and state = 'active'
-             and content_state = 'available' and is_internal = 0
-             and period_start >= ? and period_end <= ?
-           order by period_start, id`,
-        )
+      return queries
+        .channelContextJobSourcesSelectContextDocuments(this.#database)
         .all(
           childTier,
           job.periodStart,
@@ -1256,14 +1136,10 @@ export class ChannelContextService {
         ) as ContextSummarySource[];
     }
     const configuredIds = parseDocumentIds(job.sourceDocumentIdsJson);
-    const activeTopicId = this.#database
-      .prepare(
-        `select id from context_documents
-         where tier = 'long-term' and topic_key = ? and state = 'active'
-           and content_state = 'available' and is_internal = 0`,
-      )
+    const activeTopicId = queries
+      .channelContextJobSourcesSelectContextDocuments2(this.#database)
       .pluck()
-      .get(job.topicKey) as number | undefined;
+      .get(job.topicKey);
     const ids = [
       ...new Set([
         ...configuredIds,
@@ -1288,13 +1164,8 @@ export class ChannelContextService {
   }
 
   #completeEmptyJob(jobId: number): void {
-    this.#database
-      .prepare(
-        `update context_jobs
-         set status = 'completed', lease_expires_at = null,
-             usage_reservation_id = null, last_error_category = null
-         where id = ?`,
-      )
+    queries
+      .channelContextCompleteEmptyJobUpdateContextJobs(this.#database)
       .run(jobId);
   }
 
@@ -1303,29 +1174,16 @@ export class ChannelContextService {
     if (job.periodEnd !== null && now >= job.periodEnd) return true;
     const documentKey = job.jobKey.replace(/:(?:final|provisional)$/u, '');
     return (
-      this.#database
-        .prepare(
-          `select exists(
-             select 1 from context_documents
-             where document_key = ? and completeness = 'final'
-               and state = 'active' and is_internal = 0
-           )`,
-        )
+      queries
+        .channelContextProvisionalObsoleteSelectContextDocuments(this.#database)
         .pluck()
         .get(documentKey) === 1
     );
   }
 
   #deferJob(jobId: number, notBefore: number, reason: string): void {
-    this.#database
-      .prepare(
-        `update context_jobs
-         set status = 'pending', not_before = ?, lease_expires_at = null,
-             usage_reservation_id = null,
-             attempt_count = max(0, attempt_count - 1),
-             last_error_category = ?
-         where id = ?`,
-      )
+    queries
+      .channelContextDeferJobUpdateContextJobs(this.#database)
       .run(notBefore, reason, jobId);
   }
 
@@ -1336,14 +1194,8 @@ export class ChannelContextService {
   ): 'failed' | 'pending' {
     const status =
       job.attemptCount >= DEFAULT_MAX_ATTEMPTS ? 'failed' : 'pending';
-    const result = this.#database
-      .prepare(
-        `update context_jobs
-         set status = ?, not_before = ?, lease_expires_at = null,
-             usage_reservation_id = null, last_error_category = ?
-         where id = ? and status = 'leased'
-           and source_revision_checksum = ? and attempt_count = ?`,
-      )
+    const result = queries
+      .channelContextRetryJobUpdateContextJobs(this.#database)
       .run(
         status,
         notBefore,
@@ -1360,15 +1212,8 @@ export class ChannelContextService {
     reservationId: string,
     now: number,
   ): void {
-    const current = this.#database
-      .prepare(
-        `select exists(
-           select 1 from context_jobs
-           where id = ? and status = 'leased' and lease_expires_at > ?
-             and attempt_count = ? and source_revision_checksum = ?
-             and usage_reservation_id = ?
-         )`,
-      )
+    const current = queries
+      .channelContextAssertCurrentLeaseSelectContextJobs(this.#database)
       .pluck()
       .get(
         job.id,
@@ -1435,14 +1280,8 @@ export class ChannelContextService {
       return;
     }
     if (job.tier === 'weekly') {
-      const topics = this.#database
-        .prepare(
-          `select distinct topic_key as topicKey, topic_label as topicLabel
-           from context_documents
-           where tier = 'long-term' and state = 'active'
-             and content_state = 'available' and topic_key is not null
-             and topic_label is not null`,
-        )
+      const topics = queries
+        .channelContextScheduleDownstreamSelectContextDocuments(this.#database)
         .all() as {
         readonly topicKey: string;
         readonly topicLabel: string;
@@ -1473,13 +1312,9 @@ export class ChannelContextService {
     periodStart: number,
     periodEnd: number,
   ): string {
-    const rows = this.#database
-      .prepare(
-        `select id, revision from context_documents
-         where tier = ? and completeness = 'final' and state = 'active'
-           and content_state = 'available' and is_internal = 0
-           and period_start >= ? and period_end <= ?
-         order by period_start, id`,
+    const rows = queries
+      .channelContextDocumentRevisionChecksumSelectContextDocuments(
+        this.#database,
       )
       .all(tier, periodStart, periodEnd);
     return digest(rows);
@@ -1493,42 +1328,8 @@ export class ChannelContextService {
     freshnessDeadline: number,
     backfillRunId: number | null,
   ): void {
-    this.#database
-      .prepare(
-        `insert into context_jobs
-           (job_key, tier, period_start, period_end, timezone, topic_key,
-            completeness, source_revision_checksum, not_before,
-            freshness_deadline, backfill_run_id)
-         values (?, ?, ?, ?, ?, null, 'final', ?, ?, ?, ?)
-         on conflict(job_key) do update set
-           source_revision_checksum = excluded.source_revision_checksum,
-           not_before = excluded.not_before,
-           freshness_deadline = excluded.freshness_deadline,
-           status = case
-             when context_jobs.source_revision_checksum
-                    != excluded.source_revision_checksum
-             then 'pending' else context_jobs.status end,
-           lease_expires_at = case
-             when context_jobs.source_revision_checksum
-                    != excluded.source_revision_checksum
-             then null else context_jobs.lease_expires_at end,
-           last_error_category = case
-             when context_jobs.source_revision_checksum
-                    != excluded.source_revision_checksum
-             then null else context_jobs.last_error_category end,
-           backfill_run_id = case
-             when excluded.backfill_run_id is not null
-             then excluded.backfill_run_id
-             when context_jobs.backfill_run_id is not null
-               and not exists(
-                 select 1 from context_backfills b
-                 where b.id = context_jobs.backfill_run_id
-                   and b.status = 'active'
-               )
-             then null
-             when context_jobs.status = 'completed' then null
-             else context_jobs.backfill_run_id end`,
-      )
+    queries
+      .channelContextUpsertDerivedJobInsertContextJobs(this.#database)
       .run(
         `${period.key}:final`,
         tier,
@@ -1553,14 +1354,10 @@ export class ChannelContextService {
     const topicKey =
       existingTopicKey ??
       digest(topicLabel.trim().toLocaleLowerCase('en-US')).slice(0, 32);
-    const activeTopicId = this.#database
-      .prepare(
-        `select id from context_documents
-         where tier = 'long-term' and topic_key = ? and state = 'active'
-           and content_state = 'available'`,
-      )
+    const activeTopicId = queries
+      .channelContextUpsertTopicJobSelectContextDocuments(this.#database)
       .pluck()
-      .get(topicKey) as number | undefined;
+      .get(topicKey);
     const allSourceIds = [
       ...new Set([
         ...sourceDocumentIds,
@@ -1568,45 +1365,8 @@ export class ChannelContextService {
       ]),
     ];
     const checksum = this.#documentIdsChecksum(allSourceIds);
-    this.#database
-      .prepare(
-        `insert into context_jobs
-           (job_key, tier, period_start, period_end, timezone, topic_key,
-            topic_label, completeness, source_revision_checksum,
-            source_document_ids_json, not_before, freshness_deadline,
-            backfill_run_id)
-         values (?, 'long-term', ?, null, ?, ?, ?, 'final', ?, ?, ?, ?, ?)
-         on conflict(job_key) do update set
-           topic_label = excluded.topic_label,
-           source_revision_checksum = excluded.source_revision_checksum,
-           source_document_ids_json = excluded.source_document_ids_json,
-           not_before = excluded.not_before,
-           freshness_deadline = excluded.freshness_deadline,
-           status = case
-             when context_jobs.source_revision_checksum
-                    != excluded.source_revision_checksum
-             then 'pending' else context_jobs.status end,
-           lease_expires_at = case
-             when context_jobs.source_revision_checksum
-                    != excluded.source_revision_checksum
-             then null else context_jobs.lease_expires_at end,
-           last_error_category = case
-             when context_jobs.source_revision_checksum
-                    != excluded.source_revision_checksum
-             then null else context_jobs.last_error_category end,
-           backfill_run_id = case
-             when excluded.backfill_run_id is not null
-             then excluded.backfill_run_id
-             when context_jobs.backfill_run_id is not null
-               and not exists(
-                 select 1 from context_backfills b
-                 where b.id = context_jobs.backfill_run_id
-                   and b.status = 'active'
-               )
-             then null
-             when context_jobs.status = 'completed' then null
-             else context_jobs.backfill_run_id end`,
-      )
+    queries
+      .channelContextUpsertTopicJobInsertContextJobs(this.#database)
       .run(
         `long-term:${this.#timeZone}:${topicKey}:final`,
         periodStart,
@@ -1696,12 +1456,8 @@ export class ChannelContextService {
       speakerId: change.speakerId,
       speakerName: change.speakerName,
     });
-    const canonical = this.#database
-      .prepare(
-        `select content, content_state as contentState,
-                occurred_at as occurredAt
-         from conversation_events where id = ?`,
-      )
+    const canonical = queries
+      .channelContextApplyUpsertSelectConversationEvents(this.#database)
       .get(eventId) as {
       content: string;
       contentState: string;
@@ -1818,60 +1574,8 @@ export class ChannelContextService {
     freshnessDeadline: number,
     backfillRunId: number | null,
   ): void {
-    this.#database
-      .prepare(
-        `insert into context_jobs
-           (job_key, tier, period_start, period_end, timezone, topic_key,
-            completeness, source_revision_checksum, not_before,
-            freshness_deadline, backfill_run_id)
-         values (?, 'hourly', ?, ?, ?, null, ?, ?, ?, ?, ?)
-         on conflict(job_key) do update set
-           source_revision_checksum = excluded.source_revision_checksum,
-           not_before = case
-             when context_jobs.source_revision_checksum
-                    != excluded.source_revision_checksum
-               and context_jobs.completeness = 'provisional'
-               and context_jobs.status = 'pending'
-             then min(context_jobs.not_before, excluded.not_before)
-             when context_jobs.source_revision_checksum
-                    != excluded.source_revision_checksum
-             then excluded.not_before else context_jobs.not_before end,
-           freshness_deadline = case
-             when context_jobs.source_revision_checksum
-                    != excluded.source_revision_checksum
-               and context_jobs.completeness = 'provisional'
-               and context_jobs.status = 'pending'
-             then min(context_jobs.freshness_deadline,
-                      excluded.freshness_deadline)
-             when context_jobs.source_revision_checksum
-                    != excluded.source_revision_checksum
-             then excluded.freshness_deadline
-             else context_jobs.freshness_deadline end,
-           status = case
-             when context_jobs.source_revision_checksum
-                    != excluded.source_revision_checksum
-             then 'pending' else context_jobs.status end,
-           lease_expires_at = case
-             when context_jobs.source_revision_checksum
-                    != excluded.source_revision_checksum
-             then null else context_jobs.lease_expires_at end,
-           last_error_category = case
-             when context_jobs.source_revision_checksum
-                    != excluded.source_revision_checksum
-             then null else context_jobs.last_error_category end,
-           backfill_run_id = case
-             when excluded.backfill_run_id is not null
-             then excluded.backfill_run_id
-             when context_jobs.backfill_run_id is not null
-               and not exists(
-                 select 1 from context_backfills b
-                 where b.id = context_jobs.backfill_run_id
-                   and b.status = 'active'
-               )
-             then null
-             when context_jobs.status = 'completed' then null
-             else context_jobs.backfill_run_id end`,
-      )
+    queries
+      .channelContextUpsertJobInsertContextJobs(this.#database)
       .run(
         `${period.key}:${completeness}`,
         period.start,
@@ -1886,25 +1590,15 @@ export class ChannelContextService {
   }
 
   #pauseBackfillRun(runId: number, reason: string, now: number): void {
-    this.#database
-      .prepare(
-        `update context_backfills
-         set status = 'paused', pause_reason = ?, updated_at = ?
-         where id = ? and status = 'active'`,
-      )
+    queries
+      .channelContextPauseBackfillRunUpdateContextBackfills(this.#database)
       .run(reason, now, runId);
   }
 
   #sourceRevisionChecksum(period: ContextPeriod): string {
-    const rows = this.#database
-      .prepare(
-        `select id, discord_message_id as discordMessageId, content,
-                edited_at as editedAt
-         from conversation_events
-         where guild_id = ? and channel_id = ? and medium = 'text'
-           and content_state = 'available'
-           and occurred_at >= ? and occurred_at < ?
-         order by id`,
+    const rows = queries
+      .channelContextSourceRevisionChecksumSelectConversationEvents(
+        this.#database,
       )
       .all(
         this.#guildId,
@@ -1995,10 +1689,10 @@ export class ChannelContextService {
   }
 
   #invalidateEventJobs(eventId: number, pendingOnly = false): void {
-    const occurredAt = this.#database
-      .prepare('select occurred_at from conversation_events where id = ?')
+    const occurredAt = queries
+      .channelContextInvalidateEventJobsSelectConversationEvents(this.#database)
       .pluck()
-      .get(eventId) as number | undefined;
+      .get(eventId);
     if (occurredAt === undefined) return;
     const period = contextPeriod({
       instant: occurredAt,
@@ -2019,26 +1713,17 @@ export class ChannelContextService {
 
   #eventId(messageId: string): number | null {
     return (
-      (this.#database
-        .prepare(
-          `select id from conversation_events
-           where guild_id = ? and channel_id = ? and discord_message_id = ?`,
-        )
+      queries
+        .channelContextEventIdSelectConversationEvents(this.#database)
         .pluck()
-        .get(this.#guildId, this.#channelId, messageId) as
-        number | undefined) ?? null
+        .get(this.#guildId, this.#channelId, messageId) ?? null
     );
   }
 
   #existingRevision(messageId: string): ExistingSourceRevision | null {
     return (
-      (this.#database
-        .prepare(
-          `select id, occurred_at as occurredAt, edited_at as editedAt,
-                  revision_checksum as revisionChecksum
-           from conversation_events
-           where guild_id = ? and channel_id = ? and discord_message_id = ?`,
-        )
+      (queries
+        .channelContextExistingRevisionSelectConversationEvents(this.#database)
         .get(this.#guildId, this.#channelId, messageId) as
         ExistingSourceRevision | undefined) ?? null
     );

@@ -5,6 +5,8 @@ export default defineConfig({
     coverage: {
       exclude: [
         'src/cli.ts',
+        'src/ops/cli.ts',
+        'src/database/queries.ts',
         'src/runtime.ts',
         'src/agent/chief-agent.ts',
         'src/discord/gateway.ts',

@@ -55,15 +55,21 @@ describe('repository policy', () => {
     for (const name of ['Format', 'Lint', 'Test', 'Build']) {
       expect(workflow).toContain(`name: ${name}`);
     }
-    const ruleset = await read('scripts/configure-github-ruleset.sh');
-    for (const name of ['Format', 'Lint', 'Test', 'Build']) {
-      expect(ruleset).toContain(`context: "${name}"`);
-    }
-    expect(ruleset).toContain('required_approving_review_count: 0');
-    expect(ruleset).toContain('custom_branch_policies: true');
-    expect(ruleset).toContain('deployment-branch-policies');
-    expect(ruleset).toContain('name: "main"');
-    expect(ruleset).toContain('--method PUT');
+    const { githubPolicy } = await import('../../src/ops/github-policy.ts');
+    const checks = githubPolicy.ruleset.rules.find(
+      (rule) => rule.type === 'required_status_checks',
+    );
+    expect(
+      checks?.parameters?.required_status_checks?.map((check) => check.context),
+    ).toEqual(['Format', 'Lint', 'Test', 'Build']);
+    expect(
+      githubPolicy.ruleset.rules.find((rule) => rule.type === 'pull_request')
+        ?.parameters?.required_approving_review_count,
+    ).toBe(0);
+    expect(
+      githubPolicy.environment.deployment_branch_policy.custom_branch_policies,
+    ).toBe(true);
+    expect(githubPolicy.branch_policy.name).toBe('main');
   });
 
   it('pins every external workflow action to a full commit', async () => {
@@ -105,9 +111,9 @@ describe('repository policy', () => {
     const health = await read('src/health/health-server.ts');
     const runtime = await read('src/runtime.ts');
     const dockerfile = await read('Dockerfile');
-    const deployScript = await read('scripts/deploy.sh');
-    const restoreScript = await read('scripts/restore.sh');
-    const runContainerScript = await read('scripts/run-container.sh');
+    const deployScript = await read('src/ops/deploy.ts');
+    const restoreScript = await read('src/ops/backup.ts');
+    const runContainerScript = await read('src/ops/run-container.ts');
     const aptScript = await read('scripts/configure-google-cloud-apt.sh');
     for (const suite of [
       'google-compute-engine-bookworm-stable',
@@ -132,11 +138,11 @@ describe('repository policy', () => {
       'configure_google_cloud_apt_script = file("${path.module}/../../scripts/configure-google-cloud-apt.sh")',
     );
     expect(app).not.toContain('metadata_startup_script');
-    expect(deploy).toContain('/opt/chief/run-container.sh');
-    expect(deploy).toContain('scripts/run-container.sh');
+    expect(deploy).toContain('/opt/chief/ops/cli.ts');
+    expect(deploy).toContain('--recurse src/ops');
     expect(deploy).toContain('scripts/configure-google-cloud-apt.sh');
     expect(deploy).toContain(
-      'install -m 0750 /tmp/run-container.sh /opt/chief/run-container.sh',
+      'install -m 0640 /tmp/chief-ops-${GITHUB_SHA}/*.ts /opt/chief/ops/',
     );
     expect(deploy).toContain(
       'install -m 0750 /tmp/configure-google-cloud-apt.sh /opt/chief/configure-google-cloud-apt.sh',
@@ -159,7 +165,7 @@ describe('repository policy', () => {
     );
     expect(startup).not.toContain('docker login');
     expect(deployScript).toContain('DOCKER_CONFIG');
-    expect(deployScript).toContain('docker-config.XXXXXX');
+    expect(deployScript).toContain('.docker-config.');
     expect(runContainerScript).toContain(
       'http://metadata.google.internal/computeMetadata/v1/project/project-id',
     );
@@ -178,13 +184,13 @@ describe('repository policy', () => {
       'LABEL io.chief.database-capability="0003_channel_context"',
     );
     expect(runContainerScript.indexOf('recover-forget-journals')).toBeLessThan(
-      runContainerScript.indexOf('DISCORD_TOKEN='),
+      runContainerScript.indexOf('const discordToken'),
     );
     expect(runContainerScript.indexOf('database-capability')).toBeLessThan(
-      runContainerScript.indexOf('DISCORD_TOKEN='),
+      runContainerScript.indexOf('const discordToken'),
     );
     expect(restoreScript.indexOf('database-capability')).toBeLessThan(
-      restoreScript.indexOf('systemctl stop'),
+      restoreScript.indexOf("['stop', 'chief.service']"),
     );
   });
 
@@ -227,8 +233,8 @@ describe('repository policy', () => {
   });
 
   it('guards protected resources and immutable deployment input', async () => {
-    const policy = await read('scripts/check-terraform-plan.sh');
-    const deploy = await read('scripts/deploy.sh');
+    const policy = await read('src/ops/terraform-plan.ts');
+    const deploy = await read('src/ops/host-state.ts');
     const startup = await read('infra/app/templates/startup.sh.tftpl');
     const app = await read('infra/app/main.tf');
     for (const type of [
@@ -247,7 +253,7 @@ describe('repository policy', () => {
       expect(policy).toContain(type);
     }
     expect(policy).toContain('^google_.*iam_');
-    expect(deploy).toContain('@sha256:[0-9a-f]{64}');
+    expect(deploy).toContain('@sha256:[a-f0-9]{64}');
     expect(deploy).not.toContain('install -d -m 0750 "$BACKUP_DIR"');
     expect(startup).toContain(
       'install -d -o 1000 -g 1000 -m 0750 /var/lib/chief/backups',
@@ -266,7 +272,8 @@ describe('repository policy', () => {
     expect(app).toContain('retention_duration_seconds = 0');
     expect(startup).toContain('chief-recovery-prune.timer');
     expect(startup).toContain('/var/lib/chief/backups');
-    expect(startup).toContain('-mmin +43139 -delete');
+    expect(startup).toContain('cli.ts prune-recovery');
+    expect(await read('src/ops/host-state.ts')).toContain('30 * 24 * 3600_000');
     expect(app).toContain(
       'resource "google_service_account_iam_member" "deploy_act_as"',
     );

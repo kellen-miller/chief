@@ -1,3 +1,4 @@
+import * as queries from '../database/queries.js';
 import type Database from 'better-sqlite3';
 
 import type {
@@ -132,46 +133,15 @@ export class ConversationStore {
       responseChunkIndex: event.responseChunkIndex ?? null,
       revisionChecksum: event.revisionChecksum ?? '',
     };
-    this.#database
-      .prepare(
-        `insert into conversation_events
-           (platform_event_id, discord_message_id, guild_id, channel_id,
-            request_id, logical_response_id, role, speaker_id, speaker_name,
-            medium, reply_to_message_id, content, attachment_metadata_json,
-            occurred_at, edited_at, recent_until, retention_deadline,
-            content_state, content_state_reason, revision_checksum,
-            response_chunk_index)
-         values (@platformEventId, @discordMessageId, @guildId, @channelId,
-                 @requestId, @logicalResponseId, @role, @speakerId,
-                 @speakerName, @medium, @replyToMessageId, @content,
-                 @attachmentMetadataJson, @occurredAt, @editedAt,
-                 @recentUntil, @retentionDeadline, 'available', 'retained',
-                 @revisionChecksum, @responseChunkIndex)
-         on conflict(guild_id, channel_id, discord_message_id) do update set
-           speaker_name = excluded.speaker_name,
-           speaker_id = excluded.speaker_id,
-           edited_at = excluded.edited_at,
-           reply_to_message_id = excluded.reply_to_message_id,
-           response_chunk_index = coalesce(
-             excluded.response_chunk_index,
-             conversation_events.response_chunk_index
-           ),
-           content = case when conversation_events.content_state = 'available'
-             then excluded.content else conversation_events.content end,
-           attachment_metadata_json = case
-             when conversation_events.content_state = 'available'
-             then excluded.attachment_metadata_json
-             else conversation_events.attachment_metadata_json end,
-           revision_checksum = excluded.revision_checksum`,
-      )
-      .run(row);
-    return this.#database
-      .prepare(
-        `select id from conversation_events
-         where guild_id = ? and channel_id = ? and discord_message_id = ?`,
-      )
+    queries.conversationRecordInsertConversationEvents(this.#database).run(row);
+    const eventId = queries
+      .conversationRecordSelectConversationEvents(this.#database)
       .pluck()
-      .get(row.guildId, row.channelId, row.discordMessageId) as number;
+      .get(row.guildId, row.channelId, row.discordMessageId);
+    if (eventId === undefined)
+      throw new Error('recorded conversation event missing');
+
+    return eventId;
   }
 
   public recordBatch(
@@ -364,20 +334,9 @@ export class ConversationStore {
         seen.add(key);
         const rows =
           match.role === 'chief' && match.logicalResponseId !== null
-            ? (this.#database
-                .prepare(
-                  `select id, content,
-                          discord_message_id as discordMessageId,
-                          logical_response_id as logicalResponseId,
-                          occurred_at as occurredAt,
-                          response_chunk_index as responseChunkIndex,
-                          role, speaker_name as speakerName
-                   from conversation_events
-                   where guild_id = ? and channel_id = ?
-                     and logical_response_id = ? and role = 'chief'
-                     and content_state = 'available'
-                     and (? is null or id < ?)
-                   order by coalesce(response_chunk_index, 2147483647), id`,
+            ? (queries
+                .conversationSearchTextSourceGroupsSelectConversationEvents(
+                  this.#database,
                 )
                 .all(
                   input.guildId,
@@ -414,33 +373,19 @@ export class ConversationStore {
 
   public maintain(now: number): { readonly deletedEvents: number } {
     return this.#database.transaction(() => {
-      const expiredTextIds = this.#database
-        .prepare(
-          `select id from conversation_events
-           where medium = 'text' and content_state = 'available'
-             and retention_deadline <= ?`,
-        )
+      const expiredTextIds = queries
+        .conversationMaintainSelectConversationEvents(this.#database)
         .pluck()
-        .all(now) as number[];
+        .all(now);
       const deleteSearchRow = this.#database.prepare(
         'delete from conversation_event_fts where rowid = ?',
       );
       for (const id of expiredTextIds) deleteSearchRow.run(id);
-      const scrubbed = this.#database
-        .prepare(
-          `update conversation_events
-           set content = '', attachment_metadata_json = '[]',
-               content_state = 'scrubbed',
-               content_state_reason = 'retention-expired'
-           where medium = 'text' and content_state = 'available'
-             and retention_deadline <= ?`,
-        )
+      const scrubbed = queries
+        .conversationMaintainUpdateConversationEvents(this.#database)
         .run(now).changes;
-      const deleted = this.#database
-        .prepare(
-          `delete from conversation_events
-           where medium = 'voice' and retention_deadline <= ?`,
-        )
+      const deleted = queries
+        .conversationMaintainDeleteConversationEvents(this.#database)
         .run(now).changes;
       return { deletedEvents: scrubbed + deleted };
     })();

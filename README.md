@@ -13,7 +13,7 @@ Chief replies in the configured text channel only when directly mentioned or inv
   hourly, daily, weekly, and long-term historical context
 - One serialized paid-generation queue and a persistent UTC-month usage ledger
 - One GCP `e2-micro` VM with a durable standard disk, Artifact Registry, Secret Manager, GCS backups, and GitHub WIF deployment
-- Host-side Discord monitoring: daily reports at 09:00 Eastern and deduplicated
+- Host-side TypeScript operations and Discord monitoring: daily reports at 09:00 Eastern and deduplicated
   operational alerts, including when the bot process is unavailable
 
 Text, web research, memory extraction, and context summaries use `gpt-6-luna`.
@@ -29,6 +29,7 @@ corepack enable
 corepack prepare pnpm@11.9.0 --activate
 pnpm install --frozen-lockfile
 cp .env.example .env
+pnpm generate:sql # requires sqlc 1.31.1
 pnpm verify
 pnpm chief -- smoke
 ```
@@ -71,3 +72,25 @@ When raw evidence has expired, Chief labels the result summary-only and cannot
 use it for quotations or precise source claims.
 
 See [Discord setup](docs/discord-setup.md), [GCP bootstrap](docs/gcp-bootstrap.md), [operations](docs/operations.md), and [manual acceptance](docs/manual-acceptance.md).
+
+## Languages and generated SQL
+
+Application code, monitoring, and host operations use TypeScript. Host operations
+run separately from the bot with a pinned Node.js 24 runtime and no npm packages;
+monitoring remains available while the bot is stopped. Bash only provisions the
+initial host/apt/Node environment or forwards existing script entrypoints to
+`src/ops/cli.ts`. Terraform owns GCP resources and systemd bootstrap.
+
+Ordinary database statements live in `sql/queries.sql`. `pnpm generate:sql`
+derives `sql/schema.sql` from Chief's real migrations, runs sqlc 1.31.1, and emits
+synchronous `better-sqlite3` statements and binding/row types into
+`src/database/queries.ts`. The small TypeScript emitter consumes sqlc's built-in
+JSON output: the published TypeScript WASM plugin lacks the documented SQLite
+driver. CI checks regeneration for drift.
+
+Transactions, domain validation/mapping, migration checksums, FTS5/sqlite-vec,
+dynamic SQL, and queries using SQLite syntax unsupported by sqlc remain in their
+owning TypeScript modules. sqlc does not execute migrations or replace recovery
+verification. SQLite alias casing and scalar `pluck()` results are preserved.
+`sql/parameter-types.json` records narrow overrides for nullable comparisons and
+CASE parameters that sqlc infers incorrectly; it does not alter executable SQL.

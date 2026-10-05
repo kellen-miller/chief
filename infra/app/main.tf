@@ -296,10 +296,9 @@ resource "google_compute_instance" "chief" {
       discord_text_channel_id           = var.discord_text_channel_id
       discord_voice_channel_id          = var.discord_voice_channel_id
       discord_monitoring_channel_id     = var.discord_monitoring_channel_id
-      monitor_script                    = file("${path.module}/../../scripts/monitor.py")
-      install_monitoring_script         = file("${path.module}/../../scripts/install-monitoring.sh")
+      install_node_script               = file("${path.module}/../../scripts/install-node.sh")
+      operations_sources                = { for name in fileset("${path.module}/../../src/ops", "*.ts") : name => file("${path.module}/../../src/ops/${name}") }
       project_id                        = var.project_id
-      run_container_script              = file("${path.module}/../../scripts/run-container.sh")
       usage_indexing_ceiling_usd        = var.usage_indexing_ceiling_usd
     })
   }

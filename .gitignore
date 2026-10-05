@@ -291,3 +291,5 @@ terraform.rc
 # Terraform local state and working data
 !*.tfvars.example
 infra/bootstrap/.local-state/
+
+.sqlc/

@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import {
   access,
   chmod,
@@ -8,15 +7,20 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { deploy } from '../../src/ops/deploy.ts';
 
 const candidate = `registry/chief@sha256:${'b'.repeat(64)}`;
 const previous = `registry/chief@sha256:${'a'.repeat(64)}`;
-const deployScript = resolve('scripts/deploy.sh');
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
 
-describe('deploy transaction', () => {
+describe('deploy transaction', { timeout: 20_000 }, () => {
   it('syncs the backup bucket before starting the service', async () => {
     const fixture = await createFixture();
     const result = await runDeploy(fixture);
@@ -62,7 +66,7 @@ describe('deploy transaction', () => {
       .split('\n')
       .find((command) => command.startsWith('docker login'));
     const dockerConfig = / config=(.+)$/u.exec(login ?? '')?.[1] ?? '';
-    expect(dockerConfig.startsWith(`${fixture.runtime}/docker-config.`)).toBe(
+    expect(dockerConfig.startsWith(`${fixture.data}/.docker-config.`)).toBe(
       true,
     );
     expect(dockerConfig).not.toBe('');
@@ -139,6 +143,43 @@ describe('deploy transaction', () => {
     ).toBe(true);
   });
 
+  it('restarts the prior service when pre-migration backup fails', async () => {
+    const fixture = await createFixture({ failBackup: true });
+    const result = await runDeploy(fixture);
+    expect(result.code).not.toBe(0);
+    expect(await readFile(join(fixture.data, 'chief.db'), 'utf8')).toBe(
+      'original',
+    );
+    expect(await readFile(join(fixture.data, 'deploy.env'), 'utf8')).toBe(
+      `IMAGE=${previous}\nRECOVERY_IMAGE=${candidate}\n`,
+    );
+    expect(
+      JSON.parse(
+        await readFile(
+          join(fixture.data, 'deployment-monitoring.json'),
+          'utf8',
+        ),
+      ),
+    ).toMatchObject({ status: 'failed' });
+    expect(await readFile(fixture.commandLog, 'utf8')).not.toContain(
+      'migrate --database',
+    );
+  });
+
+  it('rejects mutable images and malformed flags before host changes', () => {
+    for (const args of [
+      ['--image', 'chief:latest'],
+      ['--unknown', candidate],
+      ['--image'],
+    ])
+      expect(() => {
+        deploy(args);
+      }).toThrow();
+    expect(() => {
+      deploy(['--image', candidate, '--backup-bucket', 'BAD/BUCKET']);
+    }).toThrow('backup bucket');
+  });
+
   it('restores the old database when migration fails after a partial commit', async () => {
     const fixture = await createFixture({ failMigration: true });
 
@@ -155,6 +196,7 @@ describe('deploy transaction', () => {
 });
 
 interface FixtureOptions {
+  readonly failBackup?: boolean;
   readonly failCandidate?: boolean;
   readonly failMigration?: boolean;
   readonly failPrune?: boolean;
@@ -166,6 +208,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<{
   readonly commandLog: string;
   readonly config: string;
   readonly data: string;
+  readonly failBackup: boolean;
   readonly failCandidate: boolean;
   readonly failMigration: boolean;
   readonly failPrune: boolean;
@@ -210,6 +253,7 @@ case "$command_name" in
       previous="$argument"
     done
     if [[ "$args" == *" backup "* ]]; then
+      if [[ "\${FAIL_BACKUP:-0}" == 1 ]]; then exit 1; fi
       mkdir -p "$destination"
       cp "$database" "$destination/backup.db"
       printf '%s\\n' "$destination/backup.db"
@@ -255,6 +299,7 @@ exit 0
     commandLog,
     config,
     data,
+    failBackup: options.failBackup ?? false,
     failCandidate: options.failCandidate ?? false,
     failMigration: options.failMigration ?? false,
     failPrune: options.failPrune ?? false,
@@ -268,54 +313,48 @@ async function executable(path: string, content: string): Promise<void> {
   await chmod(path, 0o755);
 }
 
-async function runDeploy(fixture: {
+function runDeploy(fixture: {
   readonly bin: string;
   readonly commandLog: string;
   readonly config: string;
   readonly data: string;
+  readonly failBackup: boolean;
   readonly failCandidate: boolean;
   readonly failMigration: boolean;
   readonly failPrune: boolean;
   readonly failTag: boolean;
   readonly runtime: string;
 }): Promise<{ readonly code: number | null; readonly stderr: string }> {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(
-      'bash',
-      [deployScript, '--image', candidate, '--backup-bucket', 'chief-backups'],
-      {
-        env: {
-          ...process.env,
-          CHIEF_CONFIG_FILE: fixture.config,
-          CHIEF_DATA_GID:
-            typeof process.getgid === 'function'
-              ? process.getgid().toString()
-              : '1000',
-          CHIEF_DATA_DIR: fixture.data,
-          CHIEF_DATA_UID:
-            typeof process.getuid === 'function'
-              ? process.getuid().toString()
-              : '1000',
-          CHIEF_RUNTIME_DIR: fixture.runtime,
-          COMMAND_LOG: fixture.commandLog,
-          DOCKER_CONFIG: '',
-          FAIL_CANDIDATE: fixture.failCandidate ? '1' : '0',
-          FAIL_MIGRATION: fixture.failMigration ? '1' : '0',
-          FAIL_PRUNE: fixture.failPrune ? '1' : '0',
-          FAIL_TAG: fixture.failTag ? '1' : '0',
-          PATH: `${fixture.bin}:${process.env.PATH ?? ''}`,
-        },
-        stdio: ['ignore', 'ignore', 'pipe'],
-      },
-    );
-    let stderr = '';
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.once('error', reject);
-    child.once('close', (code) => {
-      resolvePromise({ code, stderr });
-    });
+  const environment = {
+    CHIEF_CONFIG_FILE: fixture.config,
+    CHIEF_DATA_GID: process.getgid?.().toString() ?? '1000',
+    CHIEF_DATA_DIR: fixture.data,
+    CHIEF_DATA_UID: process.getuid?.().toString() ?? '1000',
+    CHIEF_RUNTIME_DIR: fixture.runtime,
+    COMMAND_LOG: fixture.commandLog,
+    DOCKER_CONFIG: '',
+    FAIL_BACKUP: fixture.failBackup ? '1' : '0',
+    FAIL_CANDIDATE: fixture.failCandidate ? '1' : '0',
+    FAIL_MIGRATION: fixture.failMigration ? '1' : '0',
+    FAIL_PRUNE: fixture.failPrune ? '1' : '0',
+    FAIL_TAG: fixture.failTag ? '1' : '0',
+    PATH: `${fixture.bin}:${process.env.PATH ?? ''}`,
+  };
+  for (const [key, value] of Object.entries(environment))
+    vi.stubEnv(key, value);
+  let stderr = '';
+  vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+    stderr += String(chunk);
+    return true;
   });
+  vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+  try {
+    deploy(['--image', candidate, '--backup-bucket', 'chief-backups']);
+    return Promise.resolve({ code: 0, stderr });
+  } catch (error) {
+    return Promise.resolve({
+      code: 1,
+      stderr: stderr + (error instanceof Error ? error.message : 'failed'),
+    });
+  }
 }

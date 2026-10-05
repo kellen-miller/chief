@@ -1,3 +1,4 @@
+import * as queries from '../database/queries.js';
 import { createHash } from 'node:crypto';
 
 import type Database from 'better-sqlite3';
@@ -121,11 +122,8 @@ export class SqliteMemoryStore {
           source.revisionChecksum ?? sourceObservationChecksum(source),
         sourceScopeId: source.sourceScopeId ?? '',
       };
-      const existing = this.#database
-        .prepare(
-          `select id, revision_checksum as revisionChecksum
-           from source_events where platform_source_id = ?`,
-        )
+      const existing = queries
+        .memoryObserveSelectSourceEvents(this.#database)
         .get(source.platformSourceId) as
         { id: number; revisionChecksum: string } | undefined;
       if (
@@ -133,41 +131,19 @@ export class SqliteMemoryStore {
         existing.revisionChecksum !== normalized.revisionChecksum
       ) {
         this.#deleteSourceMemories(existing.id);
-        this.#database
-          .prepare('delete from memory_jobs where source_event_id = ?')
-          .run(existing.id);
+        queries.memoryObserveDeleteMemoryJobs(this.#database).run(existing.id);
       }
-      this.#database
-        .prepare(
-          `insert into source_events
-             (platform_source_id, source_scope_id, revision_checksum,
-              can_moderate_context, speaker_id, medium, content, occurred_at,
-              retention_deadline)
-           values (@platformSourceId, @sourceScopeId, @revisionChecksum,
-                   @canModerateContext, @speakerId, @medium, @content,
-                   @occurredAt, @retentionDeadline)
-           on conflict(platform_source_id) do update set
-             content = excluded.content,
-             source_scope_id = excluded.source_scope_id,
-             revision_checksum = excluded.revision_checksum,
-             can_moderate_context = excluded.can_moderate_context,
-             retention_deadline = excluded.retention_deadline`,
-        )
-        .run(normalized);
-      const sourceEventId = this.#database
-        .prepare('select id from source_events where platform_source_id = ?')
+      queries.memoryObserveInsertSourceEvents(this.#database).run(normalized);
+      const sourceEventId = queries
+        .memoryObserveSelectSourceEvents2(this.#database)
         .pluck()
-        .get(source.platformSourceId) as number;
+        .get(source.platformSourceId);
+      if (sourceEventId === undefined)
+        throw new Error('observed source event missing');
+
       if (createJob) {
-        this.#database
-          .prepare(
-            `insert into memory_jobs
-               (source_event_id, revision_checksum, not_before)
-             select ?, ?, ? where not exists (
-               select 1 from memory_jobs
-               where source_event_id = ? and status in ('pending', 'leased')
-             )`,
-          )
+        queries
+          .memoryObserveInsertMemoryJobs(this.#database)
           .run(
             sourceEventId,
             normalized.revisionChecksum,
@@ -184,21 +160,12 @@ export class SqliteMemoryStore {
     leaseDuration: number,
   ): ExtractionJob | null {
     return this.#database.transaction(() => {
-      const row = this.#database
-        .prepare(
-          `select id, source_event_id as sourceEventId, attempt_count as attemptCount
-           from memory_jobs
-           where not_before <= ?
-             and (status = 'pending' or (status = 'leased' and lease_expires_at <= ?))
-           order by id limit 1`,
-        )
+      const row = queries
+        .memoryLeaseNextJobSelectMemoryJobs(this.#database)
         .get(now, now) as ExtractionJob | undefined;
       if (row === undefined) return null;
-      this.#database
-        .prepare(
-          `update memory_jobs set status = 'leased', lease_expires_at = ?,
-             attempt_count = attempt_count + 1 where id = ?`,
-        )
+      queries
+        .memoryLeaseNextJobUpdateMemoryJobs(this.#database)
         .run(now + leaseDuration, row.id);
       return { ...row, attemptCount: row.attemptCount + 1 };
     })();
@@ -206,24 +173,16 @@ export class SqliteMemoryStore {
 
   public nextJobDeadline(now: number): number | null {
     return (
-      (this.#database
-        .prepare(
-          `select min(not_before) from memory_jobs
-           where not_before <= ?
-             and (status = 'pending'
-               or (status = 'leased' and lease_expires_at <= ?))`,
-        )
+      (queries
+        .memoryNextJobDeadlineSelectMemoryJobs(this.#database)
         .pluck()
         .get(now, now) as number | null) ?? null
     );
   }
 
   public deferForBudget(jobId: number, nextMonth: number): void {
-    this.#database
-      .prepare(
-        `update memory_jobs set status = 'pending', not_before = ?, lease_expires_at = null,
-           attempt_count = max(0, attempt_count - 1) where id = ?`,
-      )
+    queries
+      .memoryDeferForBudgetUpdateMemoryJobs(this.#database)
       .run(nextMonth, jobId);
   }
 
@@ -234,16 +193,8 @@ export class SqliteMemoryStore {
   }
 
   public getJobSource(jobId: number): ExtractionSource | null {
-    const row = this.#database
-      .prepare(
-        `select s.id, s.content, s.medium, s.occurred_at as occurredAt,
-                s.platform_source_id as platformSourceId,
-                s.revision_checksum as revisionChecksum,
-                s.can_moderate_context as canModerateContext,
-                s.speaker_id as speakerId
-         from memory_jobs j join source_events s on s.id = j.source_event_id
-         where j.id = ?`,
-      )
+    const row = queries
+      .memoryGetJobSourceSelectMemoryJobs(this.#database)
       .get(jobId) as
       | (Omit<ExtractionSource, 'canModerateContext'> & {
           canModerateContext: 0 | 1;
@@ -261,14 +212,8 @@ export class SqliteMemoryStore {
   ): boolean {
     if (canModerateContext) return true;
     return (
-      this.#database
-        .prepare(
-          `select exists(
-             select 1 from memories m join source_events s
-               on s.id = m.source_event_id
-             where m.id = ? and s.speaker_id = ?
-           )`,
-        )
+      queries
+        .memoryCanRequesterForgetSelectMemories(this.#database)
         .pluck()
         .get(memoryId, requesterId) === 1
     );
@@ -279,17 +224,14 @@ export class SqliteMemoryStore {
     notBefore: number,
     maxAttempts: number,
   ): 'failed' | 'pending' {
-    const attemptCount = this.#database
-      .prepare('select attempt_count from memory_jobs where id = ?')
+    const attemptCount = queries
+      .memoryRetryJobSelectMemoryJobs(this.#database)
       .pluck()
-      .get(jobId) as number | undefined;
+      .get(jobId);
     if (attemptCount === undefined) throw new Error('memory job not found');
     const status = attemptCount >= maxAttempts ? 'failed' : 'pending';
-    this.#database
-      .prepare(
-        `update memory_jobs set status = ?, not_before = ?, lease_expires_at = null
-         where id = ?`,
-      )
+    queries
+      .memoryRetryJobUpdateMemoryJobs(this.#database)
       .run(status, notBefore, jobId);
     return status;
   }
@@ -307,12 +249,8 @@ export class SqliteMemoryStore {
       leftMemoryId < rightMemoryId
         ? [leftMemoryId, rightMemoryId]
         : [rightMemoryId, leftMemoryId];
-    this.#database
-      .prepare(
-        `insert into memory_conflicts
-           (left_memory_id, right_memory_id, created_at)
-         values (?, ?, ?) on conflict(left_memory_id, right_memory_id) do nothing`,
-      )
+    queries
+      .memoryRecordConflictInsertMemoryConflicts(this.#database)
       .run(left, right, timestamp);
   }
 
@@ -343,24 +281,17 @@ export class SqliteMemoryStore {
     readonly sourceEventId: number;
   }): readonly AppliedMemoryMutation[] {
     return this.#database.transaction(() => {
-      const source = this.#database
-        .prepare(
-          `select revision_checksum as revisionChecksum,
-                  source_scope_id as sourceScopeId
-           from source_events where id = ?`,
-        )
+      const source = queries
+        .memoryApplyPreparedMutationBatchSelectSourceEvents(this.#database)
         .get(input.sourceEventId) as
         { revisionChecksum: string; sourceScopeId: string } | undefined;
       const jobRevision =
         input.jobId === undefined
           ? undefined
-          : (this.#database
-              .prepare(
-                `select revision_checksum from memory_jobs
-                 where id = ? and source_event_id = ?`,
-              )
+          : queries
+              .memoryApplyPreparedMutationBatchSelectMemoryJobs(this.#database)
               .pluck()
-              .get(input.jobId, input.sourceEventId) as string | undefined);
+              .get(input.jobId, input.sourceEventId);
       const tombstoned =
         source !== undefined &&
         source.sourceScopeId !== '' &&
@@ -399,11 +330,8 @@ export class SqliteMemoryStore {
         applied.push({ action: mutation.action, memoryId });
       }
       if (input.jobId === undefined) {
-        this.#database
-          .prepare(
-            `update source_events set extraction_status = 'completed'
-             where id = ?`,
-          )
+        queries
+          .memoryApplyPreparedMutationBatchUpdateSourceEvents(this.#database)
           .run(input.sourceEventId);
       } else {
         this.#completeJob(input.jobId);
@@ -477,32 +405,10 @@ export class SqliteMemoryStore {
     readonly deletedSources: number;
   } {
     return this.#database.transaction(() => {
-      this.#database
-        .prepare(
-          `delete from memory_jobs
-           where status = 'completed' and source_event_id in (
-             select id from source_events where retention_deadline <= ?
-           )`,
-        )
-        .run(now);
-      this.#database
-        .prepare(
-          `update source_events set content = ''
-           where retention_deadline <= ? and content != '' and exists (
-             select 1 from memories m where m.source_event_id = source_events.id
-           )`,
-        )
-        .run(now);
-      const result = this.#database
-        .prepare(
-          `delete from source_events
-           where retention_deadline <= ? and not exists (
-             select 1 from memories m where m.source_event_id = source_events.id
-           ) and not exists (
-             select 1 from memory_jobs j where j.source_event_id = source_events.id
-               and j.status != 'completed'
-           )`,
-        )
+      queries.memoryMaintainDeleteMemoryJobs(this.#database).run(now);
+      queries.memoryMaintainUpdateSourceEvents(this.#database).run(now);
+      const result = queries
+        .memoryMaintainDeleteSourceEvents(this.#database)
         .run(now);
       return {
         consolidatedMemories: this.#consolidateExactDuplicates(now),
@@ -526,14 +432,14 @@ export class SqliteMemoryStore {
 
   public suppressSource(platformSourceId: string): void {
     this.#database.transaction(() => {
-      const sourceEventId = this.#database
-        .prepare('select id from source_events where platform_source_id = ?')
+      const sourceEventId = queries
+        .memorySuppressSourceSelectSourceEvents(this.#database)
         .pluck()
-        .get(platformSourceId) as number | undefined;
+        .get(platformSourceId);
       if (sourceEventId === undefined) return;
       this.#deleteSourceMemories(sourceEventId);
-      this.#database
-        .prepare('delete from source_events where id = ?')
+      queries
+        .memorySuppressSourceDeleteSourceEvents(this.#database)
         .run(sourceEventId);
     })();
   }
@@ -680,8 +586,8 @@ export class SqliteMemoryStore {
   }
 
   #deleteSourceMemories(sourceEventId: number): void {
-    const memories = this.#database
-      .prepare('select id, state from memories where source_event_id = ?')
+    const memories = queries
+      .memoryDeleteSourceMemoriesSelectMemories(this.#database)
       .all(sourceEventId) as {
       readonly id: number;
       readonly state: string;
@@ -689,52 +595,33 @@ export class SqliteMemoryStore {
     for (const { id, state } of memories) {
       if (state === 'active') this.#deleteIndexes(id);
     }
-    this.#database
-      .prepare('delete from memories where source_event_id = ?')
+    queries
+      .memoryDeleteSourceMemoriesDeleteMemories(this.#database)
       .run(sourceEventId);
   }
 
   #completeJob(jobId: number): void {
-    this.#database
-      .prepare(
-        `update memory_jobs set status = 'completed', lease_expires_at = null
-         where id = ?`,
-      )
-      .run(jobId);
-    this.#database
-      .prepare(
-        `update source_events set extraction_status = 'completed'
-         where id = (select source_event_id from memory_jobs where id = ?)`,
-      )
-      .run(jobId);
+    queries.memoryCompleteJobUpdateMemoryJobs(this.#database).run(jobId);
+    queries.memoryCompleteJobUpdateSourceEvents(this.#database).run(jobId);
   }
 
   #forget(memoryId: number): {
     readonly deleted: boolean;
     readonly sourceDeleted: boolean;
   } {
-    const memory = this.#database
-      .prepare(
-        `select source_event_id as sourceEventId, state
-         from memories where id = ?`,
-      )
+    const memory = queries
+      .memoryForgetSelectMemories(this.#database)
       .get(memoryId) as
       | { readonly sourceEventId: number | null; readonly state: string }
       | undefined;
     if (memory === undefined) return { deleted: false, sourceDeleted: false };
     if (memory.state === 'active') this.#deleteIndexes(memoryId);
-    this.#database.prepare('delete from memories where id = ?').run(memoryId);
+    queries.memoryForgetDeleteMemories(this.#database).run(memoryId);
 
     let sourceDeleted = false;
     if (memory.sourceEventId !== null) {
-      const sourceResult = this.#database
-        .prepare(
-          `delete from source_events where id = ?
-           and not exists (select 1 from memories where source_event_id = ?)
-           and not exists (
-             select 1 from memory_jobs where source_event_id = ? and status != 'completed'
-           )`,
-        )
+      const sourceResult = queries
+        .memoryForgetDeleteSourceEvents(this.#database)
         .run(memory.sourceEventId, memory.sourceEventId, memory.sourceEventId);
       sourceDeleted = sourceResult.changes === 1;
     }
@@ -742,13 +629,8 @@ export class SqliteMemoryStore {
   }
 
   #insertMemory(memory: MemoryInput): number {
-    const result = this.#database
-      .prepare(
-        `insert into memories
-           (source_event_id, canonical_text, kind, confidence, provenance_json,
-            state, created_at, updated_at)
-         values (?, ?, ?, ?, ?, 'active', ?, ?)`,
-      )
+    const result = queries
+      .memoryInsertMemoryInsertMemories(this.#database)
       .run(
         memory.sourceEventId,
         memory.canonicalText,
@@ -771,25 +653,20 @@ export class SqliteMemoryStore {
   }
 
   #supersede(memoryId: number, replacementId: number, timestamp: number): void {
-    const result = this.#database
-      .prepare(
-        `update memories set state = 'superseded', superseded_by = ?, updated_at = ?
-         where id = ? and state = 'active'`,
-      )
+    const result = queries
+      .memorySupersedeUpdateMemories(this.#database)
       .run(replacementId, timestamp, memoryId);
     if (result.changes !== 1) throw new Error('active memory not found');
     this.#deleteIndexes(memoryId);
   }
 
   #consolidateExactDuplicates(now: number): number {
-    const groups = this.#database
-      .prepare(
-        `select lower(trim(canonical_text)) as normalized,
-                group_concat(id) as ids
-         from memories where state = 'active'
-         group by normalized having count(*) > 1`,
-      )
-      .all() as { ids: string; normalized: string }[];
+    const groups = queries
+      .memoryConsolidateExactDuplicatesSelectMemories(this.#database)
+      .all() as {
+      ids: string;
+      normalized: string;
+    }[];
     let consolidated = 0;
     this.#database.transaction(() => {
       for (const group of groups) {
@@ -804,11 +681,8 @@ export class SqliteMemoryStore {
         for (const id of ids) {
           if (id === keep) continue;
           this.#deleteIndexes(id);
-          this.#database
-            .prepare(
-              `update memories set state = 'superseded', superseded_by = ?,
-                 updated_at = ? where id = ?`,
-            )
+          queries
+            .memoryConsolidateExactDuplicatesUpdateMemories(this.#database)
             .run(keep, now, id);
           consolidated += 1;
         }

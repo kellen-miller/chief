@@ -19,7 +19,9 @@
     "test:integration": "vitest run --project integration",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
-    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build"
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build",
+    "generate:sql": "tsx scripts/generate-sql-schema.ts && sqlc generate && tsx scripts/generate-sql.ts",
+    "ops": "node src/ops/cli.ts"
   },
   "dependencies": {
     "@discordjs/opus": "0.10.0",
