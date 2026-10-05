@@ -136,29 +136,6 @@ Unit=chief-backup.service
 WantedBy=timers.target
 EOF
 
-cat >/etc/systemd/system/chief-recovery-prune.service <<'EOF'
-[Unit]
-Description=Prune expired Chief recovery artifacts
-
-[Service]
-Type=oneshot
-ExecStart=/opt/chief/node/bin/node /opt/chief/ops/cli.ts prune-recovery
-EOF
-
-cat >/etc/systemd/system/chief-recovery-prune.timer <<'EOF'
-[Unit]
-Description=Prune Chief recovery artifacts hourly
-
-[Timer]
-OnBootSec=5min
-OnUnitActiveSec=1h
-Persistent=true
-Unit=chief-recovery-prune.service
-
-[Install]
-WantedBy=timers.target
-EOF
-
 install -d -m 0755 /etc/systemd/journald.conf.d
 cat >/etc/systemd/journald.conf.d/chief.conf <<'EOF'
 [Journal]
@@ -182,11 +159,10 @@ metrics:
         receivers: [hostmetrics]
 EOF
 
-systemctl daemon-reload
+/opt/chief/node/bin/node /opt/chief/ops/cli.ts install-services
 systemctl restart systemd-journald
 systemctl restart google-cloud-ops-agent
-systemctl enable --now docker chief-health.timer chief-backup.timer \
-  chief-recovery-prune.timer
+systemctl enable --now docker chief-health.timer chief-backup.timer
 systemctl enable chief.service
 if [[ -f /var/lib/chief/deploy.env ]]; then systemctl restart chief.service; fi
 

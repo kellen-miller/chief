@@ -270,9 +270,11 @@ describe('repository policy', () => {
     expect(app).toContain('days_since_noncurrent_time = 60');
     expect(app).toContain('soft_delete_policy');
     expect(app).toContain('retention_duration_seconds = 0');
-    expect(startup).toContain('chief-recovery-prune.timer');
+    expect(startup).toContain('cli.ts install-services');
     expect(startup).toContain('/var/lib/chief/backups');
-    expect(startup).toContain('cli.ts prune-recovery');
+    const services = await read('src/ops/install-services.ts');
+    expect(services).toContain('chief-recovery-prune.timer');
+    expect(services).toContain('cli.ts prune-recovery');
     expect(await read('src/ops/host-state.ts')).toContain('30 * 24 * 3600_000');
     expect(app).toContain(
       'resource "google_service_account_iam_member" "deploy_act_as"',
