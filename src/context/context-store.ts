@@ -1,3 +1,4 @@
+import * as queries from '../database/queries.js';
 import type Database from 'better-sqlite3';
 
 import { hasSourceTombstone } from './source-scope.js';
@@ -57,64 +58,41 @@ export class ContextStore {
   ): number {
     return this.#database.transaction(() => {
       this.#assertInputsAvailable(input, allowRetentionExpiredSources);
-      const maximumRevision = this.#database
-        .prepare(
-          `select max(revision) from context_documents where document_key = ?`,
-        )
+      const maximumRevision = queries
+        .contextActivateDocumentRevisionSelectContextDocuments(this.#database)
         .pluck()
         .get(input.documentKey) as number | null;
       if (maximumRevision !== null && input.revision <= maximumRevision) {
         throw new Error('context document revision must increase');
       }
-      const previousIds = this.#database
-        .prepare(
-          `select id from context_documents
-           where document_key = ? and state = 'active'`,
-        )
+      const previousIds = queries
+        .contextActivateDocumentRevisionSelectContextDocuments2(this.#database)
         .pluck()
-        .all(input.documentKey) as number[];
+        .all(input.documentKey);
       for (const id of previousIds) this.#deleteSearchRows(id);
-      this.#database
-        .prepare(
-          `update context_documents
-           set state = 'superseded', updated_at = ?
-           where document_key = ? and state = 'active'`,
-        )
+      queries
+        .contextActivateDocumentRevisionUpdateContextDocuments(this.#database)
         .run(input.createdAt, input.documentKey);
 
-      const result = this.#database
-        .prepare(
-          `insert into context_documents
-              (document_key, tier, period_start, period_end, timezone,
-              topic_key, topic_label, revision, completeness, state, content_state,
-              content_state_reason, summary, confidence, retention_deadline,
-              created_at, updated_at, generation_input_tokens,
-              generation_output_tokens, generation_usage_usd, is_internal)
-           values
-             (@documentKey, @tier, @periodStart, @periodEnd, @timeZone,
-              @topicKey, @topicLabel, @revision, @completeness, 'active', 'available',
-              'retained', @summary, @confidence, @retentionDeadline,
-              @createdAt, @createdAt, @generationInputTokens,
-              @generationOutputTokens, @generationUsageUsd, @isInternal)`,
-        )
+      const result = queries
+        .contextActivateDocumentRevisionInsertContextDocuments(this.#database)
         .run({
           ...input,
           isInternal: input.isInternal === true ? 1 : 0,
           topicLabel: input.topicLabel ?? null,
         });
       const documentId = Number(result.lastInsertRowid);
-      const insertEvent = this.#database.prepare(
-        `insert into context_document_events (document_id, event_id)
-         values (?, ?)`,
-      );
+      const insertEvent =
+        queries.contextActivateDocumentRevisionInsertContextDocumentEvents(
+          this.#database,
+        );
       for (const eventId of input.eventIds) {
         insertEvent.run(documentId, eventId);
       }
-      const insertParent = this.#database.prepare(
-        `insert into context_document_parents
-           (document_id, parent_document_id)
-         values (?, ?)`,
-      );
+      const insertParent =
+        queries.contextActivateDocumentRevisionInsertContextDocumentParents(
+          this.#database,
+        );
       for (const parentId of input.parentDocumentIds) {
         insertParent.run(documentId, parentId);
       }
@@ -149,22 +127,12 @@ export class ContextStore {
       throw new Error('higher context tier requires parent-only lineage');
     }
     const sourceRevisionChecksum = input.sourceRevisionChecksum;
-    if (
-      input.eventIds.length > 0 &&
-      sourceRevisionChecksum === undefined &&
-      !allowRetentionExpiredSources
-    ) {
-      throw new Error('context document requires source revision checksum');
-    }
     if (input.eventIds.length > 0 && !allowRetentionExpiredSources) {
-      const current = this.#database
-        .prepare(
-          `select exists(
-             select 1 from context_jobs
-             where tier = 'hourly' and period_start = ? and period_end = ?
-               and timezone = ? and source_revision_checksum = ?
-           )`,
-        )
+      if (sourceRevisionChecksum === undefined)
+        throw new Error('context document requires source revision checksum');
+
+      const current = queries
+        .contextAssertInputsAvailableSelectContextJobs(this.#database)
         .pluck()
         .get(
           input.periodStart,
@@ -176,16 +144,10 @@ export class ContextStore {
         throw new Error('context document source revision changed');
       }
     }
-    const sourceAvailable = this.#database.prepare(
-      `select exists(
-         select 1 from conversation_events
-         where id = ? and (
-           content_state = 'available'
-           or (? = 1 and content_state = 'scrubbed'
-               and content_state_reason = 'retention-expired')
-         )
-       )`,
-    );
+    const sourceAvailable =
+      queries.contextAssertInputsAvailableSelectConversationEvents(
+        this.#database,
+      );
     if (
       input.eventIds.some(
         (eventId) =>
@@ -199,11 +161,9 @@ export class ContextStore {
     if (allowRetentionExpiredSources) {
       if (
         input.eventIds.some((eventId) => {
-          const scopeId = this.#database
-            .prepare(
-              `select guild_id || '/' || channel_id || '/' ||
-                        discord_message_id
-                 from conversation_events where id = ?`,
+          const scopeId = queries
+            .contextAssertInputsAvailableSelectConversationEvents2(
+              this.#database,
             )
             .pluck()
             .get(eventId) as string | undefined;
@@ -215,12 +175,10 @@ export class ContextStore {
         throw new Error('context document source is tombstoned');
       }
     }
-    const parentAvailable = this.#database.prepare(
-      `select exists(
-         select 1 from context_documents
-         where id = ? and state = 'active' and content_state = 'available'
-       )`,
-    );
+    const parentAvailable =
+      queries.contextAssertInputsAvailableSelectContextDocuments(
+        this.#database,
+      );
     if (
       input.parentDocumentIds.some(
         (parentId) => parentAvailable.pluck().get(parentId) !== 1,
@@ -229,12 +187,10 @@ export class ContextStore {
       throw new Error('context document parent is unavailable');
     }
     if (input.tier !== 'hourly') {
-      const parentFinal = this.#database.prepare(
-        `select exists(
-           select 1 from context_documents
-           where id = ? and completeness = 'final'
-         )`,
-      );
+      const parentFinal =
+        queries.contextAssertInputsAvailableSelectContextDocuments2(
+          this.#database,
+        );
       if (
         input.parentDocumentIds.some(
           (parentId) => parentFinal.pluck().get(parentId) !== 1,

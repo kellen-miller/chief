@@ -1,3 +1,4 @@
+import * as queries from '../database/queries.js';
 import { createHash, randomUUID } from 'node:crypto';
 
 import type Database from 'better-sqlite3';
@@ -232,17 +233,8 @@ export class ContextDeletionStore {
     memberLabel: string,
     excludedSourceScopeId: string,
   ): ContextDeletionDiscovery {
-    const matches = this.#database
-      .prepare(
-        `select guild_id || '/' || channel_id || '/' || discord_message_id
-                  as scopeId,
-                speaker_id as speakerId
-         from conversation_events
-         where guild_id = ? and channel_id = ? and role = 'human'
-           and content_state_reason not in ('discord-deleted', 'locally-forgotten')
-           and lower(trim(speaker_name)) = lower(trim(?))
-         order by id`,
-      )
+    const matches = queries
+      .contextDeletionDiscoverMemberSelectConversationEvents(this.#database)
       .all(this.#guildId, this.#channelId, memberLabel) as {
       readonly scopeId: string;
       readonly speakerId: string | null;
@@ -326,13 +318,9 @@ export class ContextDeletionStore {
   }): void {
     const requestId = randomUUID();
     const scopeId = digest(input.candidates);
-    this.#database
-      .prepare(
-        `insert into context_deletion_requests
-           (id, requester_id, scope_type, scope_id, confirmation_checksum,
-            status, expires_at, created_at, source_ids_json,
-            document_ids_json, memory_ids_json, request_source_id)
-         values (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,
+    queries
+      .contextDeletionCreateConfirmationInsertContextDeletionRequests(
+        this.#database,
       )
       .run(
         requestId,
@@ -355,16 +343,9 @@ export class ContextDeletionStore {
     readonly requesterId: string;
   }): ContextDeletionConfirmation {
     return this.#database.transaction((): ContextDeletionConfirmation => {
-      const row = this.#database
-        .prepare(
-          `select id, status, expires_at as expiresAt,
-                  source_ids_json as sourceIdsJson,
-                  document_ids_json as documentIdsJson,
-                  memory_ids_json as memoryIdsJson,
-                  request_source_id as requestSourceScopeId
-           from context_deletion_requests
-           where requester_id = ? and confirmation_checksum = ?
-           order by created_at desc limit 1`,
+      const row = queries
+        .contextDeletionConfirmationSelectContextDeletionRequests(
+          this.#database,
         )
         .get(input.requesterId, input.confirmationChecksum) as
         | {
@@ -381,8 +362,10 @@ export class ContextDeletionStore {
         return { status: 'invalid' };
       }
       if (row.expiresAt <= input.now) {
-        this.#database
-          .prepare('delete from context_deletion_requests where id = ?')
+        queries
+          .contextDeletionConfirmationDeleteContextDeletionRequests(
+            this.#database,
+          )
           .run(row.id);
         return { status: 'expired' };
       }
@@ -407,12 +390,8 @@ export class ContextDeletionStore {
   }): ContextDeletionResult {
     return this.#database.transaction(() => {
       if (input.confirmationRequestId !== undefined) {
-        const consumed = this.#database
-          .prepare(
-            `update context_deletion_requests
-             set status = 'consumed', consumed_at = ?
-             where id = ? and status = 'pending' and expires_at > ?`,
-          )
+        const consumed = queries
+          .contextDeletionDeleteUpdateContextDeletionRequests(this.#database)
           .run(input.now, input.confirmationRequestId, input.now);
         if (consumed.changes !== 1) {
           throw new Error('context deletion confirmation is unavailable');
@@ -443,13 +422,8 @@ export class ContextDeletionStore {
       if (primaryTombstone === undefined) {
         throw new Error('context deletion requires a tombstoned scope');
       }
-      const result = this.#database
-        .prepare(
-          `insert into context_forget_journal
-             (journal_key, scope_id, tombstone_key, occurred_at, checksum,
-              payload_json)
-           values (?, ?, ?, ?, ?, ?)`,
-        )
+      const result = queries
+        .contextDeletionDeleteInsertContextForgetJournal(this.#database)
         .run(
           journalKey,
           sources[0]?.scopeId ??
@@ -504,13 +478,9 @@ export class ContextDeletionStore {
         throw new Error('source suppression requires a source tombstone');
       }
       if (input.preuploadedJournal === undefined) {
-        this.#database
-          .prepare(
-            `insert into context_forget_journal
-               (journal_key, scope_id, tombstone_key, occurred_at, checksum,
-                payload_json)
-             values (?, ?, ?, ?, ?, ?)
-             on conflict(journal_key) do nothing`,
+        queries
+          .contextDeletionSuppressSourceInsertContextForgetJournal(
+            this.#database,
           )
           .run(
             journal.journalKey,
@@ -521,16 +491,9 @@ export class ContextDeletionStore {
             JSON.stringify(journal.payload),
           );
       } else {
-        this.#database
-          .prepare(
-            `insert into context_forget_journal
-               (journal_key, scope_id, tombstone_key, occurred_at, checksum,
-                payload_json, upload_status, uploaded_at)
-             values (?, ?, ?, ?, ?, ?, 'uploaded', ?)
-             on conflict(journal_key) do update set
-               upload_status = 'uploaded', uploaded_at = excluded.uploaded_at,
-               next_attempt_at = null, last_error_category = null
-             where checksum = excluded.checksum`,
+        queries
+          .contextDeletionSuppressSourceInsertContextForgetJournal2(
+            this.#database,
           )
           .run(
             journal.journalKey,
@@ -542,13 +505,8 @@ export class ContextDeletionStore {
             input.now,
           );
       }
-      const journalRow = this.#database
-        .prepare(
-          `select id, journal_key as journalKey, occurred_at as occurredAt,
-                  checksum, payload_json as payloadJson,
-                  upload_status as uploadStatus
-           from context_forget_journal where journal_key = ?`,
-        )
+      const journalRow = queries
+        .contextDeletionSuppressSourceSelectContextForgetJournal(this.#database)
         .get(journal.journalKey) as {
         readonly checksum: string;
         readonly id: number;
@@ -593,12 +551,9 @@ export class ContextDeletionStore {
     readonly sourceScopeId: string;
   }): ContextPreparedForgetJournal {
     const journalKey = `forget:${input.sourceScopeId}`;
-    const row = this.#database
-      .prepare(
-        `select journal_key as journalKey, occurred_at as occurredAt,
-                checksum, payload_json as payloadJson,
-                upload_status as uploadStatus
-         from context_forget_journal where journal_key = ?`,
+    const row = queries
+      .contextDeletionPrepareAuthoritativeSourceJournalSelectContextForgetJournal(
+        this.#database,
       )
       .get(journalKey) as
       | {
@@ -635,36 +590,25 @@ export class ContextDeletionStore {
   }
 
   public markJournalUploaded(journalId: number, now: number): void {
-    this.#database
-      .prepare(
-        `update context_forget_journal
-         set upload_status = 'uploaded', uploaded_at = ?,
-             next_attempt_at = null, last_error_category = null
-         where id = ? and upload_status != 'uploaded'`,
+    queries
+      .contextDeletionMarkJournalUploadedUpdateContextForgetJournal(
+        this.#database,
       )
       .run(now, journalId);
   }
 
   public markJournalFailed(journalId: number, now: number): void {
-    this.#database
-      .prepare(
-        `update context_forget_journal
-         set upload_status = 'failed', attempt_count = attempt_count + 1,
-             next_attempt_at = ?, last_error_category = 'upload'
-         where id = ? and upload_status != 'uploaded'`,
+    queries
+      .contextDeletionMarkJournalFailedUpdateContextForgetJournal(
+        this.#database,
       )
       .run(now + 5_000, journalId);
   }
 
   public nextForgetJournal(now: number): PendingContextForgetJournal | null {
-    const row = this.#database
-      .prepare(
-        `select id, journal_key as journalKey, occurred_at as occurredAt,
-                checksum, payload_json as payloadJson
-         from context_forget_journal
-         where upload_status in ('pending', 'failed')
-           and (next_attempt_at is null or next_attempt_at <= ?)
-         order by occurred_at, id limit 1`,
+    const row = queries
+      .contextDeletionNextForgetJournalSelectContextForgetJournal(
+        this.#database,
       )
       .get(now) as
       | {
@@ -802,15 +746,9 @@ export class ContextDeletionStore {
       if (primaryTombstone === undefined) {
         throw new Error('context forget journal has no tombstoned scope');
       }
-      this.#database
-        .prepare(
-          `insert into context_forget_journal
-             (journal_key, scope_id, tombstone_key, occurred_at, checksum,
-              payload_json, upload_status, uploaded_at)
-           values (?, ?, ?, ?, ?, ?, 'uploaded', ?)
-           on conflict(journal_key) do update set
-             upload_status = 'uploaded', uploaded_at = excluded.uploaded_at,
-             next_attempt_at = null, last_error_category = null`,
+      queries
+        .contextDeletionReplayForgetJournalInsertContextForgetJournal(
+          this.#database,
         )
         .run(
           entry.journalKey,
@@ -1211,13 +1149,8 @@ export class ContextDeletionStore {
       scopeId: input.scopeId,
       scopeType: input.scopeType,
     });
-    this.#database
-      .prepare(
-        `insert into context_tombstones
-           (tombstone_key, scope_type, scope_id, reason, occurred_at, checksum)
-         values (?, ?, ?, ?, ?, ?)
-         on conflict(scope_type, scope_id) do nothing`,
-      )
+    queries
+      .contextDeletionInsertTombstoneInsertContextTombstones(this.#database)
       .run(
         tombstoneKey,
         input.scopeType,
@@ -1254,25 +1187,11 @@ export class ContextDeletionStore {
       });
     }
     for (const period of periods.values()) {
-      const rows = this.#database
-        .prepare(
-          `select id, discord_message_id as discordMessageId, content,
-                  edited_at as editedAt
-           from conversation_events
-           where guild_id = ? and channel_id = ? and medium = 'text'
-             and content_state = 'available'
-             and occurred_at >= ? and occurred_at < ? order by id`,
-        )
+      const rows = queries
+        .contextDeletionEnqueueRebuildsSelectConversationEvents(this.#database)
         .all(this.#guildId, this.#channelId, period.start, period.end);
-      this.#database
-        .prepare(
-          `update context_jobs
-           set source_revision_checksum = ?, status = 'pending',
-               not_before = ?, freshness_deadline = ?, lease_expires_at = null,
-               last_error_category = 'rebuild'
-           where tier = 'hourly' and timezone = ?
-             and period_start = ? and period_end = ?`,
-        )
+      queries
+        .contextDeletionEnqueueRebuildsUpdateContextJobs(this.#database)
         .run(digest(rows), now, now, this.#timeZone, period.start, period.end);
     }
     const derived = new Map<
@@ -1293,24 +1212,11 @@ export class ContextDeletionStore {
     }
     for (const document of derived.values()) {
       const childTier = document.tier === 'daily' ? 'hourly' : 'daily';
-      const rows = this.#database
-        .prepare(
-          `select id, revision from context_documents
-           where tier = ? and completeness = 'final' and state = 'active'
-             and content_state = 'available' and is_internal = 0
-             and period_start >= ? and period_end <= ?
-           order by period_start, id`,
-        )
+      const rows = queries
+        .contextDeletionEnqueueRebuildsSelectContextDocuments(this.#database)
         .all(childTier, document.periodStart, document.periodEnd);
-      this.#database
-        .prepare(
-          `update context_jobs
-           set source_revision_checksum = ?, status = 'pending',
-               not_before = ?, freshness_deadline = ?, lease_expires_at = null,
-               last_error_category = 'rebuild'
-           where tier = ? and timezone = ?
-             and period_start = ? and period_end = ?`,
-        )
+      queries
+        .contextDeletionEnqueueRebuildsUpdateContextJobs2(this.#database)
         .run(
           digest(rows),
           now,
@@ -1327,11 +1233,8 @@ export class ContextDeletionStore {
       ),
     );
     for (const topicKey of topicKeys) {
-      const jobs = this.#database
-        .prepare(
-          `select id, source_document_ids_json as sourceDocumentIdsJson
-           from context_jobs where tier = 'long-term' and topic_key = ?`,
-        )
+      const jobs = queries
+        .contextDeletionEnqueueRebuildsSelectContextJobs(this.#database)
         .all(topicKey) as {
         readonly id: number;
         readonly sourceDocumentIdsJson: string;
@@ -1340,14 +1243,8 @@ export class ContextDeletionStore {
         const configuredIds = parseNumberIds(job.sourceDocumentIdsJson);
         const activeIds = this.#activeDocumentIds(configuredIds);
         const rows = this.#documentRevisionRows(activeIds);
-        this.#database
-          .prepare(
-            `update context_jobs
-             set source_revision_checksum = ?, source_document_ids_json = ?,
-                 status = 'pending', not_before = ?, freshness_deadline = ?,
-                 lease_expires_at = null, last_error_category = 'rebuild'
-             where id = ?`,
-          )
+        queries
+          .contextDeletionEnqueueRebuildsUpdateContextJobs3(this.#database)
           .run(digest(rows), JSON.stringify(activeIds), now, now, job.id);
       }
     }
@@ -1489,14 +1386,9 @@ export class ContextDeletionStore {
       if (scopes.length !== 1) return [];
       const scopeId = scopes[0];
       if (scopeId === undefined) return [];
-      const available = this.#database
-        .prepare(
-          `select exists(
-             select 1 from conversation_events c
-             where c.guild_id || '/' || c.channel_id || '/' ||
-                   c.discord_message_id = ?
-               and c.content_state = 'available'
-           )`,
+      const available = queries
+        .contextDeletionUnavailableDocumentSourceScopesSelectConversationEvents(
+          this.#database,
         )
         .pluck()
         .get(scopeId);
@@ -1516,14 +1408,8 @@ export class ContextDeletionStore {
 
   #sourceBelongsTo(scopeId: string, requesterId: string): boolean {
     return (
-      this.#database
-        .prepare(
-          `select exists(
-             select 1 from conversation_events
-             where guild_id || '/' || channel_id || '/' ||
-                     discord_message_id = ? and speaker_id = ?
-           )`,
-        )
+      queries
+        .contextDeletionSourceBelongsToSelectConversationEvents(this.#database)
         .pluck()
         .get(scopeId, requesterId) === 1
     );

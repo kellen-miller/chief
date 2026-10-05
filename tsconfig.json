@@ -17,7 +17,8 @@
     "skipLibCheck": true,
     "strict": true,
     "target": "ES2024",
-    "types": ["node", "vitest/globals"]
+    "types": ["node", "vitest/globals"],
+    "rewriteRelativeImportExtensions": true
   },
   "include": [
     "scripts/**/*.ts",

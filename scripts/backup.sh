@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-IMAGE="${1:?usage: backup.sh IMAGE DATABASE DESTINATION}"
-DATABASE="${2:?usage: backup.sh IMAGE DATABASE DESTINATION}"
-DESTINATION="${3:?usage: backup.sh IMAGE DATABASE DESTINATION}"
-docker run --rm --volume "$(dirname "$DATABASE"):$(dirname "$DATABASE")" \
-  "$IMAGE" backup --database "$DATABASE" --destination "$DESTINATION"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec "${CHIEF_OPS_NODE:-node}" "$SCRIPT_DIR/../src/ops/cli.ts" backup "$@"

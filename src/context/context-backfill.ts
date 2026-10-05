@@ -1,3 +1,4 @@
+import * as queries from '../database/queries.js';
 import { createHash, randomUUID } from 'node:crypto';
 
 import type Database from 'better-sqlite3';
@@ -196,24 +197,8 @@ export class ContextBackfillService {
   public nextDeadline(): number | null {
     if (this.#history === undefined) return null;
     return (
-      (this.#database
-        .prepare(
-          `select min(coalesce(b.activated_at, b.created_at))
-           from context_backfills b
-           where b.scope_id = ? and b.status = 'active'
-             and (
-               b.next_page_index is not null
-               or exists(
-                 select 1 from context_jobs j
-                 where j.backfill_run_id = b.id and j.status = 'failed'
-               )
-               or not exists(
-                 select 1 from context_jobs j
-                 where j.backfill_run_id = b.id
-                   and j.status in ('pending', 'leased')
-               )
-             )`,
-        )
+      (queries
+        .contextBackfillNextDeadlineSelectContextBackfills(this.#database)
         .pluck()
         .get(this.#scopeId()) as number | null) ?? null
     );
@@ -351,11 +336,8 @@ export class ContextBackfillService {
         ];
         const revision =
           Number(
-            this.#database
-              .prepare(
-                `select coalesce(max(revision), 0) from context_documents
-                 where document_key = ?`,
-              )
+            queries
+              .contextBackfillRunNextSelectContextDocuments(this.#database)
               .pluck()
               .get(segment.periodKey),
           ) + 1;
@@ -379,14 +361,8 @@ export class ContextBackfillService {
           timeZone: this.#timeZone,
           topicKey: null,
         });
-        this.#database
-          .prepare(
-            `insert into context_backfill_segments
-               (run_id, segment_key, page_index, period_start, period_end,
-                source_checksum, source_count, document_id,
-                actual_usage_usd, committed_at)
-             values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
+        queries
+          .contextBackfillRunNextInsertContextBackfillSegments(this.#database)
           .run(
             run.runId,
             segment.key,
@@ -428,25 +404,16 @@ export class ContextBackfillService {
     if (!Number.isFinite(input.maximumUsageUsd) || input.maximumUsageUsd <= 0) {
       throw new RangeError('backfill maximum usage must be positive');
     }
-    const runId = this.#database
-      .prepare(
-        `select id from context_backfills
-         where scope_id = ? and status = 'ready'
-         order by id desc limit 1`,
-      )
+    const runId = queries
+      .contextBackfillActivateSelectContextBackfills(this.#database)
       .pluck()
-      .get(this.#scopeId()) as number | undefined;
+      .get(this.#scopeId());
     if (runId === undefined) {
       throw new Error('backfill activation requires a completed dry-run');
     }
     const now = this.#now();
-    this.#database
-      .prepare(
-        `update context_backfills
-         set status = 'active', maximum_usage_usd = ?, activated_at = ?,
-             pause_reason = null, updated_at = ?
-         where id = ? and status = 'ready'`,
-      )
+    queries
+      .contextBackfillActivateUpdateContextBackfills(this.#database)
       .run(input.maximumUsageUsd, now, now, runId);
     const result = this.status(runId);
     if (result === null) throw new Error('activated backfill disappeared');
@@ -457,13 +424,8 @@ export class ContextBackfillService {
     readonly replace: boolean;
   }): Promise<ContextBackfillStatus> {
     const history = this.#requireHistory();
-    const unfinished = this.#database
-      .prepare(
-        `select id, status from context_backfills
-         where scope_id = ?
-           and status in ('dry-run', 'ready', 'active', 'paused')
-         order by id desc limit 1`,
-      )
+    const unfinished = queries
+      .contextBackfillDryRunSelectContextBackfills(this.#database)
       .get(this.#scopeId()) as
       { readonly id: number; readonly status: string } | undefined;
     if (unfinished !== undefined && !input.replace) {
@@ -474,13 +436,8 @@ export class ContextBackfillService {
     const createdAt = this.#now();
     const runId = this.#database.transaction(() => {
       if (unfinished !== undefined) {
-        const outstanding = this.#database
-          .prepare(
-            `select exists(
-               select 1 from usage_ledger
-               where backfill_run_id = ? and actual_usd is null
-             )`,
-          )
+        const outstanding = queries
+          .contextBackfillDryRunSelectUsageLedger(this.#database)
           .pluck()
           .get(unfinished.id);
         if (outstanding === 1) {
@@ -488,21 +445,13 @@ export class ContextBackfillService {
             'unfinished backfill has outstanding paid work; retry replacement after it settles',
           );
         }
-        this.#database
-          .prepare(
-            `update context_backfills
-             set status = 'failed', pause_reason = 'replaced', updated_at = ?
-             where id = ?`,
-          )
+        queries
+          .contextBackfillDryRunUpdateContextBackfills(this.#database)
           .run(createdAt, unfinished.id);
       }
       return Number(
-        this.#database
-          .prepare(
-            `insert into context_backfills
-               (run_key, scope_id, status, created_at, updated_at)
-             values (?, ?, 'dry-run', ?, ?)`,
-          )
+        queries
+          .contextBackfillDryRunInsertContextBackfills(this.#database)
           .run(randomUUID(), this.#scopeId(), createdAt, createdAt)
           .lastInsertRowid,
       );
@@ -528,12 +477,8 @@ export class ContextBackfillService {
       throw new Error('only paused or incomplete backfills can resume');
     }
     const now = this.#now();
-    this.#database
-      .prepare(
-        `update context_backfills
-         set status = 'active', pause_reason = null, updated_at = ?
-         where id = ? and scope_id = ? and status = 'paused'`,
-      )
+    queries
+      .contextBackfillResumeUpdateContextBackfills(this.#database)
       .run(now, runId, this.#scopeId());
     const resumed = this.status(runId);
     if (resumed === null) throw new Error('resumed backfill disappeared');
@@ -569,13 +514,8 @@ export class ContextBackfillService {
     history: DiscordHistorySource,
   ): Promise<ContextBackfillStatus> {
     const startedAt = this.#now();
-    const progress = this.#database
-      .prepare(
-        `select cursor_source_id as cursorSourceId,
-                page_count as pageCount
-         from context_backfills
-         where id = ? and scope_id = ? and status = 'dry-run'`,
-      )
+    const progress = queries
+      .contextBackfillScanDryRunSelectContextBackfills(this.#database)
       .get(runId, this.#scopeId()) as
       | { readonly cursorSourceId: string | null; readonly pageCount: number }
       | undefined;
@@ -654,25 +594,18 @@ export class ContextBackfillService {
       0,
     );
     const alreadyIngestedCount = sources.filter(({ messageId }) =>
-      this.#database
-        .prepare(
-          `select exists(
-             select 1 from conversation_events
-             where guild_id = ? and channel_id = ? and discord_message_id = ?
-           )`,
+      queries
+        .contextBackfillRecordManifestPageSelectConversationEvents(
+          this.#database,
         )
         .pluck()
         .get(this.#guildId, this.#channelId, messageId),
     ).length;
     const occurred = sources.map(({ occurredAt }) => occurredAt);
     this.#database.transaction(() => {
-      this.#database
-        .prepare(
-          `insert into context_backfill_pages
-             (run_id, page_index, request_before_source_id,
-              oldest_source_id, newest_source_id, eligible_count,
-              eligible_bytes, eligible_tokens, identity_checksum)
-           values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      queries
+        .contextBackfillRecordManifestPageInsertContextBackfillPages(
+          this.#database,
         )
         .run(
           runId,
@@ -691,31 +624,8 @@ export class ContextBackfillService {
             })),
           ),
         );
-      this.#database
-        .prepare(
-          `update context_backfills set
-             cursor_source_id = ?, eligible_count = eligible_count + ?,
-             already_ingested_count = already_ingested_count + ?,
-             eligible_bytes = eligible_bytes + ?,
-             eligible_tokens = eligible_tokens + ?, page_count = page_count + 1,
-             oldest_source_id = case
-               when oldest_source_id is null then ?
-               when cast(? as integer) < cast(oldest_source_id as integer)
-                 then ? else oldest_source_id end,
-             newest_source_id = case
-               when newest_source_id is null then ?
-               when cast(? as integer) > cast(newest_source_id as integer)
-                 then ? else newest_source_id end,
-             oldest_occurred_at = case
-               when ? is null then oldest_occurred_at
-               when oldest_occurred_at is null then ?
-               else min(oldest_occurred_at, ?) end,
-             newest_occurred_at = case
-               when ? is null then newest_occurred_at
-               when newest_occurred_at is null then ?
-               else max(newest_occurred_at, ?) end,
-             updated_at = ? where id = ? and status = 'dry-run'`,
-        )
+      queries
+        .contextBackfillRecordManifestPageUpdateContextBackfills(this.#database)
         .run(
           page.nextCursor,
           sources.length,
@@ -741,22 +651,12 @@ export class ContextBackfillService {
   }
 
   #completeManifest(runId: number, pageCount: number, now: number): void {
-    const pages = this.#database
-      .prepare(
-        `select page_index as pageIndex,
-                request_before_source_id as requestBeforeSourceId,
-                oldest_source_id as oldestSourceId,
-                newest_source_id as newestSourceId,
-                eligible_count as eligibleCount,
-                eligible_bytes as eligibleBytes,
-                eligible_tokens as eligibleTokens,
-                identity_checksum as identityChecksum
-         from context_backfill_pages where run_id = ? order by page_index`,
-      )
+    const pages = queries
+      .contextBackfillCompleteManifestSelectContextBackfillPages(this.#database)
       .all(runId);
     const eligibleTokens = Number(
-      this.#database
-        .prepare('select eligible_tokens from context_backfills where id = ?')
+      queries
+        .contextBackfillCompleteManifestSelectContextBackfills(this.#database)
         .pluck()
         .get(runId),
     );
@@ -770,14 +670,8 @@ export class ContextBackfillService {
       (outputTokens / 1_000_000) *
         (this.#pricing.summaryOutputPerMillionUsd +
           this.#pricing.embeddingInputPerMillionUsd);
-    this.#database
-      .prepare(
-        `update context_backfills
-         set status = 'ready', cursor_source_id = null,
-             next_page_index = ?, estimated_usage_usd = ?,
-             manifest_checksum = ?, updated_at = ?
-         where id = ? and status = 'dry-run'`,
-      )
+    queries
+      .contextBackfillCompleteManifestUpdateContextBackfills(this.#database)
       .run(
         pageCount === 0 ? null : pageCount - 1,
         estimatedUsageUsd,
@@ -794,13 +688,11 @@ export class ContextBackfillService {
   ): Promise<Set<string>> {
     const seen = new Set<string>();
     if (pageCount === 0) return seen;
-    const pages = this.#database
-      .prepare(
-        `select request_before_source_id as requestBeforeSourceId
-         from context_backfill_pages
-         where run_id = ? order by page_index`,
-      )
-      .all(runId) as { readonly requestBeforeSourceId: string | null }[];
+    const pages = queries
+      .contextBackfillManifestSeenIdsSelectContextBackfillPages(this.#database)
+      .all(runId) as {
+      readonly requestBeforeSourceId: string | null;
+    }[];
     for (const page of pages) {
       const fetched = await history.fetchPage({
         afterMessageId: null,
@@ -821,29 +713,16 @@ export class ContextBackfillService {
 
   #activeRun(): ActiveBackfillRow | null {
     return (
-      (this.#database
-        .prepare(
-          `select id as runId, next_page_index as nextPageIndex
-           from context_backfills
-           where scope_id = ? and status = 'active'
-           order by activated_at, id limit 1`,
-        )
+      (queries
+        .contextBackfillActiveRunSelectContextBackfills(this.#database)
         .get(this.#scopeId()) as ActiveBackfillRow | undefined) ?? null
     );
   }
 
   #page(runId: number, pageIndex: number): BackfillPageRow | null {
     return (
-      (this.#database
-        .prepare(
-          `select page_index as pageIndex,
-                  request_before_source_id as requestBeforeSourceId,
-                  oldest_source_id as oldestSourceId,
-                  newest_source_id as newestSourceId,
-                  completed_at as completedAt
-           from context_backfill_pages
-           where run_id = ? and page_index = ?`,
-        )
+      (queries
+        .contextBackfillPageSelectContextBackfillPages(this.#database)
         .get(runId, pageIndex) as BackfillPageRow | undefined) ?? null
     );
   }
@@ -913,13 +792,9 @@ export class ContextBackfillService {
     pageIndex: number,
     source: NormalizedTextSource,
   ): boolean {
-    const existing = this.#database
-      .prepare(
-        `select id, content_state as contentState,
-                content_state_reason as contentStateReason,
-                revision_checksum as revisionChecksum
-         from conversation_events
-         where guild_id = ? and channel_id = ? and discord_message_id = ?`,
+    const existing = queries
+      .contextBackfillSourceEligibleForRunSelectConversationEvents(
+        this.#database,
       )
       .get(this.#guildId, this.#channelId, source.messageId) as
       | {
@@ -937,12 +812,9 @@ export class ContextBackfillService {
     ) {
       return false;
     }
-    const identity = this.#database
-      .prepare(
-        `select first_page_index as firstPageIndex,
-                revision_checksum as revisionChecksum
-         from context_backfill_source_identities
-         where run_id = ? and message_id = ? and event_id = ?`,
+    const identity = queries
+      .contextBackfillSourceEligibleForRunSelectContextBackfillSourceIdentities(
+        this.#database,
       )
       .get(runId, source.messageId, existing.id) as
       | { readonly firstPageIndex: number; readonly revisionChecksum: string }
@@ -961,13 +833,12 @@ export class ContextBackfillService {
   }
 
   #segmentCommitted(runId: number, segment: BackfillSegment): boolean {
-    const checksum = this.#database
-      .prepare(
-        `select source_checksum from context_backfill_segments
-         where run_id = ? and segment_key = ?`,
+    const checksum = queries
+      .contextBackfillSegmentCommittedSelectContextBackfillSegments(
+        this.#database,
       )
       .pluck()
-      .get(runId, segment.key) as string | undefined;
+      .get(runId, segment.key);
     return checksum === segmentChecksum(segment);
   }
 
@@ -975,24 +846,16 @@ export class ContextBackfillService {
     readonly id: number;
     readonly summary: string;
   }[] {
-    return this.#database
-      .prepare(
-        `select id, summary from context_documents
-         where document_key = ? and tier = 'hourly'
-           and period_start = ? and period_end = ? and timezone = ?
-           and state = 'active' and content_state = 'available'
-           and is_internal = 0
-         order by revision desc limit 1`,
+    return queries
+      .contextBackfillPriorAggregateDocumentSelectContextDocuments(
+        this.#database,
       )
       .all(
         segment.periodKey,
         segment.periodStart,
         segment.periodEnd,
         this.#timeZone,
-      ) as {
-      readonly id: number;
-      readonly summary: string;
-    }[];
+      );
   }
 
   async #aggregateResult(
@@ -1039,13 +902,8 @@ export class ContextBackfillService {
 
   #existingRevision(messageId: string): ExistingRevisionRow | null {
     return (
-      (this.#database
-        .prepare(
-          `select occurred_at as occurredAt, edited_at as editedAt,
-                  revision_checksum as revisionChecksum
-           from conversation_events
-           where guild_id = ? and channel_id = ? and discord_message_id = ?`,
-        )
+      (queries
+        .contextBackfillExistingRevisionSelectConversationEvents(this.#database)
         .get(this.#guildId, this.#channelId, messageId) as
         ExistingRevisionRow | undefined) ?? null
     );
@@ -1057,13 +915,9 @@ export class ContextBackfillService {
     segment: BackfillSegment,
     expectedRevisions: ReadonlyMap<string, ExistingRevisionRow | null>,
   ): void {
-    const currentRun = this.#database
-      .prepare(
-        `select exists(
-           select 1 from context_backfills
-           where id = ? and scope_id = ? and status = 'active'
-             and next_page_index = ?
-         )`,
+    const currentRun = queries
+      .contextBackfillAssertSegmentCommitCurrentSelectContextBackfills(
+        this.#database,
       )
       .pluck()
       .get(runId, this.#scopeId(), pageIndex);
@@ -1087,28 +941,18 @@ export class ContextBackfillService {
     pageIndex: number,
     source: NormalizedTextSource,
   ): number {
-    const existing = this.#database
-      .prepare(
-        `select id from conversation_events
-         where guild_id = ? and channel_id = ? and discord_message_id = ?`,
+    const existing = queries
+      .contextBackfillInsertExpiredIdentitySelectConversationEvents(
+        this.#database,
       )
       .pluck()
-      .get(this.#guildId, this.#channelId, source.messageId) as
-      number | undefined;
+      .get(this.#guildId, this.#channelId, source.messageId);
     const eventId =
       existing ??
       Number(
-        this.#database
-          .prepare(
-            `insert into conversation_events
-             (platform_event_id, discord_message_id, guild_id, channel_id,
-              request_id, logical_response_id, role, speaker_id, speaker_name,
-              medium, reply_to_message_id, content,
-              attachment_metadata_json, occurred_at, edited_at, deleted_at,
-              recent_until, retention_deadline, content_state,
-              content_state_reason, revision_checksum, response_chunk_index)
-           values (?, ?, ?, ?, null, null, ?, ?, null, 'text', ?, '', '[]',
-                   ?, ?, null, ?, ?, 'scrubbed', 'retention-expired', ?, null)`,
+        queries
+          .contextBackfillInsertExpiredIdentityInsertConversationEvents(
+            this.#database,
           )
           .run(
             source.messageId,
@@ -1125,13 +969,9 @@ export class ContextBackfillService {
             source.revisionChecksum,
           ).lastInsertRowid,
       );
-    this.#database
-      .prepare(
-        `insert into context_backfill_source_identities
-           (run_id, message_id, event_id, first_page_index,
-            revision_checksum, occurred_at)
-         values (?, ?, ?, ?, ?, ?)
-         on conflict(run_id, message_id) do nothing`,
+    queries
+      .contextBackfillInsertExpiredIdentityInsertContextBackfillSourceIdentities(
+        this.#database,
       )
       .run(
         runId,
@@ -1154,51 +994,12 @@ export class ContextBackfillService {
       tier: 'daily',
       timeZone: this.#timeZone,
     });
-    const sourceDocuments = this.#database
-      .prepare(
-        `select id, revision from context_documents
-         where tier = 'hourly' and completeness = 'final'
-           and state = 'active' and content_state = 'available'
-           and is_internal = 0 and period_start >= ? and period_end <= ?
-         order by period_start, id`,
-      )
+    const sourceDocuments = queries
+      .contextBackfillScheduleDailySelectContextDocuments(this.#database)
       .all(period.start, period.end);
     const checksum = digest(sourceDocuments);
-    this.#database
-      .prepare(
-        `insert into context_jobs
-           (job_key, tier, period_start, period_end, timezone, topic_key,
-            completeness, source_revision_checksum, not_before,
-            freshness_deadline, source_document_ids_json, backfill_run_id)
-         values (?, 'daily', ?, ?, ?, null, 'final', ?, ?, ?, '[]', ?)
-         on conflict(job_key) do update set
-           source_revision_checksum = excluded.source_revision_checksum,
-           status = case
-             when context_jobs.source_revision_checksum !=
-                  excluded.source_revision_checksum
-             then 'pending' else context_jobs.status end,
-           not_before = case
-             when context_jobs.source_revision_checksum !=
-                  excluded.source_revision_checksum
-             then excluded.not_before else context_jobs.not_before end,
-           lease_expires_at = case
-             when context_jobs.source_revision_checksum !=
-                  excluded.source_revision_checksum
-             then null else context_jobs.lease_expires_at end,
-           usage_reservation_id = case
-             when context_jobs.source_revision_checksum !=
-                  excluded.source_revision_checksum
-             then null else context_jobs.usage_reservation_id end,
-           last_error_category = case
-             when context_jobs.source_revision_checksum !=
-                  excluded.source_revision_checksum
-             then null else context_jobs.last_error_category end,
-           backfill_run_id = case
-             when excluded.backfill_run_id is not null
-             then excluded.backfill_run_id
-             when context_jobs.status = 'completed' then null
-             else context_jobs.backfill_run_id end`,
-      )
+    queries
+      .contextBackfillScheduleDailyInsertContextJobs(this.#database)
       .run(
         `${period.key}:final`,
         period.start,
@@ -1213,29 +1014,18 @@ export class ContextBackfillService {
 
   #completePage(runId: number, pageIndex: number, now: number): void {
     const nextPageIndex = pageIndex - 1;
-    this.#database
-      .prepare(
-        `update context_backfill_pages set completed_at = coalesce(completed_at, ?)
-         where run_id = ? and page_index = ?`,
-      )
+    queries
+      .contextBackfillCompletePageUpdateContextBackfillPages(this.#database)
       .run(now, runId, pageIndex);
-    this.#database
-      .prepare(
-        `update context_backfills
-         set next_page_index = case when ? < 0 then null else ? end,
-             updated_at = ?
-         where id = ? and status = 'active' and next_page_index = ?`,
-      )
+    queries
+      .contextBackfillCompletePageUpdateContextBackfills(this.#database)
       .run(nextPageIndex, nextPageIndex, now, runId, pageIndex);
   }
 
   #finalizeRun(runId: number, now: number): ContextBackfillWorkResult {
     const failed = Number(
-      this.#database
-        .prepare(
-          `select count(*) from context_jobs
-           where backfill_run_id = ? and status = 'failed'`,
-        )
+      queries
+        .contextBackfillFinalizeRunSelectContextJobs(this.#database)
         .pluck()
         .get(runId),
     );
@@ -1244,53 +1034,38 @@ export class ContextBackfillService {
       return { status: 'retry' };
     }
     const outstanding = Number(
-      this.#database
-        .prepare(
-          `select count(*) from context_jobs
-           where backfill_run_id = ? and status in ('pending', 'leased')`,
-        )
+      queries
+        .contextBackfillFinalizeRunSelectContextJobs2(this.#database)
         .pluck()
         .get(runId),
     );
     if (outstanding > 0) return { status: 'idle' };
     const outstandingReservations = Number(
-      this.#database
-        .prepare(
-          `select count(*) from usage_ledger
-           where backfill_run_id = ? and actual_usd is null`,
-        )
+      queries
+        .contextBackfillFinalizeRunSelectUsageLedger(this.#database)
         .pluck()
         .get(runId),
     );
     if (outstandingReservations > 0) return { status: 'idle' };
-    this.#database
-      .prepare(
-        `update context_backfills
-         set status = 'completed', completed_at = ?, updated_at = ?
-         where id = ? and status = 'active' and next_page_index is null`,
-      )
+    queries
+      .contextBackfillFinalizeRunUpdateContextBackfills(this.#database)
       .run(now, now, runId);
     return { runId, status: 'completed' };
   }
 
   #pause(runId: number, reason: string, now: number): void {
-    this.#database
-      .prepare(
-        `update context_backfills
-         set status = 'paused', pause_reason = ?, updated_at = ?
-         where id = ? and status = 'active'`,
-      )
+    queries
+      .contextBackfillPauseUpdateContextBackfills(this.#database)
       .run(reason, now, runId);
   }
 
   #recoverOutstandingReservations(runId: number, budget: UsageBudget): void {
-    const ids = this.#database
-      .prepare(
-        `select id from usage_ledger
-         where backfill_run_id = ? and actual_usd is null order by occurred_at`,
+    const ids = queries
+      .contextBackfillRecoverOutstandingReservationsSelectUsageLedger(
+        this.#database,
       )
       .pluck()
-      .all(runId) as string[];
+      .all(runId);
     for (const id of ids) {
       try {
         budget.reconcileConservatively(id);
