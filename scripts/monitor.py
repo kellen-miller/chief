@@ -27,6 +27,7 @@ ERROR_EVENTS = frozenset({
     "chief_health_failed", "chief_recovery_failed", "chief_disk_low",
     "chief_voice_underrun", "chief_image_cleanup_failed",
 })
+DEPLOYMENT_GRACE_SECONDS = 15 * 60
 CONTEXT_REASONS = frozenset({
     "backlog", "indexing-budget", "overall-budget", "provider", "run-budget",
 })
@@ -47,6 +48,7 @@ def number(value):
 
 
 def collect_snapshot(now):
+    sampled_at = dt.datetime.now(dt.timezone.utc).timestamp()
     try:
         with urllib.request.urlopen("http://127.0.0.1:8080/healthz", timeout=5) as response:
             health = json.load(response)
@@ -68,7 +70,16 @@ def collect_snapshot(now):
     except (KeyError, ValueError):
         backup_at = 0
 
+    try:
+        deployment = json.loads(Path("/run/chief/deployment-monitoring.json").read_text())
+        if not isinstance(deployment, dict):
+            deployment = {}
+    except (OSError, ValueError):
+        deployment = {}
+
     return {
+        "deployment": deployment,
+        "sampled_at": sampled_at,
         "health": health,
         "backup_ok": backup.get("Result") == "success" and now - backup_at <= 36 * 3600,
         "backup_age_hours": (now - backup_at) / 3600 if backup_at else None,
@@ -77,7 +88,7 @@ def collect_snapshot(now):
     }
 
 
-def collect_errors(since, now):
+def collect_errors(since, now, deployment):
     events = collections.Counter()
     try:
         logs = command("docker", "logs", "--since", str(since), "--until", str(now),
@@ -91,8 +102,16 @@ def collect_errors(since, now):
         for line in stream.splitlines():
             try:
                 event = json.loads(line)
+                observed = number(event.get("time")) / 1000
                 if is_journal:
+                    observed = number(float(event.get("__REALTIME_TIMESTAMP", 0))) / 1000000
                     event = json.loads(event.get("MESSAGE", ""))
+
+                started = number(deployment.get("started"))
+                ended = number(deployment.get("ended")) or min(now, started + DEPLOYMENT_GRACE_SECONDS)
+                if event.get("msg") == "chief_health_failed" and started and started <= observed <= ended:
+                    continue
+
                 if event.get("msg") in ERROR_EVENTS:
                     events[event["msg"]] += 1
             except (ValueError, AttributeError, TypeError):
@@ -110,14 +129,26 @@ def build_reports(snapshot, events, state, now, timezone):
     usage = diagnostics.get("usage", {})
     memory = diagnostics.get("memoryJobs", {})
     checks = health.get("criticalChecks", {})
+    deployment = snapshot.get("deployment", {})
+    sampled_at = snapshot.get("sampled_at", now)
+    started = number(deployment.get("started"))
+    deploying = ((deployment.get("status") == "active" and
+                  0 <= now - started < DEPLOYMENT_GRACE_SECONDS) or
+                 (deployment.get("status") == "completed" and started and
+                  sampled_at <= number(deployment.get("ended")) and now >= started))
     problems = {}
+    if deployment.get("status") == "failed":
+        problems["deployment"] = "Deployment failed; check deployment logs and rollback"
+    elif deployment.get("status") == "active" and not deploying:
+        problems["deployment"] = "Deployment exceeded the 15-minute maintenance window"
+
     discord_unready_since = None
     if checks.get("discord") is False:
         discord_unready_since = state.get("discord_unready_since")
         if discord_unready_since is None:
             discord_unready_since = now
 
-    if health.get("ready") is not True:
+    if not deploying and health.get("ready") is not True:
         failed = [name for name in ("database", "discord", "disk", "maintenance")
                   if checks.get(name) is False]
         if "discord" in failed and now - discord_unready_since < 60:
@@ -159,6 +190,9 @@ def build_reports(snapshot, events, state, now, timezone):
         problems["budget"] = "Monthly AI budget warning reached"
 
     previous = state.get("problems", {})
+    if deploying and "health" in previous:
+        problems["health"] = previous["health"]
+
     for key, diagnostic in (("context", "context"), ("memory", "memoryJobs"),
                             ("backfill", "context"), ("reconciliation", "context"),
                             ("budget", "usage")):
@@ -202,7 +236,7 @@ def build_reports(snapshot, events, state, now, timezone):
         }], "allowed_mentions": {"parse": []}})
 
     report_date = state.get("report_date")
-    if local.hour >= 9 and report_date != local.date().isoformat():
+    if not deploying and local.hour >= 9 and report_date != local.date().isoformat():
         models = diagnostics.get("models", {})
         model_names = []
         for name in ("text", "memory", "voice"):
@@ -249,7 +283,8 @@ def main():
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
     now = int(dt.datetime.now(dt.timezone.utc).timestamp())
     snapshot = collect_snapshot(now)
-    events = collect_errors(state.get("cursor", now - 60), now)
+    now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+    events = collect_errors(state.get("cursor", now - 60), now, snapshot["deployment"])
     messages, receipt = build_reports(snapshot, events, state, now, config["CHIEF_CONTEXT_TIME_ZONE"])
     if messages:
         token = command("gcloud", "secrets", "versions", "access", "latest",

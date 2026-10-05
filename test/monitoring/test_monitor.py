@@ -17,6 +17,7 @@ class ChiefMonitoringTest(unittest.TestCase):
     def setUp(self):
         self.now = int(dt.datetime.fromisoformat("2026-10-04T13:00:00+00:00").timestamp())
         self.snapshot = {
+            "deployment": {},
             "health": {
                 "ready": True,
                 "criticalChecks": {key: True for key in ("database", "discord", "disk", "maintenance")},
@@ -70,7 +71,7 @@ class ChiefMonitoringTest(unittest.TestCase):
             "invalid json SECRET",
         ])
         with patch.object(monitor, "command", side_effect=[logs, ""]):
-            events = monitor.collect_errors(self.now - 60, self.now)
+            events = monitor.collect_errors(self.now - 60, self.now, {})
         self.assertEqual(events, {"discord_message_failed": 1})
         snapshot = copy.deepcopy(self.snapshot)
         snapshot["health"]["diagnostics"]["context"].update(degraded=True, reason="PRIVATE")
@@ -88,7 +89,7 @@ class ChiefMonitoringTest(unittest.TestCase):
             "discord_gateway_error", "discord_shard_error",
         ))
         with patch.object(monitor, "command", side_effect=[logs, ""]):
-            events = monitor.collect_errors(self.now - 60, self.now)
+            events = monitor.collect_errors(self.now - 60, self.now, {})
         self.assertEqual(events, {"discord_gateway_error": 1, "discord_shard_error": 1})
 
     def test_discord_disconnect_alert_requires_one_minute_and_recovers(self):
@@ -111,6 +112,57 @@ class ChiefMonitoringTest(unittest.TestCase):
         offline["health"]["criticalChecks"]["database"] = False
         messages, _ = monitor.build_reports(offline, {}, state, start + 62, "America/New_York")
         self.assertIn("Not ready: database", json.dumps(messages))
+
+    def test_deployment_outage_and_recovery_are_silent_and_daily_is_deferred(self):
+        snapshot = copy.deepcopy(self.snapshot)
+        snapshot["health"] = {}
+        snapshot["deployment"] = {"started": self.now - 30, "status": "active"}
+        messages, state = monitor.build_reports(snapshot, {}, {}, self.now, "America/New_York")
+        self.assertEqual(messages, [])
+        self.assertEqual(state["problems"], {})
+        self.assertIsNone(state["report_date"])
+        snapshot["deployment"].update(ended=self.now + 30, status="completed")
+        snapshot["sampled_at"] = self.now
+        raced, _ = monitor.build_reports(snapshot, {}, state, self.now + 60, "America/New_York")
+        self.assertEqual(raced, [])
+        snapshot["sampled_at"] = self.now + 60
+        snapshot["health"] = self.snapshot["health"]
+        messages, state = monitor.build_reports(snapshot, {}, state, self.now + 60, "America/New_York")
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["embeds"][0]["title"], "Chief · Daily report")
+
+    def test_deployment_does_not_clear_existing_incident_or_hide_disk_failure(self):
+        snapshot = copy.deepcopy(self.snapshot)
+        snapshot["health"] = {}
+        snapshot["deployment"] = {"started": self.now - 30, "status": "active"}
+        snapshot["disk_free_gib"]["boot"] = 0.1
+        state = {"problems": {"health": "Not ready: database"}}
+        messages, receipt = monitor.build_reports(snapshot, {}, state, self.now, "America/New_York")
+        self.assertEqual(receipt["problems"]["health"], "Not ready: database")
+        self.assertNotIn("✅ Recovered", [field["name"] for message in messages for embed in message["embeds"] for field in embed["fields"]])
+        self.assertIn("0.5 GiB", json.dumps(messages))
+
+    def test_failed_or_abandoned_deployment_remains_actionable(self):
+        for deployment in ({"started": self.now - 30, "ended": self.now, "status": "failed"},
+                           {"started": self.now - 900, "status": "active"}):
+            snapshot = copy.deepcopy(self.snapshot)
+            snapshot["health"] = {}
+            snapshot["deployment"] = deployment
+            messages, receipt = monitor.build_reports(snapshot, {}, {}, self.now, "America/New_York")
+            self.assertIn("deployment", receipt["problems"])
+            self.assertIn("Health/readiness unavailable", json.dumps(messages))
+
+    def test_catchup_filters_only_health_errors_inside_deployment_window(self):
+        deployment = {"started": self.now - 30, "ended": self.now, "status": "completed"}
+        logs = "\n".join(json.dumps({"msg": event, "time": timestamp * 1000}) for event, timestamp in (
+            ("chief_health_failed", self.now - 31), ("chief_health_failed", self.now - 10),
+            ("chief_health_failed", self.now + 1), ("discord_gateway_error", self.now - 10),
+        ))
+        journal = json.dumps({"__REALTIME_TIMESTAMP": str((self.now - 10) * 1000000),
+                              "MESSAGE": json.dumps({"msg": "chief_health_failed"})})
+        with patch.object(monitor, "command", side_effect=[logs, journal]):
+            events = monitor.collect_errors(self.now - 60, self.now + 2, deployment)
+        self.assertEqual(events, {"chief_health_failed": 2, "discord_gateway_error": 1})
 
     def test_http_503_retains_critical_checks(self):
         error = monitor.urllib.error.HTTPError("http://localhost", 503, "unavailable", {}, None)

@@ -35,6 +35,13 @@ It posts a daily report at the first check after 09:00 America/New_York, includi
 readiness, context backlog/lag, UTC-month AI spending and reservations, model
 names, disk space, backup status, and observed error counts. No LLM calls are used.
 
+Deploy transactions publish a maintenance window before stopping Chief, ending
+it after readiness or rollback. Expected health outages and their log events do
+not generate outage/recovery notifications; daily reports wait until deployment
+finishes. Disk, backup, and real error alerts remain enabled. Failed deployments
+and maintenance lasting over 15 minutes alert normally, including abandoned runs.
+The window is recorded in `/run/chief/deployment-monitoring.json`.
+
 Alerts report changed health, context, backup, disk, and budget problems and their
 recovery. Discord disconnections must persist across checks for at least one
 minute before alerting; routine reconnect/resume events stay in local logs and
