@@ -38,7 +38,7 @@ export function backup(arguments_: readonly string[]): void {
         '--destination',
         destination,
       ],
-      { inherit: true },
+      { inherit: true, timeout: 120_000 },
     );
     return;
   }
@@ -49,29 +49,37 @@ export function backup(arguments_: readonly string[]): void {
   if (!bucket || !/^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$/u.test(bucket))
     throw new Error('backup bucket required');
   execCommand('docker', ['inspect', 'chief']);
-  const backupPath = execCommand('docker', [
-    'exec',
-    'chief',
-    'node',
-    'dist/cli.js',
-    'backup',
-    '--database',
-    '/var/lib/chief/chief.db',
-    '--destination',
-    '/var/lib/chief/backups',
-  ]).trim();
+  const backupPath = execCommand(
+    'docker',
+    [
+      'exec',
+      'chief',
+      'node',
+      'dist/cli.js',
+      'backup',
+      '--database',
+      '/var/lib/chief/chief.db',
+      '--destination',
+      '/var/lib/chief/backups',
+    ],
+    { timeout: 120_000 },
+  ).trim();
   if (!backupPath) throw new Error('backup path missing');
-  execCommand('docker', [
-    'exec',
-    'chief',
-    'node',
-    'dist/cli.js',
-    'verify-restore',
-    '--backup',
-    backupPath,
-    '--require-migration',
-    '0003_channel_context',
-  ]);
+  execCommand(
+    'docker',
+    [
+      'exec',
+      'chief',
+      'node',
+      'dist/cli.js',
+      'verify-restore',
+      '--backup',
+      backupPath,
+      '--require-migration',
+      '0003_channel_context',
+    ],
+    { timeout: 120_000 },
+  );
   execCommand('gcloud', [
     'storage',
     'cp',
@@ -98,18 +106,16 @@ export function restore(arguments_: readonly string[]): void {
     `${data}:${data}`,
     recovery,
   ];
-  execCommand('docker', [
-    ...container,
-    'verify-restore',
-    '--backup',
-    backupPath,
-  ]);
-  const capability = execCommand('docker', [
-    ...container,
-    'database-capability',
-    '--database',
-    backupPath,
-  ]).trim();
+  execCommand(
+    'docker',
+    [...container, 'verify-restore', '--backup', backupPath],
+    { timeout: 120_000 },
+  );
+  const capability = execCommand(
+    'docker',
+    [...container, 'database-capability', '--database', backupPath],
+    { timeout: 120_000 },
+  ).trim();
   verifyImageCapability(capability, image);
   execCommand('systemctl', ['stop', 'chief.service'], { timeout: 120_000 });
   if (existsSync(database)) {
