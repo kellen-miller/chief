@@ -76,15 +76,32 @@ sync_backup_bucket() {
 sync_backup_bucket
 docker logout "$REGISTRY" >/dev/null 2>&1 || true
 install -d -m 0700 "$RUNTIME_DIR"
+DEPLOY_STARTED=""
+DEPLOY_MONITORING="$RUNTIME_DIR/deployment-monitoring.json"
 DOCKER_CONFIG="$(mktemp -d "$RUNTIME_DIR/docker-config.XXXXXX")"
 export DOCKER_CONFIG
 cleanup() {
+  local status=$?
+  if [[ -n "$DEPLOY_STARTED" ]]; then
+    local outcome=completed
+    if [[ "$status" != 0 ]]; then
+      outcome=failed
+    fi
+    printf '{"started":%s,"ended":%s,"status":"%s"}\n' \
+      "$DEPLOY_STARTED" "$(date +%s)" "$outcome" >"$DEPLOY_MONITORING.tmp"
+    mv "$DEPLOY_MONITORING.tmp" "$DEPLOY_MONITORING"
+  fi
   rm -rf "$DOCKER_CONFIG"
 }
 trap cleanup EXIT
 gcloud auth print-access-token \
   | docker login --username oauth2accesstoken --password-stdin "$REGISTRY"
 docker pull "$CANDIDATE_IMAGE"
+# Publish maintenance before stopping Chief; the EXIT trap closes the window
+# after readiness succeeds or rollback finishes, including backup failures.
+DEPLOY_STARTED="$(date +%s)"
+printf '{"started":%s,"status":"active"}\n' "$DEPLOY_STARTED" >"$DEPLOY_MONITORING.tmp"
+mv "$DEPLOY_MONITORING.tmp" "$DEPLOY_MONITORING"
 systemctl stop chief.service || true
 docker stop --time 20 chief >/dev/null 2>&1 || true
 

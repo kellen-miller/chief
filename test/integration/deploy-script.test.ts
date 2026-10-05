@@ -38,6 +38,14 @@ describe('deploy transaction', () => {
     expect(await readFile(join(fixture.data, 'chief.db'), 'utf8')).toBe(
       'migrated',
     );
+    const maintenance = JSON.parse(
+      await readFile(
+        join(fixture.runtime, 'deployment-monitoring.json'),
+        'utf8',
+      ),
+    ) as { started: number; ended: number; status: string };
+    expect(maintenance.status).toBe(result.code === 0 ? 'completed' : 'failed');
+    expect(maintenance.ended).toBeGreaterThanOrEqual(maintenance.started);
     const commands = await readFile(fixture.commandLog, 'utf8');
     expect(commands.indexOf('docker logout')).toBeGreaterThanOrEqual(0);
     expect(commands.indexOf('docker logout')).toBeLessThan(
@@ -80,6 +88,14 @@ describe('deploy transaction', () => {
     expect(await readFile(join(fixture.data, 'chief.db'), 'utf8')).toBe(
       'original',
     );
+    const maintenance = JSON.parse(
+      await readFile(
+        join(fixture.runtime, 'deployment-monitoring.json'),
+        'utf8',
+      ),
+    ) as { started: number; ended: number; status: string };
+    expect(maintenance.status).toBe(result.code === 0 ? 'completed' : 'failed');
+    expect(maintenance.ended).toBeGreaterThanOrEqual(maintenance.started);
     const commands = await readFile(fixture.commandLog, 'utf8');
     expect(commands).not.toContain('docker image tag');
     expect(commands).not.toContain('docker image prune');
