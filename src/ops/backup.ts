@@ -135,19 +135,24 @@ export function restoreDrill(arguments_: readonly string[]): void {
   const database = join(directory, 'drill.db');
   copyFileSync(backupPath, database);
   chmodSync(database, 0o600);
-  execCommand('docker', [
-    'run',
-    '--rm',
-    '--user',
-    `${String(process.getuid?.() ?? 1000)}:${String(process.getgid?.() ?? 1000)}`,
-    '--volume',
-    `${directory}:${directory}`,
-    image,
-    'verify-restore',
-    '--backup',
-    database,
-    '--require-migration',
-    '0003_channel_context',
-  ]);
+  // A separate container shares the small host with the running bot.
+  execCommand(
+    'docker',
+    [
+      'run',
+      '--rm',
+      '--user',
+      `${String(process.getuid?.() ?? 1000)}:${String(process.getgid?.() ?? 1000)}`,
+      '--volume',
+      `${directory}:${directory}`,
+      image,
+      'verify-restore',
+      '--backup',
+      database,
+      '--require-migration',
+      '0003_channel_context',
+    ],
+    { timeout: 120_000 },
+  );
   process.stdout.write('restore drill passed\n');
 }
