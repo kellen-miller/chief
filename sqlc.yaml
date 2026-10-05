@@ -1,8 +1,26 @@
 version: '2'
+plugins:
+  - name: typescript
+    wasm:
+      url: https://github.com/kellen-miller/sqlc-gen-typescript/releases/download/v0.1.4-chief.1/sqlc-gen-typescript_0.1.4-chief.1.wasm
+      sha256: 685124bdee17518a6ee95dd9107a6d95c3be2990a465a1f1a1e9a37911240e57
 sql:
   - engine: sqlite
     schema: sql/schema.sql
     queries: sql/queries.sql
-    gen:
-      json:
-        out: .sqlc
+    codegen:
+      - plugin: typescript
+        out: src/database
+        options:
+          driver: better-sqlite3
+          sqlite:
+            emit: prepared
+            filename: queries.ts
+            parameter_types:
+              contextBackfillRecordManifestPageUpdateContextBackfills:
+                '7': string | null
+                '10': string | null
+              channelContextJobSourcesSelectConversationEvents:
+                '4': number | null
+              conversationSearchTextSourceGroupsSelectConversationEvents:
+                '5': number | null

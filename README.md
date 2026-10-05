@@ -84,13 +84,15 @@ initial host/apt/Node environment or forwards existing script entrypoints to
 Ordinary database statements live in `sql/queries.sql`. `pnpm generate:sql`
 derives `sql/schema.sql` from Chief's real migrations, runs sqlc 1.31.1, and emits
 synchronous `better-sqlite3` statements and binding/row types into
-`src/database/queries.ts`. The small TypeScript emitter consumes sqlc's built-in
-JSON output: the published TypeScript WASM plugin lacks the documented SQLite
-driver. CI checks regeneration for drift.
+`src/database/queries.ts`. Generation uses our
+[sqlc TypeScript plugin fork](https://github.com/kellen-miller/sqlc-gen-typescript),
+pinned to a WASM release and SHA256 in `sqlc.yaml`. The fork supports synchronous
+prepared statements, named/positional bindings, SQLite types, alias casing, and
+scalar `pluck()` types. CI checks regeneration for drift.
 
 Transactions, domain validation/mapping, migration checksums, FTS5/sqlite-vec,
 dynamic SQL, and queries using SQLite syntax unsupported by sqlc remain in their
 owning TypeScript modules. sqlc does not execute migrations or replace recovery
 verification. SQLite alias casing and scalar `pluck()` results are preserved.
-`sql/parameter-types.json` records narrow overrides for nullable comparisons and
-CASE parameters that sqlc infers incorrectly; it does not alter executable SQL.
+`sqlc.yaml` records narrow parameter type overrides for nullable comparisons and
+CASE parameters that sqlc infers incorrectly; they do not alter executable SQL.
