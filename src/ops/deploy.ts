@@ -99,33 +99,42 @@ export function deploy(arguments_: readonly string[]): void {
         allowFailure: true,
       });
       if (existsSync(database)) {
-        backup = execCommand('docker', [
-          ...container,
-          'backup',
-          '--database',
-          database,
-          '--destination',
-          join(paths.data, 'pre-deploy'),
-        ]).trim();
+        backup = execCommand(
+          'docker',
+          [
+            ...container,
+            'backup',
+            '--database',
+            database,
+            '--destination',
+            join(paths.data, 'pre-deploy'),
+          ],
+          { timeout: 120_000 },
+        ).trim();
         if (!backup) throw new Error('backup path missing');
-        execCommand('docker', [
-          ...container,
-          'verify-restore',
-          '--backup',
-          backup,
-        ]);
+        execCommand(
+          'docker',
+          [...container, 'verify-restore', '--backup', backup],
+          { timeout: 120_000 },
+        );
       }
 
       migrated = true;
-      execCommand('docker', [...container, 'migrate', '--database', database]);
-      execCommand('docker', [
-        ...container,
-        'verify-restore',
-        '--backup',
-        database,
-        '--require-migration',
-        '0003_channel_context',
-      ]);
+      execCommand('docker', [...container, 'migrate', '--database', database], {
+        timeout: 120_000,
+      });
+      execCommand(
+        'docker',
+        [
+          ...container,
+          'verify-restore',
+          '--backup',
+          database,
+          '--require-migration',
+          '0003_channel_context',
+        ],
+        { timeout: 120_000 },
+      );
       atomicWrite(statePath, `IMAGE=${image}\nRECOVERY_IMAGE=${image}\n`);
       execCommand('systemctl', ['start', 'chief.service'], {
         timeout: 120_000,

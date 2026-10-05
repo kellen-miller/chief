@@ -99,17 +99,21 @@ export function runContainer(): void {
     !existsSync(receipt) ||
     readFileSync(receipt, 'utf8').trimEnd() !== expected.trimEnd()
   ) {
-    execCommand('docker', [
-      ...container,
-      '--volume',
-      `${journalDirectory}:/run/chief/forget-journal:ro`,
-      recovery,
-      'recover-forget-journals',
-      '--database',
-      database,
-      '--journal-directory',
-      '/run/chief/forget-journal',
-    ]);
+    execCommand(
+      'docker',
+      [
+        ...container,
+        '--volume',
+        `${journalDirectory}:/run/chief/forget-journal:ro`,
+        recovery,
+        'recover-forget-journals',
+        '--database',
+        database,
+        '--journal-directory',
+        '/run/chief/forget-journal',
+      ],
+      { timeout: 120_000 },
+    );
     atomicWrite(
       receipt,
       `database=${databaseChecksum(database)}\nmanifest=${manifestChecksum}\n${manifest}`,
@@ -117,13 +121,11 @@ export function runContainer(): void {
     chownSync(receipt, paths.uid, paths.gid);
   }
 
-  const capability = execCommand('docker', [
-    ...container,
-    recovery,
-    'database-capability',
-    '--database',
-    database,
-  ]).trim();
+  const capability = execCommand(
+    'docker',
+    [...container, recovery, 'database-capability', '--database', database],
+    { timeout: 120_000 },
+  ).trim();
   verifyImageCapability(capability, image);
   // Recovery and image compatibility must succeed before retrieving credentials.
   const discordToken = execCommand('gcloud', [
