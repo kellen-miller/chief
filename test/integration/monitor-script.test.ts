@@ -173,7 +173,7 @@ describe('host-side Discord monitoring', () => {
     expect(first.messages).toEqual([]);
     const resumed = reports(snapshot(), first.receipt, start + 2);
     expect(resumed.messages).toEqual([]);
-    expect(resumed.receipt.discord_unready_since).toBeNull();
+    expect(resumed.receipt.health_unready_since).toBeNull();
     expect(reports(sample, first.receipt, start + 59).messages).toEqual([]);
     const sustained = reports(sample, first.receipt, start + 60);
     expect(JSON.stringify(sustained.messages)).toContain('Not ready: discord');
@@ -186,6 +186,63 @@ describe('host-side Discord monitoring', () => {
     expect(
       JSON.stringify(reports(sample, resumed.receipt, start + 62).messages),
     ).toContain('Not ready: database');
+  });
+
+  it('debounces unavailable probes and preserves continuity across Discord failures', () => {
+    const sample = snapshot();
+    sample.health = {};
+    const start = now - 3600;
+    const first = reports(sample, {}, start, { chief_health_failed: 1 });
+    expect(first.messages).toEqual([]);
+    expect(first.receipt.health_unready_since).toBe(start);
+    expect(first.receipt.error_counts?.chief_health_failed).toBe(1);
+    const healthy = reports(snapshot(), first.receipt, start + 60, {
+      chief_health_failed: 1,
+    });
+    expect(healthy.messages).toEqual([]);
+    expect(healthy.receipt.health_unready_since).toBeNull();
+    expect(reports(sample, first.receipt, start + 59).messages).toEqual([]);
+    const sustained = reports(offline(), first.receipt, start + 60);
+    expect(JSON.stringify(sustained.messages)).toContain('Not ready: discord');
+    const unknown = reports(sample, sustained.receipt, start + 61);
+    expect(unknown.receipt.problems?.health).toBe(
+      'Health/readiness unavailable',
+    );
+    expect(JSON.stringify(unknown.messages)).not.toContain('✅ Recovered');
+    const recovered = reports(snapshot(), unknown.receipt, start + 120, {
+      chief_health_failed: 1,
+    });
+    expect(recovered.messages[0]?.embeds[0]?.title).toBe('Chief · Recovered');
+    expect(JSON.stringify(recovered.messages)).not.toContain('Errors observed');
+    expect(recovered.receipt.health_unready_since).toBeNull();
+    expect(reports(sample, recovered.receipt, start + 180).messages).toEqual(
+      [],
+    );
+  });
+
+  it('alerts immediately on explicit database, disk, and maintenance faults', () => {
+    for (const name of ['database', 'disk', 'maintenance']) {
+      const sample = snapshot();
+      sample.health.ready = false;
+      sample.health.criticalChecks = {
+        database: true,
+        discord: true,
+        disk: true,
+        maintenance: true,
+        [name]: false,
+      };
+      const first = reports(sample, {}, now - 3600);
+      expect(first.receipt.problems?.health).toBe(`Not ready: ${name}`);
+      sample.deployment = { started: now - 3630, status: 'active' };
+      expect(reports(sample, {}, now - 3600).receipt.problems?.health).toBe(
+        `Not ready: ${name}`,
+      );
+      sample.deployment = {};
+      sample.health = {};
+      const unavailable = reports(sample, first.receipt, now - 3599);
+      expect(unavailable.receipt.problems?.health).toBe(`Not ready: ${name}`);
+      expect(unavailable.messages).toEqual([]);
+    }
   });
 
   it('suppresses deployment outages and defers daily reports across sampling races', () => {
@@ -237,8 +294,12 @@ describe('host-side Discord monitoring', () => {
       const result = reports(sample);
       expect(result.receipt.problems?.deployment).toBeDefined();
       expect(JSON.stringify(result.messages)).toContain(
-        'Health/readiness unavailable',
+        deployment.status === 'failed' ? 'Deployment failed' : '15-minute',
       );
+      expect(result.receipt.problems?.health).toBeUndefined();
+      expect(
+        reports(sample, result.receipt, now + 60).receipt.problems?.health,
+      ).toBe('Health/readiness unavailable');
     }
   });
 
@@ -272,9 +333,7 @@ describe('host-side Discord monitoring', () => {
     });
     expect(result.receipt.problems?.context).toContain('provider');
     expect(JSON.stringify(result.messages)).not.toContain('✅ Recovered');
-    expect(JSON.stringify(result.messages)).toContain(
-      'Health/readiness unavailable',
-    );
+    expect(result.receipt.health_unready_since).toBe(now);
   });
 
   it('retains 503 critical checks and never acknowledges failed Discord delivery', async () => {
@@ -308,13 +367,12 @@ describe('host-side Discord monitoring', () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ ready: false, criticalChecks: { discord: false } }),
-          { status: 503 },
-        ),
+        new Response(JSON.stringify(offline().health), { status: 503 }),
       );
     const sample = await collectSnapshot(now);
-    expect(sample.health.criticalChecks).toEqual({ discord: false });
+    expect(sample.health.criticalChecks).toEqual(
+      offline().health.criticalChecks,
+    );
     expect(sample.backup_ok).toBe(true);
     writeFileSync(
       join(root, 'monitoring.json'),
