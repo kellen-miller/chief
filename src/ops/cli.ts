@@ -1,6 +1,7 @@
 import { configureGithubPolicy } from './github-policy.ts';
 import { backup, restore, restoreDrill } from './backup.ts';
 import { deploy } from './deploy.ts';
+import { healthWatchdog } from './health-watchdog.ts';
 import {
   execCommand,
   hostPaths,
@@ -50,13 +51,7 @@ try {
       pruneRecoveryArtifacts(hostPaths().data, true);
       break;
     case 'health-watchdog':
-      execCommand('curl', [
-        '--fail',
-        '--silent',
-        '--max-time',
-        '5',
-        'http://127.0.0.1:8080/healthz',
-      ]);
+      await healthWatchdog();
       break;
     default:
       throw new Error('unknown Chief operations command');

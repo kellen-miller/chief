@@ -2,6 +2,12 @@ import { existsSync, readFileSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+  deploymentGraceSeconds,
+  deploymentMaintenance,
+  healthReadiness,
+  probeHealth,
+} from './health-probe.ts';
+import {
   atomicWrite,
   execCommand,
   hostPaths,
@@ -31,7 +37,6 @@ const errorEvents = new Set([
   'chief_voice_underrun',
   'chief_image_cleanup_failed',
 ]);
-const deploymentGraceSeconds = 15 * 60;
 const contextReasons = new Set([
   'backlog',
   'indexing-budget',
@@ -56,6 +61,7 @@ export interface MonitorState {
   report_date?: string | null;
   cursor?: number;
   discord_unready_since?: number | null;
+  health_unready_since?: number | null;
 }
 
 interface Field {
@@ -146,16 +152,7 @@ export function parseErrors(
 
 export async function collectSnapshot(now: number): Promise<MonitorSnapshot> {
   const sampledAt = Date.now() / 1000;
-  let health: Record<string, unknown>;
-  try {
-    const response = await fetch('http://127.0.0.1:8080/healthz', {
-      signal: AbortSignal.timeout(5000),
-    });
-    // 503 includes useful critical checks and must still be parsed.
-    health = record(await response.json());
-  } catch {
-    health = {};
-  }
+  const { health } = await probeHealth();
 
   const backup = Object.fromEntries(
     execCommand('systemctl', [
@@ -228,17 +225,8 @@ export function buildReports(
   const context = record(diagnostics.context);
   const usage = record(diagnostics.usage);
   const memory = record(diagnostics.memoryJobs);
-  const checks = record(health.criticalChecks);
   const deployment = snapshot.deployment;
-  const started = number(deployment.started);
-  const deploying =
-    (deployment.status === 'active' &&
-      now - started >= 0 &&
-      now - started < deploymentGraceSeconds) ||
-    (deployment.status === 'completed' &&
-      started > 0 &&
-      snapshot.sampled_at <= number(deployment.ended) &&
-      now >= started);
+  const deploying = deploymentMaintenance(deployment, snapshot.sampled_at, now);
   const problems: Record<string, string> = {};
   if (deployment.status === 'failed')
     problems.deployment =
@@ -246,20 +234,15 @@ export function buildReports(
   else if (deployment.status === 'active' && !deploying)
     problems.deployment =
       'Deployment exceeded the 15-minute maintenance window';
-  const discordUnreadySince =
-    checks.discord === false ? (state.discord_unready_since ?? now) : null;
-  if (!deploying && health.ready !== true) {
-    const failed = ['database', 'discord', 'disk', 'maintenance'].filter(
-      (name) =>
-        checks[name] === false &&
-        !(name === 'discord' && now - (discordUnreadySince ?? now) < 60),
-    );
-    if (failed.length) problems.health = `Not ready: ${failed.join(', ')}`;
-    else if (!(
-      checks.discord === false &&
-      ['database', 'disk', 'maintenance'].every((name) => checks[name] === true)
-    ))
-      problems.health = 'Health/readiness unavailable';
+  const readiness = healthReadiness(
+    health,
+    state.health_unready_since ?? state.discord_unready_since,
+    now,
+    deploying,
+  );
+  if (readiness.unreadySince !== null) {
+    const problem = readiness.problem ?? state.problems?.health;
+    if (problem) problems.health = problem;
   }
 
   if (context.degraded === true) {
@@ -293,7 +276,8 @@ export function buildReports(
   else if (warning && charged >= warning)
     problems.budget = 'Monthly AI budget warning reached';
   const previous = state.problems ?? {};
-  if (deploying && previous.health) problems.health = previous.health;
+  if (deploying && previous.health && !problems.health)
+    problems.health = previous.health;
   for (const [key, diagnostic] of [
     ['context', 'context'],
     ['memory', 'memoryJobs'],
@@ -319,6 +303,10 @@ export function buildReports(
   )) {
     if (!errorEvents.has(event)) continue;
     counts[event] = (counts[event] ?? 0) + count;
+    // Health notifications come only from the readiness gate. Keep raw counts
+    // for daily reports without a duplicate or delayed outage alert.
+    if (event === 'chief_health_failed') continue;
+
     if (now - (errorAlerts[event] ?? 0) >= 3600) {
       errors.push(`\`${event}\` · ${String(count)} observed`);
       errorAlerts[event] = now;
@@ -456,7 +444,7 @@ export function buildReports(
       error_counts: counts,
       report_date: reportDate,
       cursor: now,
-      discord_unready_since: discordUnreadySince,
+      health_unready_since: readiness.unreadySince,
     },
   };
 }

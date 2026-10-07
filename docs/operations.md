@@ -43,9 +43,17 @@ and maintenance lasting over 15 minutes alert normally, including abandoned runs
 The window is recorded in `/var/lib/chief/deployment-monitoring.json`.
 
 Alerts report changed health, context, backup, disk, and budget problems and their
-recovery. Discord disconnections must persist across checks for at least one
-minute before alerting; routine reconnect/resume events stay in local logs and
-are excluded from error reports. Gateway and shard errors still alert immediately.
+recovery. Discord disconnections and unavailable health probes must persist
+across checks for at least one minute before alerting. The same gate applies to
+the watchdog's GCP email events. Explicit database, disk, and maintenance failures
+alert immediately. Routine reconnect/resume events stay in local logs. Raw
+`chief_health_failed` events contribute to daily counts without generating a
+second notification. Gateway and shard errors still alert immediately.
+Watchdog probe diagnostics emit `chief_health_probe_failed` with a bounded reason
+(`timeout`, `connection`, `http`, or `response`), HTTP status, and readiness problem;
+no response bodies or raw errors are logged. Watchdog failure history persists in
+`/var/lib/chief/health-watchdog.json` and resets on a healthy probe or deployment
+maintenance window.
 Only allowlisted error event names and aggregate counts are forwarded
 from Docker/journald; repeated events are throttled for one hour. Prompts,
 transcripts, raw errors, provider payloads, and secrets never enter reports.
