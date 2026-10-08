@@ -24,3 +24,14 @@ sql:
                 '4': number | null
               conversationSearchTextSourceGroupsSelectConversationEvents:
                 '5': number | null
+  - engine: sqlite
+    schema: sql/schema.sql
+    queries: sql/monitoring.sql
+    codegen:
+      - plugin: typescript
+        out: src/ops
+        options:
+          driver: better-sqlite3
+          sqlite:
+            emit: functions
+            filename: alert-queries.ts

@@ -3,6 +3,14 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { alertHistorySchema } from './alert-history.ts';
+import {
+  monitoringMarkDeliveredQuery,
+  monitoringPruneAlertsQuery,
+  monitoringRecordAlertQuery,
+  type MonitoringMarkDeliveredArgs,
+  type MonitoringPruneAlertsArgs,
+  type MonitoringRecordAlertArgs,
+} from './alert-queries.ts';
 
 import {
   deploymentGraceSeconds,
@@ -529,22 +537,23 @@ export async function monitor(): Promise<void> {
   try {
     database.exec(alertHistorySchema);
     if (now - (state.history_pruned_at ?? 0) >= 24 * 3600) {
-      database
-        .prepare('delete from monitoring_alerts where created_at <= ?')
-        .run(now - 7 * 24 * 3600);
+      database.prepare(monitoringPruneAlertsQuery).run({
+        cutoff: now - 7 * 24 * 3600,
+      } satisfies MonitoringPruneAlertsArgs);
       state.history_pruned_at = now;
       // Persist pruning independently of Discord delivery acknowledgments.
       atomicWrite(statePath, JSON.stringify(state));
     }
 
     receipt.history_pruned_at = state.history_pruned_at ?? null;
-    const insertAlert = database.prepare(
-      'insert into monitoring_alerts (created_at, report_json) values (?, ?)',
-    );
+    const insertAlert = database.prepare(monitoringRecordAlertQuery);
     const alertIds = messages.map((message) =>
       message.embeds[0]?.title === 'Chief · Daily report'
         ? null
-        : insertAlert.run(now, JSON.stringify(message)).lastInsertRowid,
+        : insertAlert.run({
+            createdAt: now,
+            reportJson: JSON.stringify(message),
+          } satisfies MonitoringRecordAlertArgs).lastInsertRowid,
     );
     if (messages.length) {
       const token = execCommand('gcloud', [
@@ -580,11 +589,10 @@ export async function monitor(): Promise<void> {
 
         const alertId = alertIds[index];
         if (alertId !== null && alertId !== undefined) {
-          database
-            .prepare(
-              'update monitoring_alerts set delivered_at = ? where id = ?',
-            )
-            .run(Math.floor(Date.now() / 1000), alertId);
+          database.prepare(monitoringMarkDeliveredQuery).run({
+            deliveredAt: Math.floor(Date.now() / 1000),
+            id: Number(alertId),
+          } satisfies MonitoringMarkDeliveredArgs);
         }
       }
     }

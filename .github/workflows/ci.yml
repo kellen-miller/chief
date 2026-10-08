@@ -59,7 +59,7 @@ jobs:
         with:
           sqlc-version: 1.31.1
       - run: pnpm generate:sql
-      - run: git diff --exit-code -- sql/schema.sql src/database/queries.ts
+      - run: git diff --exit-code -- sql/schema.sql src/database/queries.ts src/ops/alert-queries.ts
       - run: shellcheck scripts/*.sh
       - run: terraform -chdir=infra/bootstrap init -backend=false
       - run: terraform -chdir=infra/bootstrap validate -no-color
