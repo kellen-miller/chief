@@ -1,0 +1,176 @@
+diff --git a/binding.gyp b/binding.gyp
+index 9fbda438302dad048f17cc131df593850bd2db93..926c629010f12623a40a43b05557b2f0ea4f9c99 100644
+--- a/binding.gyp
++++ b/binding.gyp
+@@ -29,7 +29,8 @@
+                 "GTEST_RELATIVE_PATH",
+                 "JSONCPP_RELATIVE_PATH",
+                 "WEBRTC_RELATIVE_PATH",
+-                "POSIX," "__STDC_FORMAT_MACROS",
++                "POSIX",
++                "__STDC_FORMAT_MACROS",
+                 "DYNAMIC_ANNOTATIONS_ENABLED=0",
+                 "NAPI_DISABLE_CPP_EXCEPTIONS",
+                 "NAPI_VERSION=<(napi_build_version)",
+diff --git a/deps/opus/silk/NSQ.c b/deps/opus/silk/NSQ.c
+index 1d64d8e257b85da1a738577cb5713e7e04e3e0d6..659aa60eca2654fdcc1b6f8e475b60e040e9f051 100644
+--- a/deps/opus/silk/NSQ.c
++++ b/deps/opus/silk/NSQ.c
+@@ -80,7 +80,7 @@ void silk_NSQ_c
+     SideInfoIndices             *psIndices,                                 /* I/O  Quantization Indices            */
+     const opus_int16            x16[],                                        /* I    Input                           */
+     opus_int8                   pulses[],                                   /* O    Quantized pulse signal          */
+-    const opus_int16            PredCoef_Q12[ 2 * MAX_LPC_ORDER ],          /* I    Short term prediction coefs     */
++    const opus_int16            *PredCoef_Q12,                             /* I    Short term prediction coefs     */
+     const opus_int16            LTPCoef_Q14[ LTP_ORDER * MAX_NB_SUBFR ],    /* I    Long term prediction coefs      */
+     const opus_int16            AR_Q13[ MAX_NB_SUBFR * MAX_SHAPE_LPC_ORDER ], /* I Noise shaping coefs              */
+     const opus_int              HarmShapeGain_Q14[ MAX_NB_SUBFR ],          /* I    Long term shaping coefs         */
+diff --git a/deps/opus/silk/NSQ_del_dec.c b/deps/opus/silk/NSQ_del_dec.c
+index 3fd9fa0d5b72207354f298b9da9324193b4ce8a9..ee06c77978dc6feee92336a2f04ccead43c3a494 100644
+--- a/deps/opus/silk/NSQ_del_dec.c
++++ b/deps/opus/silk/NSQ_del_dec.c
+@@ -120,7 +120,7 @@ void silk_NSQ_del_dec_c(
+     SideInfoIndices             *psIndices,                                 /* I/O  Quantization Indices            */
+     const opus_int16            x16[],                                        /* I    Input                           */
+     opus_int8                   pulses[],                                   /* O    Quantized pulse signal          */
+-    const opus_int16            PredCoef_Q12[ 2 * MAX_LPC_ORDER ],          /* I    Short term prediction coefs     */
++    const opus_int16            *PredCoef_Q12,                             /* I    Short term prediction coefs     */
+     const opus_int16            LTPCoef_Q14[ LTP_ORDER * MAX_NB_SUBFR ],    /* I    Long term prediction coefs      */
+     const opus_int16            AR_Q13[ MAX_NB_SUBFR * MAX_SHAPE_LPC_ORDER ], /* I Noise shaping coefs              */
+     const opus_int              HarmShapeGain_Q14[ MAX_NB_SUBFR ],          /* I    Long term shaping coefs         */
+diff --git a/deps/opus/silk/arm/NSQ_del_dec_neon_intr.c b/deps/opus/silk/arm/NSQ_del_dec_neon_intr.c
+index 212410f36292631d22de5eac272da068cfb8c159..a3c2764b471196dc36735026e1c4636ab3d8b8d7 100644
+--- a/deps/opus/silk/arm/NSQ_del_dec_neon_intr.c
++++ b/deps/opus/silk/arm/NSQ_del_dec_neon_intr.c
+@@ -220,7 +220,7 @@ void silk_NSQ_del_dec_neon(
+     SideInfoIndices             *psIndices,                                 /* I/O  Quantization Indices            */
+     const opus_int16            x16[],                                      /* I    Input                           */
+     opus_int8                   pulses[],                                   /* O    Quantized pulse signal          */
+-    const opus_int16            PredCoef_Q12[ 2 * MAX_LPC_ORDER ],          /* I    Short term prediction coefs     */
++    const opus_int16            *PredCoef_Q12,                             /* I    Short term prediction coefs     */
+     const opus_int16            LTPCoef_Q14[ LTP_ORDER * MAX_NB_SUBFR ],    /* I    Long term prediction coefs      */
+     const opus_int16            AR_Q13[ MAX_NB_SUBFR * MAX_SHAPE_LPC_ORDER ], /* I Noise shaping coefs              */
+     const opus_int              HarmShapeGain_Q14[ MAX_NB_SUBFR ],          /* I    Long term shaping coefs         */
+diff --git a/deps/opus/silk/arm/arm_silk_map.c b/deps/opus/silk/arm/arm_silk_map.c
+index 0b9bfec2ca974768c59e09f448aca81ceb1d8f60..61e224cb9afe4f0493438bec4cd2e4bd2714bfbf 100644
+--- a/deps/opus/silk/arm/arm_silk_map.c
++++ b/deps/opus/silk/arm/arm_silk_map.c
+@@ -67,7 +67,7 @@ void  (*const SILK_NSQ_DEL_DEC_IMPL[OPUS_ARCHMASK + 1])(
+         SideInfoIndices             *psIndices,                                 /* I/O  Quantization Indices            */
+         const opus_int16            x16[],                                      /* I    Input                           */
+         opus_int8                   pulses[],                                   /* O    Quantized pulse signal          */
+-        const opus_int16            PredCoef_Q12[ 2 * MAX_LPC_ORDER ],          /* I    Short term prediction coefs     */
++        const opus_int16            *PredCoef_Q12,                             /* I    Short term prediction coefs     */
+         const opus_int16            LTPCoef_Q14[ LTP_ORDER * MAX_NB_SUBFR ],    /* I    Long term prediction coefs      */
+         const opus_int16            AR_Q13[ MAX_NB_SUBFR * MAX_SHAPE_LPC_ORDER ], /* I Noise shaping coefs              */
+         const opus_int              HarmShapeGain_Q14[ MAX_NB_SUBFR ],          /* I    Long term shaping coefs         */
+diff --git a/deps/opus/silk/main.h b/deps/opus/silk/main.h
+index 1a33eed549b6a2085d6120d5210ae1c2bd4b28b6..fa161ca4c0d547156364e86829856fdcd34ec34f 100644
+--- a/deps/opus/silk/main.h
++++ b/deps/opus/silk/main.h
+@@ -252,7 +252,7 @@ void silk_NSQ_c(
+     SideInfoIndices             *psIndices,                                 /* I/O  Quantization Indices            */
+     const opus_int16            x16[],                                      /* I    Input                           */
+     opus_int8                   pulses[],                                   /* O    Quantized pulse signal          */
+-    const opus_int16            PredCoef_Q12[ 2 * MAX_LPC_ORDER ],          /* I    Short term prediction coefs     */
++    const opus_int16            *PredCoef_Q12,                             /* I    Short term prediction coefs     */
+     const opus_int16            LTPCoef_Q14[ LTP_ORDER * MAX_NB_SUBFR ],    /* I    Long term prediction coefs      */
+     const opus_int16            AR_Q13[ MAX_NB_SUBFR * MAX_SHAPE_LPC_ORDER ], /* I  Noise shaping coefs             */
+     const opus_int              HarmShapeGain_Q14[ MAX_NB_SUBFR ],          /* I    Long term shaping coefs         */
+@@ -278,7 +278,7 @@ void silk_NSQ_del_dec_c(
+     SideInfoIndices             *psIndices,                                 /* I/O  Quantization Indices            */
+     const opus_int16            x16[],                                      /* I    Input                           */
+     opus_int8                   pulses[],                                   /* O    Quantized pulse signal          */
+-    const opus_int16            PredCoef_Q12[ 2 * MAX_LPC_ORDER ],          /* I    Short term prediction coefs     */
++    const opus_int16            *PredCoef_Q12,                             /* I    Short term prediction coefs     */
+     const opus_int16            LTPCoef_Q14[ LTP_ORDER * MAX_NB_SUBFR ],    /* I    Long term prediction coefs      */
+     const opus_int16            AR_Q13[ MAX_NB_SUBFR * MAX_SHAPE_LPC_ORDER ], /* I  Noise shaping coefs             */
+     const opus_int              HarmShapeGain_Q14[ MAX_NB_SUBFR ],          /* I    Long term shaping coefs         */
+diff --git a/deps/opus/silk/x86/NSQ_del_dec_sse4_1.c b/deps/opus/silk/x86/NSQ_del_dec_sse4_1.c
+index 2c75ede2dde8cbcf09bc4e17bc1bef890dab9347..bc6bcd5e0b165aa25f3e1a4f402c57e1abd7cebc 100644
+--- a/deps/opus/silk/x86/NSQ_del_dec_sse4_1.c
++++ b/deps/opus/silk/x86/NSQ_del_dec_sse4_1.c
+@@ -117,7 +117,7 @@ void silk_NSQ_del_dec_sse4_1(
+     SideInfoIndices             *psIndices,                                 /* I/O  Quantization Indices            */
+     const opus_int32            x_Q3[],                                     /* I    Prefiltered input signal        */
+     opus_int8                   pulses[],                                   /* O    Quantized pulse signal          */
+-    const opus_int16            PredCoef_Q12[ 2 * MAX_LPC_ORDER ],          /* I    Short term prediction coefs     */
++    const opus_int16            *PredCoef_Q12,                             /* I    Short term prediction coefs     */
+     const opus_int16            LTPCoef_Q14[ LTP_ORDER * MAX_NB_SUBFR ],    /* I    Long term prediction coefs      */
+     const opus_int16            AR2_Q13[ MAX_NB_SUBFR * MAX_SHAPE_LPC_ORDER ], /* I Noise shaping coefs             */
+     const opus_int              HarmShapeGain_Q14[ MAX_NB_SUBFR ],          /* I    Long term shaping coefs         */
+diff --git a/deps/opus/silk/x86/NSQ_sse4_1.c b/deps/opus/silk/x86/NSQ_sse4_1.c
+index b0315e35fc896b13ee2331326dbb9d6f8d8a6dab..af3606db09c8fc2353a5ad396b612964a5a6399c 100644
+--- a/deps/opus/silk/x86/NSQ_sse4_1.c
++++ b/deps/opus/silk/x86/NSQ_sse4_1.c
+@@ -76,7 +76,7 @@ void silk_NSQ_sse4_1(
+     SideInfoIndices             *psIndices,                                 /* I/O  Quantization Indices            */
+     const opus_int32            x_Q3[],                                     /* I    Prefiltered input signal        */
+     opus_int8                   pulses[],                                   /* O    Quantized pulse signal          */
+-    const opus_int16            PredCoef_Q12[ 2 * MAX_LPC_ORDER ],          /* I    Short term prediction coefs     */
++    const opus_int16            *PredCoef_Q12,                             /* I    Short term prediction coefs     */
+     const opus_int16            LTPCoef_Q14[ LTP_ORDER * MAX_NB_SUBFR ],    /* I    Long term prediction coefs      */
+     const opus_int16            AR2_Q13[ MAX_NB_SUBFR * MAX_SHAPE_LPC_ORDER ], /* I Noise shaping coefs             */
+     const opus_int              HarmShapeGain_Q14[ MAX_NB_SUBFR ],          /* I    Long term shaping coefs         */
+diff --git a/deps/opus/silk/x86/main_sse.h b/deps/opus/silk/x86/main_sse.h
+index 2f15d44869781c435014dd1ddb2c02423b16e3c1..dac3627d4f0bf8b76cb9c15cfc45d842a5f5590b 100644
+--- a/deps/opus/silk/x86/main_sse.h
++++ b/deps/opus/silk/x86/main_sse.h
+@@ -91,7 +91,7 @@ void silk_NSQ_sse4_1(
+     SideInfoIndices             *psIndices,                                 /* I/O  Quantization Indices            */
+     const opus_int32            x_Q3[],                                     /* I    Prefiltered input signal        */
+     opus_int8                   pulses[],                                   /* O    Quantized pulse signal          */
+-    const opus_int16            PredCoef_Q12[ 2 * MAX_LPC_ORDER ],          /* I    Short term prediction coefs     */
++    const opus_int16            *PredCoef_Q12,                             /* I    Short term prediction coefs     */
+     const opus_int16            LTPCoef_Q14[ LTP_ORDER * MAX_NB_SUBFR ],    /* I    Long term prediction coefs      */
+     const opus_int16            AR2_Q13[ MAX_NB_SUBFR * MAX_SHAPE_LPC_ORDER ], /* I Noise shaping coefs             */
+     const opus_int              HarmShapeGain_Q14[ MAX_NB_SUBFR ],          /* I    Long term shaping coefs         */
+@@ -118,7 +118,7 @@ extern void (*const SILK_NSQ_IMPL[OPUS_ARCHMASK + 1])(
+     SideInfoIndices             *psIndices,                                 /* I/O  Quantization Indices            */
+     const opus_int32            x_Q3[],                                     /* I    Prefiltered input signal        */
+     opus_int8                   pulses[],                                   /* O    Quantized pulse signal          */
+-    const opus_int16            PredCoef_Q12[ 2 * MAX_LPC_ORDER ],          /* I    Short term prediction coefs     */
++    const opus_int16            *PredCoef_Q12,                             /* I    Short term prediction coefs     */
+     const opus_int16            LTPCoef_Q14[ LTP_ORDER * MAX_NB_SUBFR ],    /* I    Long term prediction coefs      */
+     const opus_int16            AR2_Q13[ MAX_NB_SUBFR * MAX_SHAPE_LPC_ORDER ], /* I Noise shaping coefs             */
+     const opus_int              HarmShapeGain_Q14[ MAX_NB_SUBFR ],          /* I    Long term shaping coefs         */
+@@ -145,7 +145,7 @@ void silk_NSQ_del_dec_sse4_1(
+     SideInfoIndices             *psIndices,                                 /* I/O  Quantization Indices            */
+     const opus_int32            x_Q3[],                                     /* I    Prefiltered input signal        */
+     opus_int8                   pulses[],                                   /* O    Quantized pulse signal          */
+-    const opus_int16            PredCoef_Q12[ 2 * MAX_LPC_ORDER ],          /* I    Short term prediction coefs     */
++    const opus_int16            *PredCoef_Q12,                             /* I    Short term prediction coefs     */
+     const opus_int16            LTPCoef_Q14[ LTP_ORDER * MAX_NB_SUBFR ],    /* I    Long term prediction coefs      */
+     const opus_int16            AR2_Q13[ MAX_NB_SUBFR * MAX_SHAPE_LPC_ORDER ], /* I Noise shaping coefs             */
+     const opus_int              HarmShapeGain_Q14[ MAX_NB_SUBFR ],          /* I    Long term shaping coefs         */
+@@ -172,7 +172,7 @@ extern void (*const SILK_NSQ_DEL_DEC_IMPL[OPUS_ARCHMASK + 1])(
+     SideInfoIndices             *psIndices,                                 /* I/O  Quantization Indices            */
+     const opus_int32            x_Q3[],                                     /* I    Prefiltered input signal        */
+     opus_int8                   pulses[],                                   /* O    Quantized pulse signal          */
+-    const opus_int16            PredCoef_Q12[ 2 * MAX_LPC_ORDER ],          /* I    Short term prediction coefs     */
++    const opus_int16            *PredCoef_Q12,                             /* I    Short term prediction coefs     */
+     const opus_int16            LTPCoef_Q14[ LTP_ORDER * MAX_NB_SUBFR ],    /* I    Long term prediction coefs      */
+     const opus_int16            AR2_Q13[ MAX_NB_SUBFR * MAX_SHAPE_LPC_ORDER ], /* I Noise shaping coefs             */
+     const opus_int              HarmShapeGain_Q14[ MAX_NB_SUBFR ],          /* I    Long term shaping coefs         */
+diff --git a/deps/opus/silk/x86/x86_silk_map.c b/deps/opus/silk/x86/x86_silk_map.c
+index 32dcc3cab7a93bd6c3509a89d4b80771aad2ddf5..cf94b143850e78dd47d39ce9f2cf356b29825cac 100644
+--- a/deps/opus/silk/x86/x86_silk_map.c
++++ b/deps/opus/silk/x86/x86_silk_map.c
+@@ -73,7 +73,7 @@ void (*const SILK_NSQ_IMPL[ OPUS_ARCHMASK + 1 ] )(
+     SideInfoIndices             *psIndices,                                 /* I/O  Quantization Indices            */
+     const opus_int32            x_Q3[],                                     /* I    Prefiltered input signal        */
+     opus_int8                   pulses[],                                   /* O    Quantized pulse signal          */
+-    const opus_int16            PredCoef_Q12[ 2 * MAX_LPC_ORDER ],          /* I    Short term prediction coefs     */
++    const opus_int16            *PredCoef_Q12,                             /* I    Short term prediction coefs     */
+     const opus_int16            LTPCoef_Q14[ LTP_ORDER * MAX_NB_SUBFR ],    /* I    Long term prediction coefs      */
+     const opus_int16            AR2_Q13[ MAX_NB_SUBFR * MAX_SHAPE_LPC_ORDER ], /* I Noise shaping coefs             */
+     const opus_int              HarmShapeGain_Q14[ MAX_NB_SUBFR ],          /* I    Long term shaping coefs         */
+@@ -121,7 +121,7 @@ void (*const SILK_NSQ_DEL_DEC_IMPL[ OPUS_ARCHMASK + 1 ] )(
+     SideInfoIndices             *psIndices,                                 /* I/O  Quantization Indices            */
+     const opus_int32            x_Q3[],                                     /* I    Prefiltered input signal        */
+     opus_int8                   pulses[],                                   /* O    Quantized pulse signal          */
+-    const opus_int16            PredCoef_Q12[ 2 * MAX_LPC_ORDER ],          /* I    Short term prediction coefs     */
++    const opus_int16            *PredCoef_Q12,                             /* I    Short term prediction coefs     */
+     const opus_int16            LTPCoef_Q14[ LTP_ORDER * MAX_NB_SUBFR ],    /* I    Long term prediction coefs      */
+     const opus_int16            AR2_Q13[ MAX_NB_SUBFR * MAX_SHAPE_LPC_ORDER ], /* I Noise shaping coefs             */
+     const opus_int              HarmShapeGain_Q14[ MAX_NB_SUBFR ],          /* I    Long term shaping coefs         */
