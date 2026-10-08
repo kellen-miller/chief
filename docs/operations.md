@@ -62,6 +62,20 @@ remain unacknowledged and retry next minute. A failed monitoring run also emits
 `chief_monitoring_failed` to the existing GCP email alert path. Email remains the
 fallback when the VM or Discord is unavailable.
 
+Alerts and recoveries are retained for seven days in the `monitoring_alerts`
+table in `/var/lib/chief/chief.db`. Each delivery attempt records `created_at`
+(UTC epoch seconds) and the content-free Discord report in `report_json`;
+`delivered_at` remains NULL unless Discord accepts the message. Retries have
+separate rows. Daily reports are excluded. The independent host monitor prunes
+expired rows every minute, even when no new alerts occur. Current monitoring
+state and counters remain in the separate receipt file.
+
+Backup freshness uses the last verified, uploaded backup completion recorded in
+`/var/lib/chief/backup-monitoring.json`. Older installations seed this receipt
+from a completed successful systemd run. A new backup does not clear that
+timestamp while running. Failed runs, backups older than 36 hours, and runs
+lasting over ten minutes still alert.
+
 Set repository variable `DISCORD_MONITORING_CHANNEL_ID` before merging. Chief
 needs View Channel, Send Messages, and Embed Links there. The deploy workflow installs the
 monitor and timer on existing VMs; the startup template installs them on new VMs.
@@ -70,6 +84,8 @@ It validates the destination belongs to the configured guild before sending.
 ```bash
 systemctl status chief-monitoring.timer
 journalctl -u chief-monitoring.service --since yesterday
+sudo sqlite3 /var/lib/chief/chief.db \
+  'select datetime(created_at, "unixepoch"), delivered_at, report_json from monitoring_alerts order by id desc limit 20;'
 ```
 
 Context jobs keep five fast retries, then remain degraded and retry once daily

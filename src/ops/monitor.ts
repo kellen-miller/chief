@@ -1,5 +1,8 @@
 import { existsSync, readFileSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+
+import { alertHistorySchema } from './alert-history.ts';
 
 import {
   deploymentGraceSeconds,
@@ -162,6 +165,10 @@ export async function collectSnapshot(now: number): Promise<MonitorSnapshot> {
       'Result',
       '-p',
       'ExecMainExitTimestamp',
+      '-p',
+      'ActiveState',
+      '-p',
+      'ExecMainStartTimestamp',
     ])
       .split('\n')
       .filter((line) => line.includes('='))
@@ -173,10 +180,30 @@ export async function collectSnapshot(now: number): Promise<MonitorSnapshot> {
   const timestamp = backup.ExecMainExitTimestamp?.split(' ')
     .slice(1, 3)
     .join(' ');
-  const backupAt = timestamp
+  const exitedAt = timestamp
     ? number(Date.parse(`${timestamp} UTC`) / 1000)
     : 0;
   const data = hostPaths().data;
+  const backupStatePath = join(data, 'backup-monitoring.json');
+  // Seed older installations only from a completed successful service run.
+  if (
+    !existsSync(backupStatePath) &&
+    backup.ActiveState === 'inactive' &&
+    backup.Result === 'success' &&
+    exitedAt > 0 &&
+    exitedAt <= now
+  ) {
+    atomicWrite(backupStatePath, JSON.stringify({ completed_at: exitedAt }));
+  }
+
+  const backupAt = number(readJson(backupStatePath).completed_at) || exitedAt;
+  const startedAt = Date.parse(backup.ExecMainStartTimestamp ?? '') / 1000;
+  const running =
+    backup.ActiveState === 'activating' || backup.ActiveState === 'active';
+  const backupHealthy =
+    backup.Result === 'success' &&
+    (!running ||
+      (startedAt > 0 && now - startedAt >= 0 && now - startedAt <= 600));
   const disk: Record<string, number> = {};
   for (const [name, path] of [
     ['boot', '/'],
@@ -192,8 +219,9 @@ export async function collectSnapshot(now: number): Promise<MonitorSnapshot> {
     health,
     deployment: readJson(join(data, 'deployment-monitoring.json')),
     backup_ok:
-      backup.Result === 'success' &&
+      backupHealthy &&
       backupAt > 0 &&
+      backupAt <= now &&
       now - backupAt <= 36 * 3600,
     backup_age_hours: backupAt ? (now - backupAt) / 3600 : null,
     disk_free_gib: disk,
@@ -493,39 +521,67 @@ export async function monitor(): Promise<void> {
     now,
     config.CHIEF_CONTEXT_TIME_ZONE ?? 'America/New_York',
   );
-  if (messages.length) {
-    const token = execCommand('gcloud', [
-      'secrets',
-      'versions',
-      'access',
-      'latest',
-      `--project=${config.GCP_PROJECT_ID ?? ''}`,
-      '--secret=chief-discord-token',
-    ]).trim();
-    const channelUrl = `https://discord.com/api/v10/channels/${config.DISCORD_MONITORING_CHANNEL_ID ?? ''}`;
-    const headers = {
-      Authorization: `Bot ${token}`,
-      'Content-Type': 'application/json',
-      'User-Agent': 'Chief monitoring/1.0',
-    };
-    const response = await fetch(channelUrl, {
-      headers,
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) throw new Error('monitoring channel unavailable');
-    const channel = record(await response.json());
-    if (channel.guild_id !== config.DISCORD_GUILD_ID || channel.type !== 0)
-      throw new Error('monitoring channel outside configured guild');
-    for (const message of messages) {
-      const sent = await fetch(`${channelUrl}/messages`, {
-        method: 'POST',
+  const databasePath = join(hostPaths().data, 'chief.db');
+  if (!existsSync(databasePath)) throw new Error('monitoring database missing');
+  const database = new DatabaseSync(databasePath, { timeout: 5000 });
+  try {
+    database.exec(alertHistorySchema);
+    database
+      .prepare('delete from monitoring_alerts where created_at <= ?')
+      .run(now - 7 * 24 * 3600);
+    const insertAlert = database.prepare(
+      'insert into monitoring_alerts (created_at, report_json) values (?, ?)',
+    );
+    const alertIds = messages.map((message) =>
+      message.embeds[0]?.title === 'Chief · Daily report'
+        ? null
+        : insertAlert.run(now, JSON.stringify(message)).lastInsertRowid,
+    );
+    if (messages.length) {
+      const token = execCommand('gcloud', [
+        'secrets',
+        'versions',
+        'access',
+        'latest',
+        `--project=${config.GCP_PROJECT_ID ?? ''}`,
+        '--secret=chief-discord-token',
+      ]).trim();
+      const channelUrl = `https://discord.com/api/v10/channels/${config.DISCORD_MONITORING_CHANNEL_ID ?? ''}`;
+      const headers = {
+        Authorization: `Bot ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Chief monitoring/1.0',
+      };
+      const response = await fetch(channelUrl, {
         headers,
-        body: JSON.stringify(message),
         signal: AbortSignal.timeout(10_000),
       });
-      if (!sent.ok) throw new Error('monitoring delivery failed');
-    }
-  }
+      if (!response.ok) throw new Error('monitoring channel unavailable');
+      const channel = record(await response.json());
+      if (channel.guild_id !== config.DISCORD_GUILD_ID || channel.type !== 0)
+        throw new Error('monitoring channel outside configured guild');
+      for (const [index, message] of messages.entries()) {
+        const sent = await fetch(`${channelUrl}/messages`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(message),
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!sent.ok) throw new Error('monitoring delivery failed');
 
-  atomicWrite(statePath, JSON.stringify(receipt));
+        const alertId = alertIds[index];
+        if (alertId !== null && alertId !== undefined) {
+          database
+            .prepare(
+              'update monitoring_alerts set delivered_at = ? where id = ?',
+            )
+            .run(Math.floor(Date.now() / 1000), alertId);
+        }
+      }
+    }
+
+    atomicWrite(statePath, JSON.stringify(receipt));
+  } finally {
+    database.close();
+  }
 }

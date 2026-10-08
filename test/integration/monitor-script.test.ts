@@ -1,8 +1,15 @@
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  migrateChiefDatabase,
+  openChiefDatabase,
+} from '../../src/memory/database.ts';
+import { alertHistorySchema } from '../../src/ops/alert-history.ts';
 
 import {
   buildReports,
@@ -340,6 +347,16 @@ describe('host-side Discord monitoring', () => {
     const root = mkdtempSync(join(tmpdir(), 'chief-monitor-test-'));
     const bin = join(root, 'bin');
     mkdirSync(bin);
+    const applicationDatabase = openChiefDatabase(join(root, 'chief.db'));
+    migrateChiefDatabase(applicationDatabase, '0013_legacy_source_scope');
+    applicationDatabase.exec(alertHistorySchema);
+    applicationDatabase.close();
+    const database = new DatabaseSync(join(root, 'chief.db'));
+    const insert = database.prepare(
+      'insert into monitoring_alerts (created_at, report_json) values (?, ?)',
+    );
+    insert.run(now - 7 * 24 * 3600, '{}');
+    insert.run(now - 7 * 24 * 3600 + 1, '{}');
     for (const [name, output] of [
       [
         'systemctl',
@@ -376,7 +393,10 @@ describe('host-side Discord monitoring', () => {
     expect(sample.backup_ok).toBe(true);
     writeFileSync(
       join(root, 'monitoring.json'),
-      JSON.stringify({ cursor: now - 60 }),
+      JSON.stringify({
+        cursor: now - 60,
+        problems: { backup: 'Backup failed' },
+      }),
     );
     const original = readFileSync(join(root, 'monitoring.json'), 'utf8');
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -389,6 +409,16 @@ describe('host-side Discord monitoring', () => {
       .mockResolvedValueOnce(new Response('SECRET', { status: 500 }));
     await expect(monitor()).rejects.toThrow('monitoring delivery failed');
     expect(readFileSync(join(root, 'monitoring.json'), 'utf8')).toBe(original);
+    expect(
+      database
+        .prepare(
+          'select created_at, delivered_at from monitoring_alerts order by id',
+        )
+        .all(),
+    ).toEqual([
+      { created_at: now - 7 * 24 * 3600 + 1, delivered_at: null },
+      { created_at: now, delivered_at: null },
+    ]);
     fetchSpy
       .mockResolvedValueOnce(new Response(JSON.stringify(snapshot().health)))
       .mockResolvedValueOnce(
@@ -401,10 +431,82 @@ describe('host-side Discord monitoring', () => {
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ guild_id: '123', type: 0 })),
       )
+      .mockResolvedValueOnce(new Response('{}'))
       .mockResolvedValueOnce(new Response('{}'));
     await monitor();
+    const history = database
+      .prepare(
+        'select created_at, delivered_at, report_json from monitoring_alerts order by id',
+      )
+      .all();
+    expect(history).toHaveLength(4);
+    expect(history[3]).toMatchObject({ created_at: now, delivered_at: now });
+    expect(JSON.stringify(history)).toContain('Chief · Recovered');
+    expect(JSON.stringify(history)).not.toMatch(/SECRET|Daily report/u);
     expect(
       JSON.parse(readFileSync(join(root, 'monitoring.json'), 'utf8')),
     ).toMatchObject({ report_date: '2026-10-04', cursor: now });
+    vi.setSystemTime((now + 60) * 1000);
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(snapshot().health)),
+    );
+    await monitor();
+    expect(
+      database.prepare('select count(*) as count from monitoring_alerts').get(),
+    ).toEqual({ count: 3 });
+    database.close();
+    const upgraded = openChiefDatabase(join(root, 'chief.db'));
+    migrateChiefDatabase(upgraded);
+    expect(
+      upgraded.prepare('select count(*) from monitoring_alerts').pluck().get(),
+    ).toBe(3);
+    upgraded.close();
+  });
+
+  it('keeps a completed backup healthy during its next run, but detects failures, stale backups and stuck runs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'chief-backup-monitor-'));
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    const servicePath = join(root, 'service');
+    writeFileSync(join(bin, 'systemctl'), `#!/bin/sh\ncat '${servicePath}'\n`, {
+      mode: 0o755,
+    });
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? ''}`);
+    vi.stubEnv('CHIEF_DATA_DIR', root);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify(snapshot().health))),
+    );
+    writeFileSync(
+      servicePath,
+      'Result=success\nActiveState=inactive\nExecMainExitTimestamp=Sun 2026-10-04 06:06:10 UTC\n',
+    );
+    expect((await collectSnapshot(now)).backup_ok).toBe(true);
+    const completedAt = Date.parse('2026-10-04T06:06:10Z') / 1000;
+    expect(
+      JSON.parse(readFileSync(join(root, 'backup-monitoring.json'), 'utf8')),
+    ).toEqual({ completed_at: completedAt });
+    writeFileSync(
+      servicePath,
+      'Result=success\nActiveState=activating\nExecMainExitTimestamp=\nExecMainStartTimestamp=Sun 2026-10-04 12:59:30 UTC\n',
+    );
+    const running = await collectSnapshot(now);
+    expect(running.backup_ok).toBe(true);
+    expect(running.backup_age_hours).toBeCloseTo((now - completedAt) / 3600);
+    expect(reports(running, {}, now - 3600).messages).toEqual([]);
+    expect((await collectSnapshot(now + 601)).backup_ok).toBe(false);
+    writeFileSync(
+      join(root, 'backup-monitoring.json'),
+      JSON.stringify({ completed_at: now - 37 * 3600 }),
+    );
+    expect((await collectSnapshot(now)).backup_ok).toBe(false);
+    writeFileSync(
+      join(root, 'backup-monitoring.json'),
+      JSON.stringify({ completed_at: completedAt }),
+    );
+    writeFileSync(
+      servicePath,
+      'Result=exit-code\nActiveState=failed\nExecMainExitTimestamp=Sun 2026-10-04 12:59:59 UTC\n',
+    );
+    expect((await collectSnapshot(now)).backup_ok).toBe(false);
   });
 });

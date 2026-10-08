@@ -283,6 +283,13 @@ CREATE TABLE memory_jobs (
   status text not null default 'pending'
 , revision_checksum text not null default '');
 
+CREATE TABLE monitoring_alerts (
+  id integer primary key,
+  created_at integer not null,
+  delivered_at integer,
+  report_json text not null
+);
+
 CREATE TABLE schema_migrations (id text primary key, checksum text not null, applied_at integer not null);
 
 CREATE TABLE source_events (
@@ -352,5 +359,8 @@ CREATE INDEX conversation_events_recent_idx
 
 CREATE INDEX conversation_events_retention_idx
   on conversation_events(retention_deadline);
+
+CREATE INDEX monitoring_alerts_created_idx
+  on monitoring_alerts(created_at);
 
 CREATE INDEX usage_ledger_occurred_idx on usage_ledger(occurred_at);

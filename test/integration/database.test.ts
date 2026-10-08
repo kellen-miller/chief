@@ -103,11 +103,12 @@ describe('Chief database', () => {
       '0011_usage_reservation_origin',
       '0012_context_accounting_origin',
       '0013_legacy_source_scope',
+      '0014_monitoring_alerts',
     ]);
     expect(
       database
         .prepare(
-          "select id, checksum from schema_migrations where id != '0013_legacy_source_scope' order by id",
+          "select id, checksum from schema_migrations where id not in ('0013_legacy_source_scope', '0014_monitoring_alerts') order by id",
         )
         .all(),
     ).toEqual(priorMigrations);

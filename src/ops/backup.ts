@@ -86,6 +86,10 @@ export function backup(arguments_: readonly string[]): void {
     backupPath,
     `gs://${bucket}/backups/`,
   ]);
+  atomicWrite(
+    join(paths.data, 'backup-monitoring.json'),
+    JSON.stringify({ completed_at: Math.floor(Date.now() / 1000) }),
+  );
 }
 
 export function restore(arguments_: readonly string[]): void {

@@ -3,6 +3,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   symlinkSync,
@@ -93,12 +94,24 @@ copyFileSync(source, join(process.env.TEST_UPLOADED, basename(source)));
       for (const command of ['docker', 'gcloud'])
         chmodSync(join(bin, command), 0o755);
       vi.stubEnv('CHIEF_CONFIG_FILE', config);
+      vi.stubEnv('CHIEF_DATA_DIR', data);
       vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? ''}`);
       vi.stubEnv('TEST_DATA', data);
       vi.stubEnv('TEST_RUNTIME', runtime);
       vi.stubEnv('TEST_UPLOADED', uploaded);
 
       backup([]);
+
+      const receiptPath = join(data, 'backup-monitoring.json');
+      const receipt = readFileSync(receiptPath, 'utf8');
+      expect(receipt).toMatch(/^\{"completed_at":\d+\}$/u);
+      writeFileSync(join(bin, 'gcloud'), '#!/bin/sh\nexit 1\n', {
+        mode: 0o755,
+      });
+      expect(() => {
+        backup([]);
+      }).toThrow('gcloud failed');
+      expect(readFileSync(receiptPath, 'utf8')).toBe(receipt);
 
       const files = readdirSync(uploaded);
       expect(files).toHaveLength(1);

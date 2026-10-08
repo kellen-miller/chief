@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 
+import { alertHistorySchema } from '../ops/alert-history.js';
+
 const INITIAL_MIGRATION = `
 create table schema_migrations (
   id text primary key,
@@ -712,6 +714,11 @@ const MIGRATIONS: readonly Migration[] = [
     checksum: LEGACY_SOURCE_SCOPE_MIGRATION_CHECKSUM,
     id: LEGACY_SOURCE_SCOPE_MIGRATION_ID,
     sql: LEGACY_SOURCE_SCOPE_MIGRATION,
+  },
+  {
+    checksum: 'chief-0014-v1',
+    id: '0014_monitoring_alerts',
+    sql: alertHistorySchema,
   },
 ];
 
