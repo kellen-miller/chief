@@ -14,9 +14,6 @@ describe('OpenAI memory adapters', () => {
         _prompt: string,
         _options: { readonly maxTurns: number; readonly signal: AbortSignal },
       ) => {
-        void _agent;
-        void _prompt;
-        void _options;
         return Promise.resolve({
           finalOutput: { proposals: [] },
           state: { usage: { inputTokens: 100, outputTokens: 50 } },
