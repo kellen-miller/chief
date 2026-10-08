@@ -398,7 +398,6 @@ describe('host-side Discord monitoring', () => {
         problems: { backup: 'Backup failed' },
       }),
     );
-    const original = readFileSync(join(root, 'monitoring.json'), 'utf8');
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(now * 1000);
     fetchSpy
@@ -408,7 +407,12 @@ describe('host-side Discord monitoring', () => {
       )
       .mockResolvedValueOnce(new Response('SECRET', { status: 500 }));
     await expect(monitor()).rejects.toThrow('monitoring delivery failed');
-    expect(readFileSync(join(root, 'monitoring.json'), 'utf8')).toBe(original);
+    const original = readFileSync(join(root, 'monitoring.json'), 'utf8');
+    expect(JSON.parse(original)).toEqual({
+      cursor: now - 60,
+      problems: { backup: 'Backup failed' },
+      history_pruned_at: now,
+    });
     expect(
       database
         .prepare(
@@ -450,6 +454,17 @@ describe('host-side Discord monitoring', () => {
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify(snapshot().health)),
     );
+    await monitor();
+    expect(
+      database.prepare('select count(*) as count from monitoring_alerts').get(),
+    ).toEqual({ count: 4 });
+    vi.setSystemTime((now + 24 * 3600) * 1000);
+    fetchSpy
+      .mockResolvedValueOnce(new Response(JSON.stringify(snapshot().health)))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ guild_id: '123', type: 0 })),
+      )
+      .mockResolvedValueOnce(new Response('{}'));
     await monitor();
     expect(
       database.prepare('select count(*) as count from monitoring_alerts').get(),

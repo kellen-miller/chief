@@ -67,7 +67,9 @@ table in `/var/lib/chief/chief.db`. Each delivery attempt records `created_at`
 (UTC epoch seconds) and the content-free Discord report in `report_json`;
 `delivered_at` remains NULL unless Discord accepts the message. Retries have
 separate rows. Daily reports are excluded. The independent host monitor prunes
-expired rows every minute, even when no new alerts occur. Current monitoring
+expired rows once daily, even when no new alerts occur. It reuses the existing
+monitoring timer and persists the last prune time; no additional cron or timer
+is installed. Current monitoring
 state and counters remain in the separate receipt file.
 
 Backup freshness uses the last verified, uploaded backup completion recorded in

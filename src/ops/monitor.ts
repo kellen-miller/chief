@@ -65,6 +65,7 @@ export interface MonitorState {
   cursor?: number;
   discord_unready_since?: number | null;
   health_unready_since?: number | null;
+  history_pruned_at?: number | null;
 }
 
 interface Field {
@@ -473,6 +474,7 @@ export function buildReports(
       report_date: reportDate,
       cursor: now,
       health_unready_since: readiness.unreadySince,
+      history_pruned_at: state.history_pruned_at ?? null,
     },
   };
 }
@@ -526,9 +528,16 @@ export async function monitor(): Promise<void> {
   const database = new DatabaseSync(databasePath, { timeout: 5000 });
   try {
     database.exec(alertHistorySchema);
-    database
-      .prepare('delete from monitoring_alerts where created_at <= ?')
-      .run(now - 7 * 24 * 3600);
+    if (now - (state.history_pruned_at ?? 0) >= 24 * 3600) {
+      database
+        .prepare('delete from monitoring_alerts where created_at <= ?')
+        .run(now - 7 * 24 * 3600);
+      state.history_pruned_at = now;
+      // Persist pruning independently of Discord delivery acknowledgments.
+      atomicWrite(statePath, JSON.stringify(state));
+    }
+
+    receipt.history_pruned_at = state.history_pruned_at ?? null;
     const insertAlert = database.prepare(
       'insert into monitoring_alerts (created_at, report_json) values (?, ?)',
     );
