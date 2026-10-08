@@ -12,7 +12,7 @@ interface Migration {
 
 // SQL filenames define migration order. Only pre-Knex migrations carry legacy
 // checksum headers; new migrations use a checksum of their file contents.
-const migrationsDirectory = new URL('../../migrations/', import.meta.url);
+const migrationsDirectory = new URL('../../sql/migrations/', import.meta.url);
 const migrations: readonly Migration[] = readdirSync(migrationsDirectory)
   .filter((name) => /^\d+_[a-z0-9_]+\.sql$/u.test(name))
   .sort()
