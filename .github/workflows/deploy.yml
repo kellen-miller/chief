@@ -86,21 +86,11 @@ jobs:
       - name: Install deployment transaction
         timeout-minutes: 10
         run: |
-          gcloud compute scp scripts/configure-google-cloud-apt.sh scripts/install-node.sh \
-            "chief:/tmp/" \
-            --project="${{ vars.GCP_PROJECT_ID }}" \
-            --zone="${{ vars.GCP_ZONE }}" \
-            --tunnel-through-iap --scp-flag=-O --quiet
-          gcloud compute scp --recurse src/ops \
-            "chief:/tmp/chief-ops-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --project="${{ vars.GCP_PROJECT_ID }}" \
-            --zone="${{ vars.GCP_ZONE }}" \
-            --tunnel-through-iap --scp-flag=-O --quiet
-          gcloud compute scp gen/sql/monitoring.ts \
-            "chief:/tmp/chief-monitoring-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.ts" \
-            --project="${{ vars.GCP_PROJECT_ID }}" \
-            --zone="${{ vars.GCP_ZONE }}" \
-            --tunnel-through-iap --scp-flag=-O --quiet
+          bundle="chief-deploy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          source_url="https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}"
+          curl --fail --silent --show-error --location --retry 3 --max-time 60 \
+            "$source_url" --output "/tmp/$bundle.tar.gz"
+          bundle_sha="$(sha256sum "/tmp/$bundle.tar.gz" | cut -d ' ' -f 1)"
           gcloud compute ssh chief \
             --project="${{ vars.GCP_PROJECT_ID }}" \
             --zone="${{ vars.GCP_ZONE }}" \
@@ -114,18 +104,24 @@ jobs:
               sudo journalctl -u google-startup-scripts.service --no-pager --lines=100
               exit 1
             fi
-            sudo install -m 0750 /tmp/configure-google-cloud-apt.sh /opt/chief/configure-google-cloud-apt.sh
+            curl --fail --silent --show-error --location --retry 3 --max-time 60 \
+              '$source_url' --output /tmp/$bundle.tar.gz
+            echo '$bundle_sha  /tmp/$bundle.tar.gz' | sha256sum --check --status
+            mkdir -m 0700 /tmp/$bundle
+            tar -xzf /tmp/$bundle.tar.gz --strip-components=1 -C /tmp/$bundle
+            sudo install -m 0750 /tmp/$bundle/scripts/configure-google-cloud-apt.sh /opt/chief/configure-google-cloud-apt.sh
             sudo /opt/chief/configure-google-cloud-apt.sh
-            sudo install -m 0750 /tmp/install-node.sh /opt/chief/install-node.sh
+            sudo install -m 0750 /tmp/$bundle/scripts/install-node.sh /opt/chief/install-node.sh
             sudo /opt/chief/install-node.sh
             sudo install -d -m 0750 /opt/chief/src/ops /opt/chief/gen/sql
-            sudo install -m 0640 /tmp/chief-monitoring-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.ts /opt/chief/gen/sql/monitoring.ts
-            sudo install -m 0640 /tmp/chief-ops-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/*.ts /opt/chief/src/ops/
+            sudo install -m 0640 /tmp/$bundle/gen/sql/monitoring.ts /opt/chief/gen/sql/monitoring.ts
+            sudo install -m 0640 /tmp/$bundle/src/ops/*.ts /opt/chief/src/ops/
             sudo /opt/chief/node/bin/node /opt/chief/src/ops/cli.ts install-services
             sudo /opt/chief/node/bin/node /opt/chief/src/ops/cli.ts install-monitoring \
               '${{ vars.DISCORD_MONITORING_CHANNEL_ID }}' \
               '${{ vars.DISCORD_GUILD_ID }}' \
               '${{ vars.GCP_PROJECT_ID }}'
+            rm -rf /tmp/$bundle /tmp/$bundle.tar.gz
             sudo /opt/chief/node/bin/node /opt/chief/src/ops/cli.ts deploy \
               --image '${{ steps.image.outputs.reference }}' \
               --backup-bucket '${{ vars.CHIEF_BACKUP_BUCKET }}'"
