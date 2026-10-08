@@ -2,7 +2,6 @@ import { existsSync, readFileSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { alertHistorySchema } from './alert-history.ts';
 import {
   monitoringMarkDeliveredQuery,
   monitoringPruneAlertsQuery,
@@ -535,7 +534,6 @@ export async function monitor(): Promise<void> {
   if (!existsSync(databasePath)) throw new Error('monitoring database missing');
   const database = new DatabaseSync(databasePath, { timeout: 5000 });
   try {
-    database.exec(alertHistorySchema);
     if (now - (state.history_pruned_at ?? 0) >= 24 * 3600) {
       database.prepare(monitoringPruneAlertsQuery).run({
         cutoff: now - 7 * 24 * 3600,

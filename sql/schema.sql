@@ -1,4 +1,4 @@
--- Generated from src/memory/database.ts. DO NOT EDIT.
+-- Generated from migrations/*.sql through Knex. DO NOT EDIT.
 CREATE TRIGGER usage_ledger_origin_immutable
 before update of reservation_origin, origin_backfill_run_id on usage_ledger
 when new.reservation_origin != old.reservation_origin

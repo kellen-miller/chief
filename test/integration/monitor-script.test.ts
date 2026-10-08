@@ -9,7 +9,6 @@ import {
   migrateChiefDatabase,
   openChiefDatabase,
 } from '../../src/memory/database.ts';
-import { alertHistorySchema } from '../../src/ops/alert-history.ts';
 
 import {
   buildReports,
@@ -348,8 +347,7 @@ describe('host-side Discord monitoring', () => {
     const bin = join(root, 'bin');
     mkdirSync(bin);
     const applicationDatabase = openChiefDatabase(join(root, 'chief.db'));
-    await migrateChiefDatabase(applicationDatabase, '0013_legacy_source_scope');
-    applicationDatabase.exec(alertHistorySchema);
+    await migrateChiefDatabase(applicationDatabase);
     applicationDatabase.close();
     const database = new DatabaseSync(join(root, 'chief.db'));
     const insert = database.prepare(

@@ -24,7 +24,7 @@ try {
       .all();
     writeFileSync(
       'sql/schema.sql',
-      `-- Generated from src/memory/database.ts. DO NOT EDIT.\n${rows.map((row) => `${row.sql};`).join('\n\n')}\n`,
+      `-- Generated from migrations/*.sql through Knex. DO NOT EDIT.\n${rows.map((row) => `${row.sql};`).join('\n\n')}\n`,
     );
   } finally {
     database.close();
