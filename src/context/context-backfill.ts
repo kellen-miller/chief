@@ -490,9 +490,14 @@ export class ContextBackfillService {
   public status(runId?: number): ContextBackfillStatus | null {
     const row = this.#database
       .prepare(
-        readSqliteStatement('contextBackfillStatusSelectContextBackfills', [
-          runId === undefined ? '' : readSqliteStatement('backfillRunIdFilter'),
-        ]),
+        readSqliteStatement(
+          'context/contextBackfillStatusSelectContextBackfills',
+          [
+            runId === undefined
+              ? ''
+              : readSqliteStatement('context/backfillRunIdFilter'),
+          ],
+        ),
       )
       .get(
         ...(runId === undefined ? [this.#scopeId()] : [this.#scopeId(), runId]),

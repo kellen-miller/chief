@@ -30,7 +30,7 @@ export function hasSourceTombstone(
     database
       .prepare(
         readSqliteStatement(
-          'sourceScopeHasSourceTombstoneSelectContextTombstones',
+          'context/sourceScopeHasSourceTombstoneSelectContextTombstones',
           [aliases.map(() => '?').join(', ')],
         ),
       )

@@ -327,7 +327,7 @@ export class ContextAssembler {
             this.#database
               .prepare(
                 readSqliteStatement(
-                  'contextAssemblerRollupCandidatesSelectContextDocumentFts',
+                  'context/contextAssemblerRollupCandidatesSelectContextDocumentFts',
                 ),
               )
               .all(
@@ -348,7 +348,7 @@ export class ContextAssembler {
     const vectorRows = this.#database
       .prepare(
         readSqliteStatement(
-          'contextAssemblerRollupCandidatesSelectContextDocumentVectors',
+          'context/contextAssemblerRollupCandidatesSelectContextDocumentVectors',
         ),
       )
       .all(
@@ -431,7 +431,7 @@ export class ContextAssembler {
     return this.#database
       .prepare(
         readSqliteStatement(
-          'contextAssemblerLineageSelectContextDocumentParents',
+          'context/contextAssemblerLineageSelectContextDocumentParents',
         ),
       )
       .all(documentId, this.#guildId, this.#channelId) as LineageRow[];

@@ -41,20 +41,13 @@ afterEach(async () => {
 });
 
 describe('database recovery', () => {
-  it('validates recorded migrations by default and requires context explicitly', async () => {
+  it('rejects altered Knex migration history', async () => {
     const database = openChiefDatabase(':memory:');
-    await migrateChiefDatabase(database, '0002_conversation_events');
-
-    expect(restorableDatabaseCapability(database)).toBe(
-      '0002_conversation_events',
-    );
-    expect(verifyRestorableDatabase(database)).toBe(true);
-    expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
-      false,
-    );
+    await migrateChiefDatabase(database);
+    expect(restorableDatabaseCapability(database)).toBe('chief-v1');
     database
       .prepare(
-        "update schema_migrations set checksum = 'tampered' where id = '0002_conversation_events'",
+        "update knex_migrations set name = 'unknown.sql' where name = '0002_conversation.sql'",
       )
       .run();
     expect(restorableDatabaseCapability(database)).toBeNull();
@@ -76,32 +69,26 @@ describe('database recovery', () => {
     const database = openChiefDatabase(':memory:');
     await migrateChiefDatabase(database);
 
-    expect(restorableDatabaseCapability(database)).toBe('0003_channel_context');
-    expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
-      true,
-    );
+    expect(restorableDatabaseCapability(database)).toBe('chief-v1');
+    expect(verifyRestorableDatabase(database, 'chief-v1')).toBe(true);
     database
       .prepare(
         "insert into context_document_fts (rowid, content) values (999, 'orphan')",
       )
       .run();
-    expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
-      false,
-    );
+    expect(verifyRestorableDatabase(database, 'chief-v1')).toBe(false);
     database.close();
   });
 
-  it('recognizes an exact migration-0003 database capability', async () => {
+  it('recognizes an baseline database capability', async () => {
     const database = openChiefDatabase(':memory:');
-    await migrateChiefDatabase(database, '0003_channel_context');
+    await migrateChiefDatabase(database);
     for (const tier of ['hourly', 'daily', 'weekly', 'long-term'] as const) {
-      insertMigration0003Document(database, tier);
+      insertTierDocument(database, tier);
     }
 
-    expect(restorableDatabaseCapability(database)).toBe('0003_channel_context');
-    expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
-      true,
-    );
+    expect(restorableDatabaseCapability(database)).toBe('chief-v1');
+    expect(verifyRestorableDatabase(database, 'chief-v1')).toBe(true);
     database.close();
   });
 
@@ -122,9 +109,7 @@ describe('database recovery', () => {
       )
       .run(documentId, 'corrupted replacement');
 
-    expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
-      false,
-    );
+    expect(verifyRestorableDatabase(database, 'chief-v1')).toBe(false);
     database.close();
   });
 
@@ -145,9 +130,7 @@ describe('database recovery', () => {
       )
       .run(BigInt(999), JSON.stringify(Array(1536).fill(0)));
 
-    expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
-      false,
-    );
+    expect(verifyRestorableDatabase(database, 'chief-v1')).toBe(false);
     database.close();
   });
 
@@ -161,9 +144,7 @@ describe('database recovery', () => {
          values ('restore-progress', 'guild/channel', 'dry-run', 1, 1, 1)`,
       )
       .run();
-    expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
-      false,
-    );
+    expect(verifyRestorableDatabase(database, 'chief-v1')).toBe(false);
     database
       .prepare(
         `update context_backfills set page_count = 0
@@ -178,22 +159,20 @@ describe('database recovery', () => {
                  'guild/channel/message', 'locally-forgotten', 1, 'invalid')`,
       )
       .run();
-    expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
-      false,
-    );
+    expect(verifyRestorableDatabase(database, 'chief-v1')).toBe(false);
     database.close();
   });
 
-  it('replays a verified journal into a migration-0002 snapshot idempotently', async () => {
+  it('replays a verified journal into a baseline snapshot idempotently', async () => {
     const database = openChiefDatabase(':memory:');
-    await migrateChiefDatabase(database, '0002_conversation_events');
+    await migrateChiefDatabase(database);
     database
       .prepare(
         `insert into conversation_events
-           (platform_event_id, role, speaker_id, speaker_name, medium, content,
-            occurred_at, retention_deadline)
-         values ('message-1', 'human', 'speaker', 'President', 'text',
-                 'forgotten conversation', 1, 999999)`,
+           (platform_event_id, discord_message_id, guild_id, channel_id, role, speaker_id, speaker_name, medium, content,
+            attachment_metadata_json, content_state, content_state_reason, occurred_at, recent_until, retention_deadline)
+         values ('message-1', 'message-1', 'guild', 'channel', 'human', 'speaker', 'President', 'text',
+                 'forgotten conversation', '[]', 'available', 'retained', 1, 999999, 999999)`,
       )
       .run();
     const sourceId = Number(
@@ -254,13 +233,13 @@ describe('database recovery', () => {
     database.close();
   });
 
-  it('replays a real memory-only forget into a migration-0002 snapshot', async () => {
+  it('replays a real memory-only forget into a baseline snapshot', async () => {
     const sourceScopeId = '52345678901234567';
     const guildId = '32345678901234567';
     const channelId = '22345678901234567';
     const current = openChiefDatabase(':memory:');
-    await migrateChiefDatabase(current, '0002_conversation_events');
-    const currentFixture = insertMigration0002Memory(current);
+    await migrateChiefDatabase(current);
+    const currentFixture = insertMemoryFixture(current);
     current
       .prepare(
         `insert into source_events
@@ -317,8 +296,8 @@ describe('database recovery', () => {
     expectMemoryRecoveryScrubbed(current);
 
     const restored = openChiefDatabase(':memory:');
-    await migrateChiefDatabase(restored, '0002_conversation_events');
-    const restoredFixture = insertMigration0002Memory(restored);
+    await migrateChiefDatabase(restored);
+    const restoredFixture = insertMemoryFixture(restored);
     expect(restoredFixture).toEqual(currentFixture);
     await migrateChiefDatabase(restored);
 
@@ -688,7 +667,7 @@ function insertContextDocument(
   return id;
 }
 
-function insertMigration0003Document(
+function insertTierDocument(
   database: ReturnType<typeof openChiefDatabase>,
   tier: 'daily' | 'hourly' | 'long-term' | 'weekly',
 ): number {
@@ -722,16 +701,17 @@ function insertMigration0003Document(
   return id;
 }
 
-function insertMigration0002Memory(
-  database: ReturnType<typeof openChiefDatabase>,
-): { readonly memoryId: number; readonly sourceId: number } {
+function insertMemoryFixture(database: ReturnType<typeof openChiefDatabase>): {
+  readonly memoryId: number;
+  readonly sourceId: number;
+} {
   const sourceId = Number(
     database
       .prepare(
         `insert into source_events
-           (platform_source_id, speaker_id, medium, content, occurred_at,
+           (platform_source_id, source_scope_id, speaker_id, medium, content, occurred_at,
             retention_deadline, extraction_status)
-         values ('52345678901234567', 'speaker', 'text',
+         values ('52345678901234567', '52345678901234567', 'speaker', 'text',
                  'memory-only forgotten source', 1, 99999, 'pending')`,
       )
       .run().lastInsertRowid,

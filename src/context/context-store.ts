@@ -100,12 +100,12 @@ export class ContextStore {
       }
       if (input.isInternal !== true) {
         this.#database
-          .prepare(readSqliteStatement('insertContextDocumentFts'))
+          .prepare(readSqliteStatement('context/insertContextDocumentFts'))
           .run(documentId, input.summary);
         this.#database
           .prepare(
             readSqliteStatement(
-              'contextStoreActivateDocumentRevisionInsertContextDocumentVectors',
+              'context/contextStoreActivateDocumentRevisionInsertContextDocumentVectors',
             ),
           )
           .run(BigInt(documentId), JSON.stringify(Array.from(input.embedding)));
@@ -221,10 +221,10 @@ export class ContextStore {
 
   #deleteSearchRows(documentId: number): void {
     this.#database
-      .prepare(readSqliteStatement('deleteContextDocumentFts'))
+      .prepare(readSqliteStatement('context/deleteContextDocumentFts'))
       .run(documentId);
     this.#database
-      .prepare(readSqliteStatement('deleteContextDocumentVector'))
+      .prepare(readSqliteStatement('context/deleteContextDocumentVector'))
       .run(BigInt(documentId));
   }
 }

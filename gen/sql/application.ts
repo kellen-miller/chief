@@ -9,98 +9,6 @@ type PreparedStatement<P extends unknown[], R, S> = Omit<
   pluck(): Database.Statement<P, S>;
 };
 
-export interface ConversationRecordSelectConversationEventsRow {
-  id: number;
-}
-
-export function conversationRecordSelectConversationEvents(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string, string],
-  ConversationRecordSelectConversationEventsRow,
-  number
-> {
-  return database.prepare<
-    [string, string, string],
-    ConversationRecordSelectConversationEventsRow
-  >(
-    'select id from conversation_events\n         where guild_id = ? and channel_id = ? and discord_message_id = ?',
-  ) as unknown as PreparedStatement<
-    [string, string, string],
-    ConversationRecordSelectConversationEventsRow,
-    number
-  >;
-}
-
-export interface ConversationSearchTextSourceGroupsSelectConversationEventsRow {
-  id: number;
-  content: string;
-  discordMessageId: string;
-  logicalResponseId: string | null;
-  occurredAt: number;
-  responseChunkIndex: number | null;
-  role: string;
-  speakerName: string | null;
-}
-
-export function conversationSearchTextSourceGroupsSelectConversationEvents(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string, string | null, unknown, number | null],
-  ConversationSearchTextSourceGroupsSelectConversationEventsRow,
-  number
-> {
-  return database.prepare<
-    [string, string, string | null, unknown, number | null],
-    ConversationSearchTextSourceGroupsSelectConversationEventsRow
-  >(
-    "select id, content,\n                          discord_message_id as discordMessageId,\n                          logical_response_id as logicalResponseId,\n                          occurred_at as occurredAt,\n                          response_chunk_index as responseChunkIndex,\n                          role, speaker_name as speakerName\n                   from conversation_events\n                   where guild_id = ? and channel_id = ?\n                     and logical_response_id = ? and role = 'chief'\n                     and content_state = 'available'\n                     and (? is null or id < ?)\n                   order by coalesce(response_chunk_index, 2147483647), id",
-  ) as unknown as PreparedStatement<
-    [string, string, string | null, unknown, number | null],
-    ConversationSearchTextSourceGroupsSelectConversationEventsRow,
-    number
-  >;
-}
-
-export interface ConversationMaintainSelectConversationEventsRow {
-  id: number;
-}
-
-export function conversationMaintainSelectConversationEvents(
-  database: Database.Database,
-): PreparedStatement<
-  [number],
-  ConversationMaintainSelectConversationEventsRow,
-  number
-> {
-  return database.prepare<
-    [number],
-    ConversationMaintainSelectConversationEventsRow
-  >(
-    "select id from conversation_events\n           where medium = 'text' and content_state = 'available'\n             and retention_deadline <= ?",
-  ) as unknown as PreparedStatement<
-    [number],
-    ConversationMaintainSelectConversationEventsRow,
-    number
-  >;
-}
-
-export function conversationMaintainUpdateConversationEvents(
-  database: Database.Database,
-): PreparedStatement<[number], unknown, unknown> {
-  return database.prepare<[number]>(
-    "update conversation_events\n           set content = '', attachment_metadata_json = '[]',\n               content_state = 'scrubbed',\n               content_state_reason = 'retention-expired'\n           where medium = 'text' and content_state = 'available'\n             and retention_deadline <= ?",
-  );
-}
-
-export function conversationMaintainDeleteConversationEvents(
-  database: Database.Database,
-): PreparedStatement<[number], unknown, unknown> {
-  return database.prepare<[number]>(
-    "delete from conversation_events\n           where medium = 'voice' and retention_deadline <= ?",
-  );
-}
-
 export interface ContextActivateDocumentRevisionSelectContextDocumentsRow {
   max: unknown;
 }
@@ -276,41 +184,595 @@ export function contextAssertInputsAvailableSelectContextDocuments2(
   >;
 }
 
-export interface ContextDeletionDiscoverMemberSelectConversationEventsRow {
-  scopeId: unknown;
-  speakerId: string | null;
+export interface ChannelContextRecordDeliveredReplySelectConversationEventsRow {
+  min: unknown;
 }
 
-export function contextDeletionDiscoverMemberSelectConversationEvents(
+export function channelContextRecordDeliveredReplySelectConversationEvents(
   database: Database.Database,
 ): PreparedStatement<
-  [string, string, string],
-  ContextDeletionDiscoverMemberSelectConversationEventsRow,
+  [string, string, string | null],
+  ChannelContextRecordDeliveredReplySelectConversationEventsRow,
   unknown
 > {
   return database.prepare<
-    [string, string, string],
-    ContextDeletionDiscoverMemberSelectConversationEventsRow
+    [string, string, string | null],
+    ChannelContextRecordDeliveredReplySelectConversationEventsRow
   >(
-    "select guild_id || '/' || channel_id || '/' || discord_message_id\n                  as scopeId,\n                speaker_id as speakerId\n         from conversation_events\n         where guild_id = ? and channel_id = ? and role = 'human'\n           and content_state_reason not in ('discord-deleted', 'locally-forgotten')\n           and lower(trim(speaker_name)) = lower(trim(?))\n         order by id",
+    'select min(occurred_at) from conversation_events\n           where guild_id = ? and channel_id = ?\n             and logical_response_id = ?',
   );
 }
 
-export function contextDeletionCreateConfirmationInsertContextDeletionRequests(
+export function channelContextRecordDeliveredReplyUpdateConversationEvents(
+  database: Database.Database,
+): PreparedStatement<
+  [string | null, string | null, string | null, number | null, string, number],
+  unknown,
+  unknown
+> {
+  return database.prepare<
+    [string | null, string | null, string | null, number | null, string, number]
+  >(
+    "update conversation_events set\n                 request_id = case when logical_response_id is null\n                                   then ? else request_id end,\n                 reply_to_message_id = case when logical_response_id is null\n                                            then ? else reply_to_message_id end,\n                 logical_response_id = coalesce(logical_response_id, ?),\n                 response_chunk_index = ?,\n                 platform_event_id = ?\n               where id = ? and role = 'chief'",
+  );
+}
+
+export interface ChannelContextMaintainSelectConversationEventsRow {
+  id: number;
+}
+
+export function channelContextMaintainSelectConversationEvents(
+  database: Database.Database,
+): PreparedStatement<
+  [number],
+  ChannelContextMaintainSelectConversationEventsRow,
+  number
+> {
+  return database.prepare<
+    [number],
+    ChannelContextMaintainSelectConversationEventsRow
+  >(
+    "select id from conversation_events\n           where medium = 'text' and content_state = 'available'\n             and retention_deadline <= ?",
+  ) as unknown as PreparedStatement<
+    [number],
+    ChannelContextMaintainSelectConversationEventsRow,
+    number
+  >;
+}
+
+export interface ChannelContextMaintainSelectContextDocumentsRow {
+  id: number;
+}
+
+export function channelContextMaintainSelectContextDocuments(
+  database: Database.Database,
+): PreparedStatement<
+  [number | null],
+  ChannelContextMaintainSelectContextDocumentsRow,
+  number
+> {
+  return database.prepare<
+    [number | null],
+    ChannelContextMaintainSelectContextDocumentsRow
+  >(
+    "select id from context_documents\n           where content_state = 'available' and retention_deadline <= ?",
+  ) as unknown as PreparedStatement<
+    [number | null],
+    ChannelContextMaintainSelectContextDocumentsRow,
+    number
+  >;
+}
+
+export function channelContextMaintainDeleteContextDeletionRequests(
+  database: Database.Database,
+): PreparedStatement<[number], unknown, unknown> {
+  return database.prepare<[number]>(
+    "delete from context_deletion_requests\n           where status = 'pending' and expires_at <= ?",
+  );
+}
+
+export interface ChannelContextNextDeadlineSelectContextJobsRow {
+  min: unknown;
+}
+
+export function channelContextNextDeadlineSelectContextJobs(
+  database: Database.Database,
+): PreparedStatement<
+  [number, number | null],
+  ChannelContextNextDeadlineSelectContextJobsRow,
+  unknown
+> {
+  return database.prepare<
+    [number, number | null],
+    ChannelContextNextDeadlineSelectContextJobsRow
+  >(
+    "select min(freshness_deadline) from context_jobs\n           where not_before <= ?\n             and (status = 'pending'\n               or (status = 'leased' and lease_expires_at <= ?)\n               or (status = 'failed' and last_error_category = 'provider'))\n             and not exists(\n               select 1 from context_accounting_holds h\n               where h.job_id = context_jobs.id\n             )\n             and (backfill_run_id is null or exists(\n               select 1 from context_backfills b\n               where b.id = context_jobs.backfill_run_id\n                 and b.status = 'active'\n             ))",
+  );
+}
+
+export interface ChannelContextStatusSelectContextBackfillsRow {
+  status: string;
+  count: number;
+}
+
+export function channelContextStatusSelectContextBackfills(
+  database: Database.Database,
+): PreparedStatement<
+  [],
+  ChannelContextStatusSelectContextBackfillsRow,
+  string
+> {
+  return database.prepare<[], ChannelContextStatusSelectContextBackfillsRow>(
+    "select status, count(*) as count from context_backfills\n         where status in ('active', 'failed', 'paused') group by status",
+  ) as unknown as PreparedStatement<
+    [],
+    ChannelContextStatusSelectContextBackfillsRow,
+    string
+  >;
+}
+
+export interface ChannelContextStatusSelectContextJobsRow {
+  count: number;
+}
+
+export function channelContextStatusSelectContextJobs(
+  database: Database.Database,
+): PreparedStatement<[], ChannelContextStatusSelectContextJobsRow, number> {
+  return database.prepare<[], ChannelContextStatusSelectContextJobsRow>(
+    "select count(*) from context_jobs\n           where status in ('pending', 'leased')",
+  ) as unknown as PreparedStatement<
+    [],
+    ChannelContextStatusSelectContextJobsRow,
+    number
+  >;
+}
+
+export interface ChannelContextStatusSelectContextJobs2Row {
+  count: number;
+}
+
+export function channelContextStatusSelectContextJobs2(
+  database: Database.Database,
+): PreparedStatement<[], ChannelContextStatusSelectContextJobs2Row, number> {
+  return database.prepare<[], ChannelContextStatusSelectContextJobs2Row>(
+    "select count(*) from context_jobs where status = 'failed'",
+  ) as unknown as PreparedStatement<
+    [],
+    ChannelContextStatusSelectContextJobs2Row,
+    number
+  >;
+}
+
+export interface ChannelContextStatusSelectContextAccountingHoldsRow {
+  exists: number;
+}
+
+export function channelContextStatusSelectContextAccountingHolds(
+  database: Database.Database,
+): PreparedStatement<
+  [],
+  ChannelContextStatusSelectContextAccountingHoldsRow,
+  number
+> {
+  return database.prepare<
+    [],
+    ChannelContextStatusSelectContextAccountingHoldsRow
+  >(
+    'select exists(select 1 from context_accounting_holds)',
+  ) as unknown as PreparedStatement<
+    [],
+    ChannelContextStatusSelectContextAccountingHoldsRow,
+    number
+  >;
+}
+
+export interface ChannelContextStatusSelectContextJobs3Row {
+  min: unknown;
+}
+
+export function channelContextStatusSelectContextJobs3(
+  database: Database.Database,
+): PreparedStatement<
+  [string, number],
+  ChannelContextStatusSelectContextJobs3Row,
+  unknown
+> {
+  return database.prepare<
+    [string, number],
+    ChannelContextStatusSelectContextJobs3Row
+  >(
+    "select min(freshness_deadline) from context_jobs\n             where tier = ? and status != 'completed'\n               and freshness_deadline <= ?",
+  );
+}
+
+export interface ChannelContextStatusSelectContextJobs4Row {
+  error: string | null;
+}
+
+export function channelContextStatusSelectContextJobs4(
+  database: Database.Database,
+): PreparedStatement<
+  [number],
+  ChannelContextStatusSelectContextJobs4Row,
+  string | null
+> {
+  return database.prepare<[number], ChannelContextStatusSelectContextJobs4Row>(
+    "select last_error_category as error\n         from context_jobs\n         where status != 'completed' and freshness_deadline <= ?\n         order by freshness_deadline, id limit 1",
+  ) as unknown as PreparedStatement<
+    [number],
+    ChannelContextStatusSelectContextJobs4Row,
+    string | null
+  >;
+}
+
+export interface ChannelContextStatusSelectContextForgetJournalRow {
+  exists: number;
+}
+
+export function channelContextStatusSelectContextForgetJournal(
+  database: Database.Database,
+): PreparedStatement<
+  [],
+  ChannelContextStatusSelectContextForgetJournalRow,
+  number
+> {
+  return database.prepare<
+    [],
+    ChannelContextStatusSelectContextForgetJournalRow
+  >(
+    "select exists(\n             select 1 from context_forget_journal\n             where upload_status in ('pending', 'failed')\n           )",
+  ) as unknown as PreparedStatement<
+    [],
+    ChannelContextStatusSelectContextForgetJournalRow,
+    number
+  >;
+}
+
+export function channelContextRunNextUpdateContextJobs(
+  database: Database.Database,
+): PreparedStatement<[number], unknown, unknown> {
+  return database.prepare<[number]>(
+    'update context_jobs set usage_reservation_id = null where id = ?',
+  );
+}
+
+export function channelContextRunNextUpdateContextJobs2(
+  database: Database.Database,
+): PreparedStatement<[string | null, number], unknown, unknown> {
+  return database.prepare<[string | null, number]>(
+    'update context_jobs set usage_reservation_id = ? where id = ?',
+  );
+}
+
+export function channelContextRunNextUpdateContextJobs3(
+  database: Database.Database,
+): PreparedStatement<[number, string | null], unknown, unknown> {
+  return database.prepare<[number, string | null]>(
+    'update context_jobs set usage_reservation_id = null\n             where id = ? and usage_reservation_id = ?',
+  );
+}
+
+export interface ChannelContextRunNextSelectContextDocumentsRow {
+  max: unknown;
+}
+
+export function channelContextRunNextSelectContextDocuments(
+  database: Database.Database,
+): PreparedStatement<
+  [string],
+  ChannelContextRunNextSelectContextDocumentsRow,
+  unknown
+> {
+  return database.prepare<
+    [string],
+    ChannelContextRunNextSelectContextDocumentsRow
+  >(
+    'select max(revision) from context_documents\n               where document_key = ?',
+  );
+}
+
+export interface ChannelContextRunNextSelectContextDocuments2Row {
+  id: number;
+}
+
+export function channelContextRunNextSelectContextDocuments2(
+  database: Database.Database,
+): PreparedStatement<
+  [string],
+  ChannelContextRunNextSelectContextDocuments2Row,
+  number
+> {
+  return database.prepare<
+    [string],
+    ChannelContextRunNextSelectContextDocuments2Row
+  >(
+    "select id from context_documents\n             where document_key = ? and state = 'active'",
+  ) as unknown as PreparedStatement<
+    [string],
+    ChannelContextRunNextSelectContextDocuments2Row,
+    number
+  >;
+}
+
+export interface ChannelContextRunNextSelectContextDocuments3Row {
+  max: unknown;
+}
+
+export function channelContextRunNextSelectContextDocuments3(
+  database: Database.Database,
+): PreparedStatement<
+  [string],
+  ChannelContextRunNextSelectContextDocuments3Row,
+  unknown
+> {
+  return database.prepare<
+    [string],
+    ChannelContextRunNextSelectContextDocuments3Row
+  >(
+    'select max(revision) from context_documents\n                 where document_key = ?',
+  );
+}
+
+export function channelContextRunNextUpdateContextJobs4(
+  database: Database.Database,
+): PreparedStatement<[number], unknown, unknown> {
+  return database.prepare<[number]>(
+    "update context_jobs\n             set status = 'completed', lease_expires_at = null,\n                 usage_reservation_id = null, last_error_category = null\n             where id = ?",
+  );
+}
+
+export function channelContextRunNextUpdateContextJobs5(
+  database: Database.Database,
+): PreparedStatement<[number, string | null], unknown, unknown> {
+  return database.prepare<[number, string | null]>(
+    'update context_jobs set usage_reservation_id = null\n           where id = ? and usage_reservation_id = ?',
+  );
+}
+
+export interface ChannelContextLeaseNextJobSelectContextJobsRow {
+  id: number;
+  jobKey: string;
+  tier: string;
+  periodStart: number;
+  periodEnd: number | null;
+  timeZone: string;
+  topicKey: string | null;
+  topicLabel: string | null;
+  sourceDocumentIdsJson: string;
+  usageReservationId: string | null;
+  completeness: string;
+  sourceRevisionChecksum: string;
+  attemptCount: number;
+  backfillRunId: number | null;
+}
+
+export function channelContextLeaseNextJobSelectContextJobs(
+  database: Database.Database,
+): PreparedStatement<
+  [number, number | null],
+  ChannelContextLeaseNextJobSelectContextJobsRow,
+  number
+> {
+  return database.prepare<
+    [number, number | null],
+    ChannelContextLeaseNextJobSelectContextJobsRow
+  >(
+    "select id, job_key as jobKey, tier, period_start as periodStart,\n                  period_end as periodEnd, timezone as timeZone,\n                  topic_key as topicKey, topic_label as topicLabel,\n                  source_document_ids_json as sourceDocumentIdsJson,\n                  usage_reservation_id as usageReservationId,\n                  completeness,\n                  source_revision_checksum as sourceRevisionChecksum,\n                  attempt_count as attemptCount,\n                  backfill_run_id as backfillRunId\n           from context_jobs\n           where not_before <= ?\n             and (status = 'pending'\n               or (status = 'leased' and lease_expires_at <= ?)\n               or (status = 'failed' and last_error_category = 'provider'))\n             and not exists(\n               select 1 from context_accounting_holds h\n               where h.job_id = context_jobs.id\n             )\n             and (backfill_run_id is null or exists(\n               select 1 from context_backfills b\n               where b.id = context_jobs.backfill_run_id\n                 and b.status = 'active'\n             ))\n           order by freshness_deadline, id limit 1",
+  ) as unknown as PreparedStatement<
+    [number, number | null],
+    ChannelContextLeaseNextJobSelectContextJobsRow,
+    number
+  >;
+}
+
+export function channelContextLeaseNextJobUpdateContextJobs(
+  database: Database.Database,
+): PreparedStatement<[number | null, number], unknown, unknown> {
+  return database.prepare<[number | null, number]>(
+    "update context_jobs\n           set status = 'leased', lease_expires_at = ?,\n               attempt_count = attempt_count + 1\n           where id = ?",
+  );
+}
+
+export interface ChannelContextJobSourcesSelectConversationEventsRow {
+  id: unknown;
+  text: string;
+}
+
+export function channelContextJobSourcesSelectConversationEvents(
+  database: Database.Database,
+): PreparedStatement<
+  [string, string, number, number | null],
+  ChannelContextJobSourcesSelectConversationEventsRow,
+  unknown
+> {
+  return database.prepare<
+    [string, string, number, number | null],
+    ChannelContextJobSourcesSelectConversationEventsRow
+  >(
+    "select 'event:' || id as id, content as text\n           from conversation_events\n           where guild_id = ? and channel_id = ? and medium = 'text'\n             and content_state = 'available'\n             and occurred_at >= ? and occurred_at < ?\n           order by occurred_at, id",
+  );
+}
+
+export interface ChannelContextJobSourcesSelectContextDocumentsRow {
+  id: unknown;
+  text: string;
+}
+
+export function channelContextJobSourcesSelectContextDocuments(
+  database: Database.Database,
+): PreparedStatement<
+  [string, number, number | null],
+  ChannelContextJobSourcesSelectContextDocumentsRow,
+  unknown
+> {
+  return database.prepare<
+    [string, number, number | null],
+    ChannelContextJobSourcesSelectContextDocumentsRow
+  >(
+    "select 'document:' || id as id, summary as text\n           from context_documents\n           where tier = ? and completeness = 'final' and state = 'active'\n             and content_state = 'available' and is_internal = 0\n             and period_start >= ? and period_end <= ?\n           order by period_start, id",
+  );
+}
+
+export interface ChannelContextJobSourcesSelectContextDocuments2Row {
+  id: number;
+}
+
+export function channelContextJobSourcesSelectContextDocuments2(
+  database: Database.Database,
+): PreparedStatement<
+  [string | null],
+  ChannelContextJobSourcesSelectContextDocuments2Row,
+  number
+> {
+  return database.prepare<
+    [string | null],
+    ChannelContextJobSourcesSelectContextDocuments2Row
+  >(
+    "select id from context_documents\n         where tier = 'long-term' and topic_key = ? and state = 'active'\n           and content_state = 'available' and is_internal = 0",
+  ) as unknown as PreparedStatement<
+    [string | null],
+    ChannelContextJobSourcesSelectContextDocuments2Row,
+    number
+  >;
+}
+
+export function channelContextCompleteEmptyJobUpdateContextJobs(
+  database: Database.Database,
+): PreparedStatement<[number], unknown, unknown> {
+  return database.prepare<[number]>(
+    "update context_jobs\n         set status = 'completed', lease_expires_at = null,\n             usage_reservation_id = null, last_error_category = null\n         where id = ?",
+  );
+}
+
+export interface ChannelContextProvisionalObsoleteSelectContextDocumentsRow {
+  exists: number;
+}
+
+export function channelContextProvisionalObsoleteSelectContextDocuments(
+  database: Database.Database,
+): PreparedStatement<
+  [string],
+  ChannelContextProvisionalObsoleteSelectContextDocumentsRow,
+  number
+> {
+  return database.prepare<
+    [string],
+    ChannelContextProvisionalObsoleteSelectContextDocumentsRow
+  >(
+    "select exists(\n             select 1 from context_documents\n             where document_key = ? and completeness = 'final'\n               and state = 'active' and is_internal = 0\n           )",
+  ) as unknown as PreparedStatement<
+    [string],
+    ChannelContextProvisionalObsoleteSelectContextDocumentsRow,
+    number
+  >;
+}
+
+export function channelContextDeferJobUpdateContextJobs(
+  database: Database.Database,
+): PreparedStatement<[number, string | null, number], unknown, unknown> {
+  return database.prepare<[number, string | null, number]>(
+    "update context_jobs\n         set status = 'pending', not_before = ?, lease_expires_at = null,\n             usage_reservation_id = null,\n             attempt_count = max(0, attempt_count - 1),\n             last_error_category = ?\n         where id = ?",
+  );
+}
+
+export function channelContextRetryJobUpdateContextJobs(
+  database: Database.Database,
+): PreparedStatement<
+  [string, number, string | null, number, string, number],
+  unknown,
+  unknown
+> {
+  return database.prepare<
+    [string, number, string | null, number, string, number]
+  >(
+    "update context_jobs\n         set status = ?, not_before = ?, lease_expires_at = null,\n             usage_reservation_id = null, last_error_category = ?\n         where id = ? and status = 'leased'\n           and source_revision_checksum = ? and attempt_count = ?",
+  );
+}
+
+export interface ChannelContextAssertCurrentLeaseSelectContextJobsRow {
+  exists: number;
+}
+
+export function channelContextAssertCurrentLeaseSelectContextJobs(
+  database: Database.Database,
+): PreparedStatement<
+  [number, number | null, number, string, string | null],
+  ChannelContextAssertCurrentLeaseSelectContextJobsRow,
+  number
+> {
+  return database.prepare<
+    [number, number | null, number, string, string | null],
+    ChannelContextAssertCurrentLeaseSelectContextJobsRow
+  >(
+    "select exists(\n           select 1 from context_jobs\n           where id = ? and status = 'leased' and lease_expires_at > ?\n             and attempt_count = ? and source_revision_checksum = ?\n             and usage_reservation_id = ?\n         )",
+  ) as unknown as PreparedStatement<
+    [number, number | null, number, string, string | null],
+    ChannelContextAssertCurrentLeaseSelectContextJobsRow,
+    number
+  >;
+}
+
+export interface ChannelContextScheduleDownstreamSelectContextDocumentsRow {
+  topicKey: string | null;
+  topicLabel: string | null;
+}
+
+export function channelContextScheduleDownstreamSelectContextDocuments(
+  database: Database.Database,
+): PreparedStatement<
+  [],
+  ChannelContextScheduleDownstreamSelectContextDocumentsRow,
+  string | null
+> {
+  return database.prepare<
+    [],
+    ChannelContextScheduleDownstreamSelectContextDocumentsRow
+  >(
+    "select distinct topic_key as topicKey, topic_label as topicLabel\n           from context_documents\n           where tier = 'long-term' and state = 'active'\n             and content_state = 'available' and topic_key is not null\n             and topic_label is not null",
+  ) as unknown as PreparedStatement<
+    [],
+    ChannelContextScheduleDownstreamSelectContextDocumentsRow,
+    string | null
+  >;
+}
+
+export interface ChannelContextDocumentRevisionChecksumSelectContextDocumentsRow {
+  id: number;
+  revision: number;
+}
+
+export function channelContextDocumentRevisionChecksumSelectContextDocuments(
+  database: Database.Database,
+): PreparedStatement<
+  [string, number, number | null],
+  ChannelContextDocumentRevisionChecksumSelectContextDocumentsRow,
+  number
+> {
+  return database.prepare<
+    [string, number, number | null],
+    ChannelContextDocumentRevisionChecksumSelectContextDocumentsRow
+  >(
+    "select id, revision from context_documents\n         where tier = ? and completeness = 'final' and state = 'active'\n           and content_state = 'available' and is_internal = 0\n           and period_start >= ? and period_end <= ?\n         order by period_start, id",
+  ) as unknown as PreparedStatement<
+    [string, number, number | null],
+    ChannelContextDocumentRevisionChecksumSelectContextDocumentsRow,
+    number
+  >;
+}
+
+export function channelContextUpsertDerivedJobInsertContextJobs(
   database: Database.Database,
 ): PreparedStatement<
   [
     string,
     string,
-    string,
+    number,
+    number | null,
     string,
     string,
     number,
     number,
-    string,
-    string,
-    string,
-    string,
+    number | null,
   ],
   unknown,
   unknown
@@ -319,384 +781,302 @@ export function contextDeletionCreateConfirmationInsertContextDeletionRequests(
     [
       string,
       string,
-      string,
+      number,
+      number | null,
       string,
       string,
       number,
       number,
-      string,
-      string,
-      string,
-      string,
+      number | null,
     ]
   >(
-    "insert into context_deletion_requests\n           (id, requester_id, scope_type, scope_id, confirmation_checksum,\n            status, expires_at, created_at, source_ids_json,\n            document_ids_json, memory_ids_json, request_source_id)\n         values (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
+    "insert into context_jobs\n           (job_key, tier, period_start, period_end, timezone, topic_key,\n            completeness, source_revision_checksum, not_before,\n            freshness_deadline, backfill_run_id)\n         values (?, ?, ?, ?, ?, null, 'final', ?, ?, ?, ?)\n         on conflict(job_key) do update set\n           source_revision_checksum = excluded.source_revision_checksum,\n           not_before = excluded.not_before,\n           freshness_deadline = excluded.freshness_deadline,\n           status = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then 'pending' else context_jobs.status end,\n           lease_expires_at = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then null else context_jobs.lease_expires_at end,\n           last_error_category = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then null else context_jobs.last_error_category end,\n           backfill_run_id = case\n             when excluded.backfill_run_id is not null\n             then excluded.backfill_run_id\n             when context_jobs.backfill_run_id is not null\n               and not exists(\n                 select 1 from context_backfills b\n                 where b.id = context_jobs.backfill_run_id\n                   and b.status = 'active'\n               )\n             then null\n             when context_jobs.status = 'completed' then null\n             else context_jobs.backfill_run_id end",
   );
 }
 
-export interface ContextDeletionConfirmationSelectContextDeletionRequestsRow {
-  id: string;
-  status: string;
-  expiresAt: number;
-  sourceIdsJson: string;
-  documentIdsJson: string;
-  memoryIdsJson: string;
-  requestSourceScopeId: string;
-}
-
-export function contextDeletionConfirmationSelectContextDeletionRequests(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string],
-  ContextDeletionConfirmationSelectContextDeletionRequestsRow,
-  string
-> {
-  return database.prepare<
-    [string, string],
-    ContextDeletionConfirmationSelectContextDeletionRequestsRow
-  >(
-    'select id, status, expires_at as expiresAt,\n                  source_ids_json as sourceIdsJson,\n                  document_ids_json as documentIdsJson,\n                  memory_ids_json as memoryIdsJson,\n                  request_source_id as requestSourceScopeId\n           from context_deletion_requests\n           where requester_id = ? and confirmation_checksum = ?\n           order by created_at desc limit 1',
-  ) as unknown as PreparedStatement<
-    [string, string],
-    ContextDeletionConfirmationSelectContextDeletionRequestsRow,
-    string
-  >;
-}
-
-export function contextDeletionConfirmationDeleteContextDeletionRequests(
-  database: Database.Database,
-): PreparedStatement<[string], unknown, unknown> {
-  return database.prepare<[string]>(
-    'delete from context_deletion_requests where id = ?',
-  );
-}
-
-export function contextDeletionDeleteUpdateContextDeletionRequests(
-  database: Database.Database,
-): PreparedStatement<[number | null, string, number], unknown, unknown> {
-  return database.prepare<[number | null, string, number]>(
-    "update context_deletion_requests\n             set status = 'consumed', consumed_at = ?\n             where id = ? and status = 'pending' and expires_at > ?",
-  );
-}
-
-export function contextDeletionDeleteInsertContextForgetJournal(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string, string, number, string, string],
-  unknown,
-  unknown
-> {
-  return database.prepare<[string, string, string, number, string, string]>(
-    'insert into context_forget_journal\n             (journal_key, scope_id, tombstone_key, occurred_at, checksum,\n              payload_json)\n           values (?, ?, ?, ?, ?, ?)',
-  );
-}
-
-export function contextDeletionSuppressSourceInsertContextForgetJournal(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string, string, number, string, string],
-  unknown,
-  unknown
-> {
-  return database.prepare<[string, string, string, number, string, string]>(
-    'insert into context_forget_journal\n               (journal_key, scope_id, tombstone_key, occurred_at, checksum,\n                payload_json)\n             values (?, ?, ?, ?, ?, ?)\n             on conflict(journal_key) do nothing',
-  );
-}
-
-export function contextDeletionSuppressSourceInsertContextForgetJournal2(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string, string, number, string, string, number | null],
-  unknown,
-  unknown
-> {
-  return database.prepare<
-    [string, string, string, number, string, string, number | null]
-  >(
-    "insert into context_forget_journal\n               (journal_key, scope_id, tombstone_key, occurred_at, checksum,\n                payload_json, upload_status, uploaded_at)\n             values (?, ?, ?, ?, ?, ?, 'uploaded', ?)\n             on conflict(journal_key) do update set\n               upload_status = 'uploaded', uploaded_at = excluded.uploaded_at,\n               next_attempt_at = null, last_error_category = null\n             where checksum = excluded.checksum",
-  );
-}
-
-export interface ContextDeletionSuppressSourceSelectContextForgetJournalRow {
+export interface ChannelContextUpsertTopicJobSelectContextDocumentsRow {
   id: number;
-  journalKey: string;
-  occurredAt: number;
-  checksum: string;
-  payloadJson: string;
-  uploadStatus: string;
 }
 
-export function contextDeletionSuppressSourceSelectContextForgetJournal(
+export function channelContextUpsertTopicJobSelectContextDocuments(
   database: Database.Database,
 ): PreparedStatement<
-  [string],
-  ContextDeletionSuppressSourceSelectContextForgetJournalRow,
+  [string | null],
+  ChannelContextUpsertTopicJobSelectContextDocumentsRow,
   number
 > {
   return database.prepare<
-    [string],
-    ContextDeletionSuppressSourceSelectContextForgetJournalRow
+    [string | null],
+    ChannelContextUpsertTopicJobSelectContextDocumentsRow
   >(
-    'select id, journal_key as journalKey, occurred_at as occurredAt,\n                  checksum, payload_json as payloadJson,\n                  upload_status as uploadStatus\n           from context_forget_journal where journal_key = ?',
+    "select id from context_documents\n         where tier = 'long-term' and topic_key = ? and state = 'active'\n           and content_state = 'available'",
   ) as unknown as PreparedStatement<
-    [string],
-    ContextDeletionSuppressSourceSelectContextForgetJournalRow,
+    [string | null],
+    ChannelContextUpsertTopicJobSelectContextDocumentsRow,
     number
   >;
 }
 
-export interface ContextDeletionPrepareAuthoritativeSourceJournalSelectContextForgetJournalRow {
-  journalKey: string;
-  occurredAt: number;
-  checksum: string;
-  payloadJson: string;
-  uploadStatus: string;
-}
-
-export function contextDeletionPrepareAuthoritativeSourceJournalSelectContextForgetJournal(
+export function channelContextUpsertTopicJobInsertContextJobs(
   database: Database.Database,
 ): PreparedStatement<
-  [string],
-  ContextDeletionPrepareAuthoritativeSourceJournalSelectContextForgetJournalRow,
+  [
+    string,
+    number,
+    string,
+    string | null,
+    string | null,
+    string,
+    string,
+    number,
+    number,
+    number | null,
+  ],
+  unknown,
+  unknown
+> {
+  return database.prepare<
+    [
+      string,
+      number,
+      string,
+      string | null,
+      string | null,
+      string,
+      string,
+      number,
+      number,
+      number | null,
+    ]
+  >(
+    "insert into context_jobs\n           (job_key, tier, period_start, period_end, timezone, topic_key,\n            topic_label, completeness, source_revision_checksum,\n            source_document_ids_json, not_before, freshness_deadline,\n            backfill_run_id)\n         values (?, 'long-term', ?, null, ?, ?, ?, 'final', ?, ?, ?, ?, ?)\n         on conflict(job_key) do update set\n           topic_label = excluded.topic_label,\n           source_revision_checksum = excluded.source_revision_checksum,\n           source_document_ids_json = excluded.source_document_ids_json,\n           not_before = excluded.not_before,\n           freshness_deadline = excluded.freshness_deadline,\n           status = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then 'pending' else context_jobs.status end,\n           lease_expires_at = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then null else context_jobs.lease_expires_at end,\n           last_error_category = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then null else context_jobs.last_error_category end,\n           backfill_run_id = case\n             when excluded.backfill_run_id is not null\n             then excluded.backfill_run_id\n             when context_jobs.backfill_run_id is not null\n               and not exists(\n                 select 1 from context_backfills b\n                 where b.id = context_jobs.backfill_run_id\n                   and b.status = 'active'\n               )\n             then null\n             when context_jobs.status = 'completed' then null\n             else context_jobs.backfill_run_id end",
+  );
+}
+
+export interface ChannelContextApplyUpsertSelectConversationEventsRow {
+  content: string;
+  contentState: string;
+  occurredAt: number;
+}
+
+export function channelContextApplyUpsertSelectConversationEvents(
+  database: Database.Database,
+): PreparedStatement<
+  [number],
+  ChannelContextApplyUpsertSelectConversationEventsRow,
   string
 > {
   return database.prepare<
-    [string],
-    ContextDeletionPrepareAuthoritativeSourceJournalSelectContextForgetJournalRow
+    [number],
+    ChannelContextApplyUpsertSelectConversationEventsRow
   >(
-    'select journal_key as journalKey, occurred_at as occurredAt,\n                checksum, payload_json as payloadJson,\n                upload_status as uploadStatus\n         from context_forget_journal where journal_key = ?',
+    'select content, content_state as contentState,\n                occurred_at as occurredAt\n         from conversation_events where id = ?',
   ) as unknown as PreparedStatement<
-    [string],
-    ContextDeletionPrepareAuthoritativeSourceJournalSelectContextForgetJournalRow,
+    [number],
+    ChannelContextApplyUpsertSelectConversationEventsRow,
     string
   >;
 }
 
-export function contextDeletionMarkJournalUploadedUpdateContextForgetJournal(
-  database: Database.Database,
-): PreparedStatement<[number | null, number], unknown, unknown> {
-  return database.prepare<[number | null, number]>(
-    "update context_forget_journal\n         set upload_status = 'uploaded', uploaded_at = ?,\n             next_attempt_at = null, last_error_category = null\n         where id = ? and upload_status != 'uploaded'",
-  );
-}
-
-export function contextDeletionMarkJournalFailedUpdateContextForgetJournal(
-  database: Database.Database,
-): PreparedStatement<[number | null, number], unknown, unknown> {
-  return database.prepare<[number | null, number]>(
-    "update context_forget_journal\n         set upload_status = 'failed', attempt_count = attempt_count + 1,\n             next_attempt_at = ?, last_error_category = 'upload'\n         where id = ? and upload_status != 'uploaded'",
-  );
-}
-
-export interface ContextDeletionNextForgetJournalSelectContextForgetJournalRow {
-  id: number;
-  journalKey: string;
-  occurredAt: number;
-  checksum: string;
-  payloadJson: string;
-}
-
-export function contextDeletionNextForgetJournalSelectContextForgetJournal(
+export function channelContextUpsertJobInsertContextJobs(
   database: Database.Database,
 ): PreparedStatement<
-  [number | null],
-  ContextDeletionNextForgetJournalSelectContextForgetJournalRow,
-  number
-> {
-  return database.prepare<
-    [number | null],
-    ContextDeletionNextForgetJournalSelectContextForgetJournalRow
-  >(
-    "select id, journal_key as journalKey, occurred_at as occurredAt,\n                checksum, payload_json as payloadJson\n         from context_forget_journal\n         where upload_status in ('pending', 'failed')\n           and (next_attempt_at is null or next_attempt_at <= ?)\n         order by occurred_at, id limit 1",
-  ) as unknown as PreparedStatement<
-    [number | null],
-    ContextDeletionNextForgetJournalSelectContextForgetJournalRow,
-    number
-  >;
-}
-
-export function contextDeletionReplayForgetJournalInsertContextForgetJournal(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string, string, number, string, string, number | null],
+  [
+    string,
+    number,
+    number | null,
+    string,
+    string,
+    string,
+    number,
+    number,
+    number | null,
+  ],
   unknown,
   unknown
 > {
   return database.prepare<
-    [string, string, string, number, string, string, number | null]
+    [
+      string,
+      number,
+      number | null,
+      string,
+      string,
+      string,
+      number,
+      number,
+      number | null,
+    ]
   >(
-    "insert into context_forget_journal\n             (journal_key, scope_id, tombstone_key, occurred_at, checksum,\n              payload_json, upload_status, uploaded_at)\n           values (?, ?, ?, ?, ?, ?, 'uploaded', ?)\n           on conflict(journal_key) do update set\n             upload_status = 'uploaded', uploaded_at = excluded.uploaded_at,\n             next_attempt_at = null, last_error_category = null",
+    "insert into context_jobs\n           (job_key, tier, period_start, period_end, timezone, topic_key,\n            completeness, source_revision_checksum, not_before,\n            freshness_deadline, backfill_run_id)\n         values (?, 'hourly', ?, ?, ?, null, ?, ?, ?, ?, ?)\n         on conflict(job_key) do update set\n           source_revision_checksum = excluded.source_revision_checksum,\n           not_before = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n               and context_jobs.completeness = 'provisional'\n               and context_jobs.status = 'pending'\n             then min(context_jobs.not_before, excluded.not_before)\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then excluded.not_before else context_jobs.not_before end,\n           freshness_deadline = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n               and context_jobs.completeness = 'provisional'\n               and context_jobs.status = 'pending'\n             then min(context_jobs.freshness_deadline,\n                      excluded.freshness_deadline)\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then excluded.freshness_deadline\n             else context_jobs.freshness_deadline end,\n           status = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then 'pending' else context_jobs.status end,\n           lease_expires_at = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then null else context_jobs.lease_expires_at end,\n           last_error_category = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then null else context_jobs.last_error_category end,\n           backfill_run_id = case\n             when excluded.backfill_run_id is not null\n             then excluded.backfill_run_id\n             when context_jobs.backfill_run_id is not null\n               and not exists(\n                 select 1 from context_backfills b\n                 where b.id = context_jobs.backfill_run_id\n                   and b.status = 'active'\n               )\n             then null\n             when context_jobs.status = 'completed' then null\n             else context_jobs.backfill_run_id end",
   );
 }
 
-export function contextDeletionInsertTombstoneInsertContextTombstones(
+export function channelContextPauseBackfillRunUpdateContextBackfills(
   database: Database.Database,
-): PreparedStatement<
-  [string, string, string, string, number, string],
-  unknown,
-  unknown
-> {
-  return database.prepare<[string, string, string, string, number, string]>(
-    'insert into context_tombstones\n           (tombstone_key, scope_type, scope_id, reason, occurred_at, checksum)\n         values (?, ?, ?, ?, ?, ?)\n         on conflict(scope_type, scope_id) do nothing',
+): PreparedStatement<[string | null, number, number], unknown, unknown> {
+  return database.prepare<[string | null, number, number]>(
+    "update context_backfills\n         set status = 'paused', pause_reason = ?, updated_at = ?\n         where id = ? and status = 'active'",
   );
 }
 
-export interface ContextDeletionEnqueueRebuildsSelectConversationEventsRow {
+export interface ChannelContextSourceRevisionChecksumSelectConversationEventsRow {
   id: number;
   discordMessageId: string;
   content: string;
   editedAt: number | null;
 }
 
-export function contextDeletionEnqueueRebuildsSelectConversationEvents(
+export function channelContextSourceRevisionChecksumSelectConversationEvents(
   database: Database.Database,
 ): PreparedStatement<
   [string, string, number, number],
-  ContextDeletionEnqueueRebuildsSelectConversationEventsRow,
+  ChannelContextSourceRevisionChecksumSelectConversationEventsRow,
   number
 > {
   return database.prepare<
     [string, string, number, number],
-    ContextDeletionEnqueueRebuildsSelectConversationEventsRow
+    ChannelContextSourceRevisionChecksumSelectConversationEventsRow
   >(
-    "select id, discord_message_id as discordMessageId, content,\n                  edited_at as editedAt\n           from conversation_events\n           where guild_id = ? and channel_id = ? and medium = 'text'\n             and content_state = 'available'\n             and occurred_at >= ? and occurred_at < ? order by id",
+    "select id, discord_message_id as discordMessageId, content,\n                edited_at as editedAt\n         from conversation_events\n         where guild_id = ? and channel_id = ? and medium = 'text'\n           and content_state = 'available'\n           and occurred_at >= ? and occurred_at < ?\n         order by id",
   ) as unknown as PreparedStatement<
     [string, string, number, number],
-    ContextDeletionEnqueueRebuildsSelectConversationEventsRow,
+    ChannelContextSourceRevisionChecksumSelectConversationEventsRow,
     number
   >;
 }
 
-export function contextDeletionEnqueueRebuildsUpdateContextJobs(
-  database: Database.Database,
-): PreparedStatement<
-  [string, number, number, string, number, number | null],
-  unknown,
-  unknown
-> {
-  return database.prepare<
-    [string, number, number, string, number, number | null]
-  >(
-    "update context_jobs\n           set source_revision_checksum = ?, status = 'pending',\n               not_before = ?, freshness_deadline = ?, lease_expires_at = null,\n               last_error_category = 'rebuild'\n           where tier = 'hourly' and timezone = ?\n             and period_start = ? and period_end = ?",
-  );
+export interface ChannelContextInvalidateEventJobsSelectConversationEventsRow {
+  occurred_at: number;
 }
 
-export interface ContextDeletionEnqueueRebuildsSelectContextDocumentsRow {
+export function channelContextInvalidateEventJobsSelectConversationEvents(
+  database: Database.Database,
+): PreparedStatement<
+  [number],
+  ChannelContextInvalidateEventJobsSelectConversationEventsRow,
+  number
+> {
+  return database.prepare<
+    [number],
+    ChannelContextInvalidateEventJobsSelectConversationEventsRow
+  >(
+    'select occurred_at from conversation_events where id = ?',
+  ) as unknown as PreparedStatement<
+    [number],
+    ChannelContextInvalidateEventJobsSelectConversationEventsRow,
+    number
+  >;
+}
+
+export interface ChannelContextEventIdSelectConversationEventsRow {
   id: number;
+}
+
+export function channelContextEventIdSelectConversationEvents(
+  database: Database.Database,
+): PreparedStatement<
+  [string, string, string],
+  ChannelContextEventIdSelectConversationEventsRow,
+  number
+> {
+  return database.prepare<
+    [string, string, string],
+    ChannelContextEventIdSelectConversationEventsRow
+  >(
+    'select id from conversation_events\n           where guild_id = ? and channel_id = ? and discord_message_id = ?',
+  ) as unknown as PreparedStatement<
+    [string, string, string],
+    ChannelContextEventIdSelectConversationEventsRow,
+    number
+  >;
+}
+
+export interface ChannelContextExistingRevisionSelectConversationEventsRow {
+  id: number;
+  occurredAt: number;
+  editedAt: number | null;
+  revisionChecksum: string;
+}
+
+export function channelContextExistingRevisionSelectConversationEvents(
+  database: Database.Database,
+): PreparedStatement<
+  [string, string, string],
+  ChannelContextExistingRevisionSelectConversationEventsRow,
+  number
+> {
+  return database.prepare<
+    [string, string, string],
+    ChannelContextExistingRevisionSelectConversationEventsRow
+  >(
+    'select id, occurred_at as occurredAt, edited_at as editedAt,\n                  revision_checksum as revisionChecksum\n           from conversation_events\n           where guild_id = ? and channel_id = ? and discord_message_id = ?',
+  ) as unknown as PreparedStatement<
+    [string, string, string],
+    ChannelContextExistingRevisionSelectConversationEventsRow,
+    number
+  >;
+}
+
+export interface ContextActivateDocumentRevisionInsertContextDocumentsArgs {
+  documentKey: string;
+  tier: string;
+  periodStart: number;
+  periodEnd: number | null;
+  timeZone: string;
+  topicKey: string | null;
+  topicLabel: string | null;
   revision: number;
+  completeness: string;
+  summary: string;
+  confidence: number;
+  retentionDeadline: number | null;
+  createdAt: number;
+  generationInputTokens: number;
+  generationOutputTokens: number;
+  generationUsageUsd: number;
+  isInternal: number;
 }
 
-export function contextDeletionEnqueueRebuildsSelectContextDocuments(
+export function contextActivateDocumentRevisionInsertContextDocuments(
   database: Database.Database,
 ): PreparedStatement<
-  [string, number, number | null],
-  ContextDeletionEnqueueRebuildsSelectContextDocumentsRow,
-  number
-> {
-  return database.prepare<
-    [string, number, number | null],
-    ContextDeletionEnqueueRebuildsSelectContextDocumentsRow
-  >(
-    "select id, revision from context_documents\n           where tier = ? and completeness = 'final' and state = 'active'\n             and content_state = 'available' and is_internal = 0\n             and period_start >= ? and period_end <= ?\n           order by period_start, id",
-  ) as unknown as PreparedStatement<
-    [string, number, number | null],
-    ContextDeletionEnqueueRebuildsSelectContextDocumentsRow,
-    number
-  >;
-}
-
-export function contextDeletionEnqueueRebuildsUpdateContextJobs2(
-  database: Database.Database,
-): PreparedStatement<
-  [string, number, number, string, string, number, number | null],
+  [ContextActivateDocumentRevisionInsertContextDocumentsArgs],
   unknown,
   unknown
 > {
   return database.prepare<
-    [string, number, number, string, string, number, number | null]
+    [ContextActivateDocumentRevisionInsertContextDocumentsArgs]
   >(
-    "update context_jobs\n           set source_revision_checksum = ?, status = 'pending',\n               not_before = ?, freshness_deadline = ?, lease_expires_at = null,\n               last_error_category = 'rebuild'\n           where tier = ? and timezone = ?\n             and period_start = ? and period_end = ?",
+    "insert into context_documents\n              (document_key, tier, period_start, period_end, timezone,\n              topic_key, topic_label, revision, completeness, state, content_state,\n              content_state_reason, summary, confidence, retention_deadline,\n              created_at, updated_at, generation_input_tokens,\n              generation_output_tokens, generation_usage_usd, is_internal)\n           values\n             (@documentKey, @tier, @periodStart, @periodEnd, @timeZone,\n              @topicKey, @topicLabel, @revision, @completeness, 'active', 'available',\n              'retained', @summary, @confidence, @retentionDeadline,\n              @createdAt, @createdAt, @generationInputTokens,\n              @generationOutputTokens, @generationUsageUsd, @isInternal)",
   );
 }
 
-export interface ContextDeletionEnqueueRebuildsSelectContextJobsRow {
-  id: number;
-  sourceDocumentIdsJson: string;
-}
-
-export function contextDeletionEnqueueRebuildsSelectContextJobs(
-  database: Database.Database,
-): PreparedStatement<
-  [string | null],
-  ContextDeletionEnqueueRebuildsSelectContextJobsRow,
-  number
-> {
-  return database.prepare<
-    [string | null],
-    ContextDeletionEnqueueRebuildsSelectContextJobsRow
-  >(
-    "select id, source_document_ids_json as sourceDocumentIdsJson\n           from context_jobs where tier = 'long-term' and topic_key = ?",
-  ) as unknown as PreparedStatement<
-    [string | null],
-    ContextDeletionEnqueueRebuildsSelectContextJobsRow,
-    number
-  >;
-}
-
-export function contextDeletionEnqueueRebuildsUpdateContextJobs3(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string, number, number, number],
-  unknown,
-  unknown
-> {
-  return database.prepare<[string, string, number, number, number]>(
-    "update context_jobs\n             set source_revision_checksum = ?, source_document_ids_json = ?,\n                 status = 'pending', not_before = ?, freshness_deadline = ?,\n                 lease_expires_at = null, last_error_category = 'rebuild'\n             where id = ?",
-  );
-}
-
-export interface ContextDeletionUnavailableDocumentSourceScopesSelectConversationEventsRow {
+export interface ContextStoreAssertInputsAvailableSelectContextTombstonesRow {
   exists: number;
 }
 
-export function contextDeletionUnavailableDocumentSourceScopesSelectConversationEvents(
+export interface ContextStoreAssertInputsAvailableSelectContextTombstonesArgs {
+  documentKey: string;
+  documentGenerationScopeId: string;
+  topicKey: string | null;
+}
+
+export function contextStoreAssertInputsAvailableSelectContextTombstones(
   database: Database.Database,
 ): PreparedStatement<
-  [string],
-  ContextDeletionUnavailableDocumentSourceScopesSelectConversationEventsRow,
+  [ContextStoreAssertInputsAvailableSelectContextTombstonesArgs],
+  ContextStoreAssertInputsAvailableSelectContextTombstonesRow,
   number
 > {
   return database.prepare<
-    [string],
-    ContextDeletionUnavailableDocumentSourceScopesSelectConversationEventsRow
+    [ContextStoreAssertInputsAvailableSelectContextTombstonesArgs],
+    ContextStoreAssertInputsAvailableSelectContextTombstonesRow
   >(
-    "select exists(\n             select 1 from conversation_events c\n             where c.guild_id || '/' || c.channel_id || '/' ||\n                   c.discord_message_id = ?\n               and c.content_state = 'available'\n           )",
+    "select exists(\n           select 1 from context_tombstones\n           where (scope_type = 'document' and scope_id = @documentKey)\n              or (scope_type = 'document'\n                  and scope_id = @documentGenerationScopeId)\n              or (scope_type = 'topic' and scope_id = @topicKey)\n         )",
   ) as unknown as PreparedStatement<
-    [string],
-    ContextDeletionUnavailableDocumentSourceScopesSelectConversationEventsRow,
-    number
-  >;
-}
-
-export interface ContextDeletionSourceBelongsToSelectConversationEventsRow {
-  exists: number;
-}
-
-export function contextDeletionSourceBelongsToSelectConversationEvents(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string | null],
-  ContextDeletionSourceBelongsToSelectConversationEventsRow,
-  number
-> {
-  return database.prepare<
-    [string, string | null],
-    ContextDeletionSourceBelongsToSelectConversationEventsRow
-  >(
-    "select exists(\n             select 1 from conversation_events\n             where guild_id || '/' || channel_id || '/' ||\n                     discord_message_id = ? and speaker_id = ?\n           )",
-  ) as unknown as PreparedStatement<
-    [string, string | null],
-    ContextDeletionSourceBelongsToSelectConversationEventsRow,
+    [ContextStoreAssertInputsAvailableSelectContextTombstonesArgs],
+    ContextStoreAssertInputsAvailableSelectContextTombstonesRow,
     number
   >;
 }
@@ -1563,838 +1943,785 @@ export function contextBackfillRecoverOutstandingReservationsSelectUsageLedger(
   >;
 }
 
-export interface ChannelContextRecordDeliveredReplySelectConversationEventsRow {
-  min: unknown;
+export interface ContextDeletionDiscoverMemberSelectConversationEventsRow {
+  scopeId: unknown;
+  speakerId: string | null;
 }
 
-export function channelContextRecordDeliveredReplySelectConversationEvents(
+export function contextDeletionDiscoverMemberSelectConversationEvents(
   database: Database.Database,
 ): PreparedStatement<
-  [string, string, string | null],
-  ChannelContextRecordDeliveredReplySelectConversationEventsRow,
+  [string, string, string],
+  ContextDeletionDiscoverMemberSelectConversationEventsRow,
   unknown
 > {
   return database.prepare<
-    [string, string, string | null],
-    ChannelContextRecordDeliveredReplySelectConversationEventsRow
+    [string, string, string],
+    ContextDeletionDiscoverMemberSelectConversationEventsRow
   >(
-    'select min(occurred_at) from conversation_events\n           where guild_id = ? and channel_id = ?\n             and logical_response_id = ?',
+    "select guild_id || '/' || channel_id || '/' || discord_message_id\n                  as scopeId,\n                speaker_id as speakerId\n         from conversation_events\n         where guild_id = ? and channel_id = ? and role = 'human'\n           and content_state_reason not in ('discord-deleted', 'locally-forgotten')\n           and lower(trim(speaker_name)) = lower(trim(?))\n         order by id",
   );
 }
 
-export function channelContextRecordDeliveredReplyUpdateConversationEvents(
+export function contextDeletionCreateConfirmationInsertContextDeletionRequests(
   database: Database.Database,
 ): PreparedStatement<
-  [string | null, string | null, string | null, number | null, string, number],
+  [
+    string,
+    string,
+    string,
+    string,
+    string,
+    number,
+    number,
+    string,
+    string,
+    string,
+    string,
+  ],
   unknown,
   unknown
 > {
   return database.prepare<
-    [string | null, string | null, string | null, number | null, string, number]
+    [
+      string,
+      string,
+      string,
+      string,
+      string,
+      number,
+      number,
+      string,
+      string,
+      string,
+      string,
+    ]
   >(
-    "update conversation_events set\n                 request_id = case when logical_response_id is null\n                                   then ? else request_id end,\n                 reply_to_message_id = case when logical_response_id is null\n                                            then ? else reply_to_message_id end,\n                 logical_response_id = coalesce(logical_response_id, ?),\n                 response_chunk_index = ?,\n                 platform_event_id = ?\n               where id = ? and role = 'chief'",
+    "insert into context_deletion_requests\n           (id, requester_id, scope_type, scope_id, confirmation_checksum,\n            status, expires_at, created_at, source_ids_json,\n            document_ids_json, memory_ids_json, request_source_id)\n         values (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
   );
 }
 
-export interface ChannelContextMaintainSelectConversationEventsRow {
-  id: number;
-}
-
-export function channelContextMaintainSelectConversationEvents(
-  database: Database.Database,
-): PreparedStatement<
-  [number],
-  ChannelContextMaintainSelectConversationEventsRow,
-  number
-> {
-  return database.prepare<
-    [number],
-    ChannelContextMaintainSelectConversationEventsRow
-  >(
-    "select id from conversation_events\n           where medium = 'text' and content_state = 'available'\n             and retention_deadline <= ?",
-  ) as unknown as PreparedStatement<
-    [number],
-    ChannelContextMaintainSelectConversationEventsRow,
-    number
-  >;
-}
-
-export interface ChannelContextMaintainSelectContextDocumentsRow {
-  id: number;
-}
-
-export function channelContextMaintainSelectContextDocuments(
-  database: Database.Database,
-): PreparedStatement<
-  [number | null],
-  ChannelContextMaintainSelectContextDocumentsRow,
-  number
-> {
-  return database.prepare<
-    [number | null],
-    ChannelContextMaintainSelectContextDocumentsRow
-  >(
-    "select id from context_documents\n           where content_state = 'available' and retention_deadline <= ?",
-  ) as unknown as PreparedStatement<
-    [number | null],
-    ChannelContextMaintainSelectContextDocumentsRow,
-    number
-  >;
-}
-
-export function channelContextMaintainDeleteContextDeletionRequests(
-  database: Database.Database,
-): PreparedStatement<[number], unknown, unknown> {
-  return database.prepare<[number]>(
-    "delete from context_deletion_requests\n           where status = 'pending' and expires_at <= ?",
-  );
-}
-
-export interface ChannelContextNextDeadlineSelectContextJobsRow {
-  min: unknown;
-}
-
-export function channelContextNextDeadlineSelectContextJobs(
-  database: Database.Database,
-): PreparedStatement<
-  [number, number | null],
-  ChannelContextNextDeadlineSelectContextJobsRow,
-  unknown
-> {
-  return database.prepare<
-    [number, number | null],
-    ChannelContextNextDeadlineSelectContextJobsRow
-  >(
-    "select min(freshness_deadline) from context_jobs\n           where not_before <= ?\n             and (status = 'pending'\n               or (status = 'leased' and lease_expires_at <= ?)\n               or (status = 'failed' and last_error_category = 'provider'))\n             and not exists(\n               select 1 from context_accounting_holds h\n               where h.job_id = context_jobs.id\n             )\n             and (backfill_run_id is null or exists(\n               select 1 from context_backfills b\n               where b.id = context_jobs.backfill_run_id\n                 and b.status = 'active'\n             ))",
-  );
-}
-
-export interface ChannelContextStatusSelectContextBackfillsRow {
+export interface ContextDeletionConfirmationSelectContextDeletionRequestsRow {
+  id: string;
   status: string;
-  count: number;
+  expiresAt: number;
+  sourceIdsJson: string;
+  documentIdsJson: string;
+  memoryIdsJson: string;
+  requestSourceScopeId: string;
 }
 
-export function channelContextStatusSelectContextBackfills(
+export function contextDeletionConfirmationSelectContextDeletionRequests(
   database: Database.Database,
 ): PreparedStatement<
-  [],
-  ChannelContextStatusSelectContextBackfillsRow,
+  [string, string],
+  ContextDeletionConfirmationSelectContextDeletionRequestsRow,
   string
 > {
-  return database.prepare<[], ChannelContextStatusSelectContextBackfillsRow>(
-    "select status, count(*) as count from context_backfills\n         where status in ('active', 'failed', 'paused') group by status",
+  return database.prepare<
+    [string, string],
+    ContextDeletionConfirmationSelectContextDeletionRequestsRow
+  >(
+    'select id, status, expires_at as expiresAt,\n                  source_ids_json as sourceIdsJson,\n                  document_ids_json as documentIdsJson,\n                  memory_ids_json as memoryIdsJson,\n                  request_source_id as requestSourceScopeId\n           from context_deletion_requests\n           where requester_id = ? and confirmation_checksum = ?\n           order by created_at desc limit 1',
   ) as unknown as PreparedStatement<
-    [],
-    ChannelContextStatusSelectContextBackfillsRow,
+    [string, string],
+    ContextDeletionConfirmationSelectContextDeletionRequestsRow,
     string
   >;
 }
 
-export interface ChannelContextStatusSelectContextJobsRow {
-  count: number;
-}
-
-export function channelContextStatusSelectContextJobs(
+export function contextDeletionConfirmationDeleteContextDeletionRequests(
   database: Database.Database,
-): PreparedStatement<[], ChannelContextStatusSelectContextJobsRow, number> {
-  return database.prepare<[], ChannelContextStatusSelectContextJobsRow>(
-    "select count(*) from context_jobs\n           where status in ('pending', 'leased')",
-  ) as unknown as PreparedStatement<
-    [],
-    ChannelContextStatusSelectContextJobsRow,
-    number
-  >;
+): PreparedStatement<[string], unknown, unknown> {
+  return database.prepare<[string]>(
+    'delete from context_deletion_requests where id = ?',
+  );
 }
 
-export interface ChannelContextStatusSelectContextJobs2Row {
-  count: number;
-}
-
-export function channelContextStatusSelectContextJobs2(
+export function contextDeletionDeleteUpdateContextDeletionRequests(
   database: Database.Database,
-): PreparedStatement<[], ChannelContextStatusSelectContextJobs2Row, number> {
-  return database.prepare<[], ChannelContextStatusSelectContextJobs2Row>(
-    "select count(*) from context_jobs where status = 'failed'",
-  ) as unknown as PreparedStatement<
-    [],
-    ChannelContextStatusSelectContextJobs2Row,
-    number
-  >;
+): PreparedStatement<[number | null, string, number], unknown, unknown> {
+  return database.prepare<[number | null, string, number]>(
+    "update context_deletion_requests\n             set status = 'consumed', consumed_at = ?\n             where id = ? and status = 'pending' and expires_at > ?",
+  );
 }
 
-export interface ChannelContextStatusSelectContextAccountingHoldsRow {
-  exists: number;
-}
-
-export function channelContextStatusSelectContextAccountingHolds(
+export function contextDeletionDeleteInsertContextForgetJournal(
   database: Database.Database,
 ): PreparedStatement<
-  [],
-  ChannelContextStatusSelectContextAccountingHoldsRow,
-  number
+  [string, string, string, number, string, string],
+  unknown,
+  unknown
 > {
-  return database.prepare<
-    [],
-    ChannelContextStatusSelectContextAccountingHoldsRow
-  >(
-    'select exists(select 1 from context_accounting_holds)',
-  ) as unknown as PreparedStatement<
-    [],
-    ChannelContextStatusSelectContextAccountingHoldsRow,
-    number
-  >;
+  return database.prepare<[string, string, string, number, string, string]>(
+    'insert into context_forget_journal\n             (journal_key, scope_id, tombstone_key, occurred_at, checksum,\n              payload_json)\n           values (?, ?, ?, ?, ?, ?)',
+  );
 }
 
-export interface ChannelContextStatusSelectContextJobs3Row {
-  min: unknown;
-}
-
-export function channelContextStatusSelectContextJobs3(
+export function contextDeletionSuppressSourceInsertContextForgetJournal(
   database: Database.Database,
 ): PreparedStatement<
-  [string, number],
-  ChannelContextStatusSelectContextJobs3Row,
+  [string, string, string, number, string, string],
+  unknown,
+  unknown
+> {
+  return database.prepare<[string, string, string, number, string, string]>(
+    'insert into context_forget_journal\n               (journal_key, scope_id, tombstone_key, occurred_at, checksum,\n                payload_json)\n             values (?, ?, ?, ?, ?, ?)\n             on conflict(journal_key) do nothing',
+  );
+}
+
+export function contextDeletionSuppressSourceInsertContextForgetJournal2(
+  database: Database.Database,
+): PreparedStatement<
+  [string, string, string, number, string, string, number | null],
+  unknown,
   unknown
 > {
   return database.prepare<
-    [string, number],
-    ChannelContextStatusSelectContextJobs3Row
+    [string, string, string, number, string, string, number | null]
   >(
-    "select min(freshness_deadline) from context_jobs\n             where tier = ? and status != 'completed'\n               and freshness_deadline <= ?",
+    "insert into context_forget_journal\n               (journal_key, scope_id, tombstone_key, occurred_at, checksum,\n                payload_json, upload_status, uploaded_at)\n             values (?, ?, ?, ?, ?, ?, 'uploaded', ?)\n             on conflict(journal_key) do update set\n               upload_status = 'uploaded', uploaded_at = excluded.uploaded_at,\n               next_attempt_at = null, last_error_category = null\n             where checksum = excluded.checksum",
   );
 }
 
-export interface ChannelContextStatusSelectContextJobs4Row {
-  error: string | null;
-}
-
-export function channelContextStatusSelectContextJobs4(
-  database: Database.Database,
-): PreparedStatement<
-  [number],
-  ChannelContextStatusSelectContextJobs4Row,
-  string | null
-> {
-  return database.prepare<[number], ChannelContextStatusSelectContextJobs4Row>(
-    "select last_error_category as error\n         from context_jobs\n         where status != 'completed' and freshness_deadline <= ?\n         order by freshness_deadline, id limit 1",
-  ) as unknown as PreparedStatement<
-    [number],
-    ChannelContextStatusSelectContextJobs4Row,
-    string | null
-  >;
-}
-
-export interface ChannelContextStatusSelectContextForgetJournalRow {
-  exists: number;
-}
-
-export function channelContextStatusSelectContextForgetJournal(
-  database: Database.Database,
-): PreparedStatement<
-  [],
-  ChannelContextStatusSelectContextForgetJournalRow,
-  number
-> {
-  return database.prepare<
-    [],
-    ChannelContextStatusSelectContextForgetJournalRow
-  >(
-    "select exists(\n             select 1 from context_forget_journal\n             where upload_status in ('pending', 'failed')\n           )",
-  ) as unknown as PreparedStatement<
-    [],
-    ChannelContextStatusSelectContextForgetJournalRow,
-    number
-  >;
-}
-
-export function channelContextRunNextUpdateContextJobs(
-  database: Database.Database,
-): PreparedStatement<[number], unknown, unknown> {
-  return database.prepare<[number]>(
-    'update context_jobs set usage_reservation_id = null where id = ?',
-  );
-}
-
-export function channelContextRunNextUpdateContextJobs2(
-  database: Database.Database,
-): PreparedStatement<[string | null, number], unknown, unknown> {
-  return database.prepare<[string | null, number]>(
-    'update context_jobs set usage_reservation_id = ? where id = ?',
-  );
-}
-
-export function channelContextRunNextUpdateContextJobs3(
-  database: Database.Database,
-): PreparedStatement<[number, string | null], unknown, unknown> {
-  return database.prepare<[number, string | null]>(
-    'update context_jobs set usage_reservation_id = null\n             where id = ? and usage_reservation_id = ?',
-  );
-}
-
-export interface ChannelContextRunNextSelectContextDocumentsRow {
-  max: unknown;
-}
-
-export function channelContextRunNextSelectContextDocuments(
-  database: Database.Database,
-): PreparedStatement<
-  [string],
-  ChannelContextRunNextSelectContextDocumentsRow,
-  unknown
-> {
-  return database.prepare<
-    [string],
-    ChannelContextRunNextSelectContextDocumentsRow
-  >(
-    'select max(revision) from context_documents\n               where document_key = ?',
-  );
-}
-
-export interface ChannelContextRunNextSelectContextDocuments2Row {
+export interface ContextDeletionSuppressSourceSelectContextForgetJournalRow {
   id: number;
+  journalKey: string;
+  occurredAt: number;
+  checksum: string;
+  payloadJson: string;
+  uploadStatus: string;
 }
 
-export function channelContextRunNextSelectContextDocuments2(
+export function contextDeletionSuppressSourceSelectContextForgetJournal(
   database: Database.Database,
 ): PreparedStatement<
   [string],
-  ChannelContextRunNextSelectContextDocuments2Row,
+  ContextDeletionSuppressSourceSelectContextForgetJournalRow,
   number
 > {
   return database.prepare<
     [string],
-    ChannelContextRunNextSelectContextDocuments2Row
+    ContextDeletionSuppressSourceSelectContextForgetJournalRow
   >(
-    "select id from context_documents\n             where document_key = ? and state = 'active'",
+    'select id, journal_key as journalKey, occurred_at as occurredAt,\n                  checksum, payload_json as payloadJson,\n                  upload_status as uploadStatus\n           from context_forget_journal where journal_key = ?',
   ) as unknown as PreparedStatement<
     [string],
-    ChannelContextRunNextSelectContextDocuments2Row,
+    ContextDeletionSuppressSourceSelectContextForgetJournalRow,
     number
   >;
 }
 
-export interface ChannelContextRunNextSelectContextDocuments3Row {
-  max: unknown;
+export interface ContextDeletionPrepareAuthoritativeSourceJournalSelectContextForgetJournalRow {
+  journalKey: string;
+  occurredAt: number;
+  checksum: string;
+  payloadJson: string;
+  uploadStatus: string;
 }
 
-export function channelContextRunNextSelectContextDocuments3(
+export function contextDeletionPrepareAuthoritativeSourceJournalSelectContextForgetJournal(
   database: Database.Database,
 ): PreparedStatement<
   [string],
-  ChannelContextRunNextSelectContextDocuments3Row,
-  unknown
+  ContextDeletionPrepareAuthoritativeSourceJournalSelectContextForgetJournalRow,
+  string
 > {
   return database.prepare<
     [string],
-    ChannelContextRunNextSelectContextDocuments3Row
+    ContextDeletionPrepareAuthoritativeSourceJournalSelectContextForgetJournalRow
   >(
-    'select max(revision) from context_documents\n                 where document_key = ?',
-  );
-}
-
-export function channelContextRunNextUpdateContextJobs4(
-  database: Database.Database,
-): PreparedStatement<[number], unknown, unknown> {
-  return database.prepare<[number]>(
-    "update context_jobs\n             set status = 'completed', lease_expires_at = null,\n                 usage_reservation_id = null, last_error_category = null\n             where id = ?",
-  );
-}
-
-export function channelContextRunNextUpdateContextJobs5(
-  database: Database.Database,
-): PreparedStatement<[number, string | null], unknown, unknown> {
-  return database.prepare<[number, string | null]>(
-    'update context_jobs set usage_reservation_id = null\n           where id = ? and usage_reservation_id = ?',
-  );
-}
-
-export interface ChannelContextLeaseNextJobSelectContextJobsRow {
-  id: number;
-  jobKey: string;
-  tier: string;
-  periodStart: number;
-  periodEnd: number | null;
-  timeZone: string;
-  topicKey: string | null;
-  topicLabel: string | null;
-  sourceDocumentIdsJson: string;
-  usageReservationId: string | null;
-  completeness: string;
-  sourceRevisionChecksum: string;
-  attemptCount: number;
-  backfillRunId: number | null;
-}
-
-export function channelContextLeaseNextJobSelectContextJobs(
-  database: Database.Database,
-): PreparedStatement<
-  [number, number | null],
-  ChannelContextLeaseNextJobSelectContextJobsRow,
-  number
-> {
-  return database.prepare<
-    [number, number | null],
-    ChannelContextLeaseNextJobSelectContextJobsRow
-  >(
-    "select id, job_key as jobKey, tier, period_start as periodStart,\n                  period_end as periodEnd, timezone as timeZone,\n                  topic_key as topicKey, topic_label as topicLabel,\n                  source_document_ids_json as sourceDocumentIdsJson,\n                  usage_reservation_id as usageReservationId,\n                  completeness,\n                  source_revision_checksum as sourceRevisionChecksum,\n                  attempt_count as attemptCount,\n                  backfill_run_id as backfillRunId\n           from context_jobs\n           where not_before <= ?\n             and (status = 'pending'\n               or (status = 'leased' and lease_expires_at <= ?)\n               or (status = 'failed' and last_error_category = 'provider'))\n             and not exists(\n               select 1 from context_accounting_holds h\n               where h.job_id = context_jobs.id\n             )\n             and (backfill_run_id is null or exists(\n               select 1 from context_backfills b\n               where b.id = context_jobs.backfill_run_id\n                 and b.status = 'active'\n             ))\n           order by freshness_deadline, id limit 1",
+    'select journal_key as journalKey, occurred_at as occurredAt,\n                checksum, payload_json as payloadJson,\n                upload_status as uploadStatus\n         from context_forget_journal where journal_key = ?',
   ) as unknown as PreparedStatement<
-    [number, number | null],
-    ChannelContextLeaseNextJobSelectContextJobsRow,
-    number
+    [string],
+    ContextDeletionPrepareAuthoritativeSourceJournalSelectContextForgetJournalRow,
+    string
   >;
 }
 
-export function channelContextLeaseNextJobUpdateContextJobs(
+export function contextDeletionMarkJournalUploadedUpdateContextForgetJournal(
   database: Database.Database,
 ): PreparedStatement<[number | null, number], unknown, unknown> {
   return database.prepare<[number | null, number]>(
-    "update context_jobs\n           set status = 'leased', lease_expires_at = ?,\n               attempt_count = attempt_count + 1\n           where id = ?",
+    "update context_forget_journal\n         set upload_status = 'uploaded', uploaded_at = ?,\n             next_attempt_at = null, last_error_category = null\n         where id = ? and upload_status != 'uploaded'",
   );
 }
 
-export interface ChannelContextJobSourcesSelectConversationEventsRow {
-  id: unknown;
-  text: string;
-}
-
-export function channelContextJobSourcesSelectConversationEvents(
+export function contextDeletionMarkJournalFailedUpdateContextForgetJournal(
   database: Database.Database,
-): PreparedStatement<
-  [string, string, number, number | null],
-  ChannelContextJobSourcesSelectConversationEventsRow,
-  unknown
-> {
-  return database.prepare<
-    [string, string, number, number | null],
-    ChannelContextJobSourcesSelectConversationEventsRow
-  >(
-    "select 'event:' || id as id, content as text\n           from conversation_events\n           where guild_id = ? and channel_id = ? and medium = 'text'\n             and content_state = 'available'\n             and occurred_at >= ? and occurred_at < ?\n           order by occurred_at, id",
+): PreparedStatement<[number | null, number], unknown, unknown> {
+  return database.prepare<[number | null, number]>(
+    "update context_forget_journal\n         set upload_status = 'failed', attempt_count = attempt_count + 1,\n             next_attempt_at = ?, last_error_category = 'upload'\n         where id = ? and upload_status != 'uploaded'",
   );
 }
 
-export interface ChannelContextJobSourcesSelectContextDocumentsRow {
-  id: unknown;
-  text: string;
-}
-
-export function channelContextJobSourcesSelectContextDocuments(
-  database: Database.Database,
-): PreparedStatement<
-  [string, number, number | null],
-  ChannelContextJobSourcesSelectContextDocumentsRow,
-  unknown
-> {
-  return database.prepare<
-    [string, number, number | null],
-    ChannelContextJobSourcesSelectContextDocumentsRow
-  >(
-    "select 'document:' || id as id, summary as text\n           from context_documents\n           where tier = ? and completeness = 'final' and state = 'active'\n             and content_state = 'available' and is_internal = 0\n             and period_start >= ? and period_end <= ?\n           order by period_start, id",
-  );
-}
-
-export interface ChannelContextJobSourcesSelectContextDocuments2Row {
+export interface ContextDeletionNextForgetJournalSelectContextForgetJournalRow {
   id: number;
-}
-
-export function channelContextJobSourcesSelectContextDocuments2(
-  database: Database.Database,
-): PreparedStatement<
-  [string | null],
-  ChannelContextJobSourcesSelectContextDocuments2Row,
-  number
-> {
-  return database.prepare<
-    [string | null],
-    ChannelContextJobSourcesSelectContextDocuments2Row
-  >(
-    "select id from context_documents\n         where tier = 'long-term' and topic_key = ? and state = 'active'\n           and content_state = 'available' and is_internal = 0",
-  ) as unknown as PreparedStatement<
-    [string | null],
-    ChannelContextJobSourcesSelectContextDocuments2Row,
-    number
-  >;
-}
-
-export function channelContextCompleteEmptyJobUpdateContextJobs(
-  database: Database.Database,
-): PreparedStatement<[number], unknown, unknown> {
-  return database.prepare<[number]>(
-    "update context_jobs\n         set status = 'completed', lease_expires_at = null,\n             usage_reservation_id = null, last_error_category = null\n         where id = ?",
-  );
-}
-
-export interface ChannelContextProvisionalObsoleteSelectContextDocumentsRow {
-  exists: number;
-}
-
-export function channelContextProvisionalObsoleteSelectContextDocuments(
-  database: Database.Database,
-): PreparedStatement<
-  [string],
-  ChannelContextProvisionalObsoleteSelectContextDocumentsRow,
-  number
-> {
-  return database.prepare<
-    [string],
-    ChannelContextProvisionalObsoleteSelectContextDocumentsRow
-  >(
-    "select exists(\n             select 1 from context_documents\n             where document_key = ? and completeness = 'final'\n               and state = 'active' and is_internal = 0\n           )",
-  ) as unknown as PreparedStatement<
-    [string],
-    ChannelContextProvisionalObsoleteSelectContextDocumentsRow,
-    number
-  >;
-}
-
-export function channelContextDeferJobUpdateContextJobs(
-  database: Database.Database,
-): PreparedStatement<[number, string | null, number], unknown, unknown> {
-  return database.prepare<[number, string | null, number]>(
-    "update context_jobs\n         set status = 'pending', not_before = ?, lease_expires_at = null,\n             usage_reservation_id = null,\n             attempt_count = max(0, attempt_count - 1),\n             last_error_category = ?\n         where id = ?",
-  );
-}
-
-export function channelContextRetryJobUpdateContextJobs(
-  database: Database.Database,
-): PreparedStatement<
-  [string, number, string | null, number, string, number],
-  unknown,
-  unknown
-> {
-  return database.prepare<
-    [string, number, string | null, number, string, number]
-  >(
-    "update context_jobs\n         set status = ?, not_before = ?, lease_expires_at = null,\n             usage_reservation_id = null, last_error_category = ?\n         where id = ? and status = 'leased'\n           and source_revision_checksum = ? and attempt_count = ?",
-  );
-}
-
-export interface ChannelContextAssertCurrentLeaseSelectContextJobsRow {
-  exists: number;
-}
-
-export function channelContextAssertCurrentLeaseSelectContextJobs(
-  database: Database.Database,
-): PreparedStatement<
-  [number, number | null, number, string, string | null],
-  ChannelContextAssertCurrentLeaseSelectContextJobsRow,
-  number
-> {
-  return database.prepare<
-    [number, number | null, number, string, string | null],
-    ChannelContextAssertCurrentLeaseSelectContextJobsRow
-  >(
-    "select exists(\n           select 1 from context_jobs\n           where id = ? and status = 'leased' and lease_expires_at > ?\n             and attempt_count = ? and source_revision_checksum = ?\n             and usage_reservation_id = ?\n         )",
-  ) as unknown as PreparedStatement<
-    [number, number | null, number, string, string | null],
-    ChannelContextAssertCurrentLeaseSelectContextJobsRow,
-    number
-  >;
-}
-
-export interface ChannelContextScheduleDownstreamSelectContextDocumentsRow {
-  topicKey: string | null;
-  topicLabel: string | null;
-}
-
-export function channelContextScheduleDownstreamSelectContextDocuments(
-  database: Database.Database,
-): PreparedStatement<
-  [],
-  ChannelContextScheduleDownstreamSelectContextDocumentsRow,
-  string | null
-> {
-  return database.prepare<
-    [],
-    ChannelContextScheduleDownstreamSelectContextDocumentsRow
-  >(
-    "select distinct topic_key as topicKey, topic_label as topicLabel\n           from context_documents\n           where tier = 'long-term' and state = 'active'\n             and content_state = 'available' and topic_key is not null\n             and topic_label is not null",
-  ) as unknown as PreparedStatement<
-    [],
-    ChannelContextScheduleDownstreamSelectContextDocumentsRow,
-    string | null
-  >;
-}
-
-export interface ChannelContextDocumentRevisionChecksumSelectContextDocumentsRow {
-  id: number;
-  revision: number;
-}
-
-export function channelContextDocumentRevisionChecksumSelectContextDocuments(
-  database: Database.Database,
-): PreparedStatement<
-  [string, number, number | null],
-  ChannelContextDocumentRevisionChecksumSelectContextDocumentsRow,
-  number
-> {
-  return database.prepare<
-    [string, number, number | null],
-    ChannelContextDocumentRevisionChecksumSelectContextDocumentsRow
-  >(
-    "select id, revision from context_documents\n         where tier = ? and completeness = 'final' and state = 'active'\n           and content_state = 'available' and is_internal = 0\n           and period_start >= ? and period_end <= ?\n         order by period_start, id",
-  ) as unknown as PreparedStatement<
-    [string, number, number | null],
-    ChannelContextDocumentRevisionChecksumSelectContextDocumentsRow,
-    number
-  >;
-}
-
-export function channelContextUpsertDerivedJobInsertContextJobs(
-  database: Database.Database,
-): PreparedStatement<
-  [
-    string,
-    string,
-    number,
-    number | null,
-    string,
-    string,
-    number,
-    number,
-    number | null,
-  ],
-  unknown,
-  unknown
-> {
-  return database.prepare<
-    [
-      string,
-      string,
-      number,
-      number | null,
-      string,
-      string,
-      number,
-      number,
-      number | null,
-    ]
-  >(
-    "insert into context_jobs\n           (job_key, tier, period_start, period_end, timezone, topic_key,\n            completeness, source_revision_checksum, not_before,\n            freshness_deadline, backfill_run_id)\n         values (?, ?, ?, ?, ?, null, 'final', ?, ?, ?, ?)\n         on conflict(job_key) do update set\n           source_revision_checksum = excluded.source_revision_checksum,\n           not_before = excluded.not_before,\n           freshness_deadline = excluded.freshness_deadline,\n           status = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then 'pending' else context_jobs.status end,\n           lease_expires_at = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then null else context_jobs.lease_expires_at end,\n           last_error_category = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then null else context_jobs.last_error_category end,\n           backfill_run_id = case\n             when excluded.backfill_run_id is not null\n             then excluded.backfill_run_id\n             when context_jobs.backfill_run_id is not null\n               and not exists(\n                 select 1 from context_backfills b\n                 where b.id = context_jobs.backfill_run_id\n                   and b.status = 'active'\n               )\n             then null\n             when context_jobs.status = 'completed' then null\n             else context_jobs.backfill_run_id end",
-  );
-}
-
-export interface ChannelContextUpsertTopicJobSelectContextDocumentsRow {
-  id: number;
-}
-
-export function channelContextUpsertTopicJobSelectContextDocuments(
-  database: Database.Database,
-): PreparedStatement<
-  [string | null],
-  ChannelContextUpsertTopicJobSelectContextDocumentsRow,
-  number
-> {
-  return database.prepare<
-    [string | null],
-    ChannelContextUpsertTopicJobSelectContextDocumentsRow
-  >(
-    "select id from context_documents\n         where tier = 'long-term' and topic_key = ? and state = 'active'\n           and content_state = 'available'",
-  ) as unknown as PreparedStatement<
-    [string | null],
-    ChannelContextUpsertTopicJobSelectContextDocumentsRow,
-    number
-  >;
-}
-
-export function channelContextUpsertTopicJobInsertContextJobs(
-  database: Database.Database,
-): PreparedStatement<
-  [
-    string,
-    number,
-    string,
-    string | null,
-    string | null,
-    string,
-    string,
-    number,
-    number,
-    number | null,
-  ],
-  unknown,
-  unknown
-> {
-  return database.prepare<
-    [
-      string,
-      number,
-      string,
-      string | null,
-      string | null,
-      string,
-      string,
-      number,
-      number,
-      number | null,
-    ]
-  >(
-    "insert into context_jobs\n           (job_key, tier, period_start, period_end, timezone, topic_key,\n            topic_label, completeness, source_revision_checksum,\n            source_document_ids_json, not_before, freshness_deadline,\n            backfill_run_id)\n         values (?, 'long-term', ?, null, ?, ?, ?, 'final', ?, ?, ?, ?, ?)\n         on conflict(job_key) do update set\n           topic_label = excluded.topic_label,\n           source_revision_checksum = excluded.source_revision_checksum,\n           source_document_ids_json = excluded.source_document_ids_json,\n           not_before = excluded.not_before,\n           freshness_deadline = excluded.freshness_deadline,\n           status = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then 'pending' else context_jobs.status end,\n           lease_expires_at = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then null else context_jobs.lease_expires_at end,\n           last_error_category = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then null else context_jobs.last_error_category end,\n           backfill_run_id = case\n             when excluded.backfill_run_id is not null\n             then excluded.backfill_run_id\n             when context_jobs.backfill_run_id is not null\n               and not exists(\n                 select 1 from context_backfills b\n                 where b.id = context_jobs.backfill_run_id\n                   and b.status = 'active'\n               )\n             then null\n             when context_jobs.status = 'completed' then null\n             else context_jobs.backfill_run_id end",
-  );
-}
-
-export interface ChannelContextApplyUpsertSelectConversationEventsRow {
-  content: string;
-  contentState: string;
+  journalKey: string;
   occurredAt: number;
+  checksum: string;
+  payloadJson: string;
 }
 
-export function channelContextApplyUpsertSelectConversationEvents(
+export function contextDeletionNextForgetJournalSelectContextForgetJournal(
   database: Database.Database,
 ): PreparedStatement<
-  [number],
-  ChannelContextApplyUpsertSelectConversationEventsRow,
-  string
+  [number | null],
+  ContextDeletionNextForgetJournalSelectContextForgetJournalRow,
+  number
 > {
   return database.prepare<
-    [number],
-    ChannelContextApplyUpsertSelectConversationEventsRow
+    [number | null],
+    ContextDeletionNextForgetJournalSelectContextForgetJournalRow
   >(
-    'select content, content_state as contentState,\n                occurred_at as occurredAt\n         from conversation_events where id = ?',
+    "select id, journal_key as journalKey, occurred_at as occurredAt,\n                checksum, payload_json as payloadJson\n         from context_forget_journal\n         where upload_status in ('pending', 'failed')\n           and (next_attempt_at is null or next_attempt_at <= ?)\n         order by occurred_at, id limit 1",
   ) as unknown as PreparedStatement<
-    [number],
-    ChannelContextApplyUpsertSelectConversationEventsRow,
-    string
+    [number | null],
+    ContextDeletionNextForgetJournalSelectContextForgetJournalRow,
+    number
   >;
 }
 
-export function channelContextUpsertJobInsertContextJobs(
+export function contextDeletionReplayForgetJournalInsertContextForgetJournal(
   database: Database.Database,
 ): PreparedStatement<
-  [
-    string,
-    number,
-    number | null,
-    string,
-    string,
-    string,
-    number,
-    number,
-    number | null,
-  ],
+  [string, string, string, number, string, string, number | null],
   unknown,
   unknown
 > {
   return database.prepare<
-    [
-      string,
-      number,
-      number | null,
-      string,
-      string,
-      string,
-      number,
-      number,
-      number | null,
-    ]
+    [string, string, string, number, string, string, number | null]
   >(
-    "insert into context_jobs\n           (job_key, tier, period_start, period_end, timezone, topic_key,\n            completeness, source_revision_checksum, not_before,\n            freshness_deadline, backfill_run_id)\n         values (?, 'hourly', ?, ?, ?, null, ?, ?, ?, ?, ?)\n         on conflict(job_key) do update set\n           source_revision_checksum = excluded.source_revision_checksum,\n           not_before = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n               and context_jobs.completeness = 'provisional'\n               and context_jobs.status = 'pending'\n             then min(context_jobs.not_before, excluded.not_before)\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then excluded.not_before else context_jobs.not_before end,\n           freshness_deadline = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n               and context_jobs.completeness = 'provisional'\n               and context_jobs.status = 'pending'\n             then min(context_jobs.freshness_deadline,\n                      excluded.freshness_deadline)\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then excluded.freshness_deadline\n             else context_jobs.freshness_deadline end,\n           status = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then 'pending' else context_jobs.status end,\n           lease_expires_at = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then null else context_jobs.lease_expires_at end,\n           last_error_category = case\n             when context_jobs.source_revision_checksum\n                    != excluded.source_revision_checksum\n             then null else context_jobs.last_error_category end,\n           backfill_run_id = case\n             when excluded.backfill_run_id is not null\n             then excluded.backfill_run_id\n             when context_jobs.backfill_run_id is not null\n               and not exists(\n                 select 1 from context_backfills b\n                 where b.id = context_jobs.backfill_run_id\n                   and b.status = 'active'\n               )\n             then null\n             when context_jobs.status = 'completed' then null\n             else context_jobs.backfill_run_id end",
+    "insert into context_forget_journal\n             (journal_key, scope_id, tombstone_key, occurred_at, checksum,\n              payload_json, upload_status, uploaded_at)\n           values (?, ?, ?, ?, ?, ?, 'uploaded', ?)\n           on conflict(journal_key) do update set\n             upload_status = 'uploaded', uploaded_at = excluded.uploaded_at,\n             next_attempt_at = null, last_error_category = null",
   );
 }
 
-export function channelContextPauseBackfillRunUpdateContextBackfills(
+export function contextDeletionInsertTombstoneInsertContextTombstones(
   database: Database.Database,
-): PreparedStatement<[string | null, number, number], unknown, unknown> {
-  return database.prepare<[string | null, number, number]>(
-    "update context_backfills\n         set status = 'paused', pause_reason = ?, updated_at = ?\n         where id = ? and status = 'active'",
+): PreparedStatement<
+  [string, string, string, string, number, string],
+  unknown,
+  unknown
+> {
+  return database.prepare<[string, string, string, string, number, string]>(
+    'insert into context_tombstones\n           (tombstone_key, scope_type, scope_id, reason, occurred_at, checksum)\n         values (?, ?, ?, ?, ?, ?)\n         on conflict(scope_type, scope_id) do nothing',
   );
 }
 
-export interface ChannelContextSourceRevisionChecksumSelectConversationEventsRow {
+export interface ContextDeletionEnqueueRebuildsSelectConversationEventsRow {
   id: number;
   discordMessageId: string;
   content: string;
   editedAt: number | null;
 }
 
-export function channelContextSourceRevisionChecksumSelectConversationEvents(
+export function contextDeletionEnqueueRebuildsSelectConversationEvents(
   database: Database.Database,
 ): PreparedStatement<
   [string, string, number, number],
-  ChannelContextSourceRevisionChecksumSelectConversationEventsRow,
+  ContextDeletionEnqueueRebuildsSelectConversationEventsRow,
   number
 > {
   return database.prepare<
     [string, string, number, number],
-    ChannelContextSourceRevisionChecksumSelectConversationEventsRow
+    ContextDeletionEnqueueRebuildsSelectConversationEventsRow
   >(
-    "select id, discord_message_id as discordMessageId, content,\n                edited_at as editedAt\n         from conversation_events\n         where guild_id = ? and channel_id = ? and medium = 'text'\n           and content_state = 'available'\n           and occurred_at >= ? and occurred_at < ?\n         order by id",
+    "select id, discord_message_id as discordMessageId, content,\n                  edited_at as editedAt\n           from conversation_events\n           where guild_id = ? and channel_id = ? and medium = 'text'\n             and content_state = 'available'\n             and occurred_at >= ? and occurred_at < ? order by id",
   ) as unknown as PreparedStatement<
     [string, string, number, number],
-    ChannelContextSourceRevisionChecksumSelectConversationEventsRow,
+    ContextDeletionEnqueueRebuildsSelectConversationEventsRow,
     number
   >;
 }
 
-export interface ChannelContextInvalidateEventJobsSelectConversationEventsRow {
-  occurred_at: number;
+export function contextDeletionEnqueueRebuildsUpdateContextJobs(
+  database: Database.Database,
+): PreparedStatement<
+  [string, number, number, string, number, number | null],
+  unknown,
+  unknown
+> {
+  return database.prepare<
+    [string, number, number, string, number, number | null]
+  >(
+    "update context_jobs\n           set source_revision_checksum = ?, status = 'pending',\n               not_before = ?, freshness_deadline = ?, lease_expires_at = null,\n               last_error_category = 'rebuild'\n           where tier = 'hourly' and timezone = ?\n             and period_start = ? and period_end = ?",
+  );
 }
 
-export function channelContextInvalidateEventJobsSelectConversationEvents(
+export interface ContextDeletionEnqueueRebuildsSelectContextDocumentsRow {
+  id: number;
+  revision: number;
+}
+
+export function contextDeletionEnqueueRebuildsSelectContextDocuments(
+  database: Database.Database,
+): PreparedStatement<
+  [string, number, number | null],
+  ContextDeletionEnqueueRebuildsSelectContextDocumentsRow,
+  number
+> {
+  return database.prepare<
+    [string, number, number | null],
+    ContextDeletionEnqueueRebuildsSelectContextDocumentsRow
+  >(
+    "select id, revision from context_documents\n           where tier = ? and completeness = 'final' and state = 'active'\n             and content_state = 'available' and is_internal = 0\n             and period_start >= ? and period_end <= ?\n           order by period_start, id",
+  ) as unknown as PreparedStatement<
+    [string, number, number | null],
+    ContextDeletionEnqueueRebuildsSelectContextDocumentsRow,
+    number
+  >;
+}
+
+export function contextDeletionEnqueueRebuildsUpdateContextJobs2(
+  database: Database.Database,
+): PreparedStatement<
+  [string, number, number, string, string, number, number | null],
+  unknown,
+  unknown
+> {
+  return database.prepare<
+    [string, number, number, string, string, number, number | null]
+  >(
+    "update context_jobs\n           set source_revision_checksum = ?, status = 'pending',\n               not_before = ?, freshness_deadline = ?, lease_expires_at = null,\n               last_error_category = 'rebuild'\n           where tier = ? and timezone = ?\n             and period_start = ? and period_end = ?",
+  );
+}
+
+export interface ContextDeletionEnqueueRebuildsSelectContextJobsRow {
+  id: number;
+  sourceDocumentIdsJson: string;
+}
+
+export function contextDeletionEnqueueRebuildsSelectContextJobs(
+  database: Database.Database,
+): PreparedStatement<
+  [string | null],
+  ContextDeletionEnqueueRebuildsSelectContextJobsRow,
+  number
+> {
+  return database.prepare<
+    [string | null],
+    ContextDeletionEnqueueRebuildsSelectContextJobsRow
+  >(
+    "select id, source_document_ids_json as sourceDocumentIdsJson\n           from context_jobs where tier = 'long-term' and topic_key = ?",
+  ) as unknown as PreparedStatement<
+    [string | null],
+    ContextDeletionEnqueueRebuildsSelectContextJobsRow,
+    number
+  >;
+}
+
+export function contextDeletionEnqueueRebuildsUpdateContextJobs3(
+  database: Database.Database,
+): PreparedStatement<
+  [string, string, number, number, number],
+  unknown,
+  unknown
+> {
+  return database.prepare<[string, string, number, number, number]>(
+    "update context_jobs\n             set source_revision_checksum = ?, source_document_ids_json = ?,\n                 status = 'pending', not_before = ?, freshness_deadline = ?,\n                 lease_expires_at = null, last_error_category = 'rebuild'\n             where id = ?",
+  );
+}
+
+export interface ContextDeletionUnavailableDocumentSourceScopesSelectConversationEventsRow {
+  exists: number;
+}
+
+export function contextDeletionUnavailableDocumentSourceScopesSelectConversationEvents(
+  database: Database.Database,
+): PreparedStatement<
+  [string],
+  ContextDeletionUnavailableDocumentSourceScopesSelectConversationEventsRow,
+  number
+> {
+  return database.prepare<
+    [string],
+    ContextDeletionUnavailableDocumentSourceScopesSelectConversationEventsRow
+  >(
+    "select exists(\n             select 1 from conversation_events c\n             where c.guild_id || '/' || c.channel_id || '/' ||\n                   c.discord_message_id = ?\n               and c.content_state = 'available'\n           )",
+  ) as unknown as PreparedStatement<
+    [string],
+    ContextDeletionUnavailableDocumentSourceScopesSelectConversationEventsRow,
+    number
+  >;
+}
+
+export interface ContextDeletionSourceBelongsToSelectConversationEventsRow {
+  exists: number;
+}
+
+export function contextDeletionSourceBelongsToSelectConversationEvents(
+  database: Database.Database,
+): PreparedStatement<
+  [string, string | null],
+  ContextDeletionSourceBelongsToSelectConversationEventsRow,
+  number
+> {
+  return database.prepare<
+    [string, string | null],
+    ContextDeletionSourceBelongsToSelectConversationEventsRow
+  >(
+    "select exists(\n             select 1 from conversation_events\n             where guild_id || '/' || channel_id || '/' ||\n                     discord_message_id = ? and speaker_id = ?\n           )",
+  ) as unknown as PreparedStatement<
+    [string, string | null],
+    ContextDeletionSourceBelongsToSelectConversationEventsRow,
+    number
+  >;
+}
+
+export interface ConversationRecordSelectConversationEventsRow {
+  id: number;
+}
+
+export function conversationRecordSelectConversationEvents(
+  database: Database.Database,
+): PreparedStatement<
+  [string, string, string],
+  ConversationRecordSelectConversationEventsRow,
+  number
+> {
+  return database.prepare<
+    [string, string, string],
+    ConversationRecordSelectConversationEventsRow
+  >(
+    'select id from conversation_events\n         where guild_id = ? and channel_id = ? and discord_message_id = ?',
+  ) as unknown as PreparedStatement<
+    [string, string, string],
+    ConversationRecordSelectConversationEventsRow,
+    number
+  >;
+}
+
+export interface ConversationSearchTextSourceGroupsSelectConversationEventsRow {
+  id: number;
+  content: string;
+  discordMessageId: string;
+  logicalResponseId: string | null;
+  occurredAt: number;
+  responseChunkIndex: number | null;
+  role: string;
+  speakerName: string | null;
+}
+
+export function conversationSearchTextSourceGroupsSelectConversationEvents(
+  database: Database.Database,
+): PreparedStatement<
+  [string, string, string | null, unknown, number | null],
+  ConversationSearchTextSourceGroupsSelectConversationEventsRow,
+  number
+> {
+  return database.prepare<
+    [string, string, string | null, unknown, number | null],
+    ConversationSearchTextSourceGroupsSelectConversationEventsRow
+  >(
+    "select id, content,\n                          discord_message_id as discordMessageId,\n                          logical_response_id as logicalResponseId,\n                          occurred_at as occurredAt,\n                          response_chunk_index as responseChunkIndex,\n                          role, speaker_name as speakerName\n                   from conversation_events\n                   where guild_id = ? and channel_id = ?\n                     and logical_response_id = ? and role = 'chief'\n                     and content_state = 'available'\n                     and (? is null or id < ?)\n                   order by coalesce(response_chunk_index, 2147483647), id",
+  ) as unknown as PreparedStatement<
+    [string, string, string | null, unknown, number | null],
+    ConversationSearchTextSourceGroupsSelectConversationEventsRow,
+    number
+  >;
+}
+
+export interface ConversationMaintainSelectConversationEventsRow {
+  id: number;
+}
+
+export function conversationMaintainSelectConversationEvents(
   database: Database.Database,
 ): PreparedStatement<
   [number],
-  ChannelContextInvalidateEventJobsSelectConversationEventsRow,
+  ConversationMaintainSelectConversationEventsRow,
   number
 > {
   return database.prepare<
     [number],
-    ChannelContextInvalidateEventJobsSelectConversationEventsRow
+    ConversationMaintainSelectConversationEventsRow
   >(
-    'select occurred_at from conversation_events where id = ?',
+    "select id from conversation_events\n           where medium = 'text' and content_state = 'available'\n             and retention_deadline <= ?",
   ) as unknown as PreparedStatement<
     [number],
-    ChannelContextInvalidateEventJobsSelectConversationEventsRow,
+    ConversationMaintainSelectConversationEventsRow,
     number
   >;
 }
 
-export interface ChannelContextEventIdSelectConversationEventsRow {
-  id: number;
-}
-
-export function channelContextEventIdSelectConversationEvents(
+export function conversationMaintainUpdateConversationEvents(
   database: Database.Database,
-): PreparedStatement<
-  [string, string, string],
-  ChannelContextEventIdSelectConversationEventsRow,
-  number
-> {
-  return database.prepare<
-    [string, string, string],
-    ChannelContextEventIdSelectConversationEventsRow
-  >(
-    'select id from conversation_events\n           where guild_id = ? and channel_id = ? and discord_message_id = ?',
-  ) as unknown as PreparedStatement<
-    [string, string, string],
-    ChannelContextEventIdSelectConversationEventsRow,
-    number
-  >;
+): PreparedStatement<[number], unknown, unknown> {
+  return database.prepare<[number]>(
+    "update conversation_events\n           set content = '', attachment_metadata_json = '[]',\n               content_state = 'scrubbed',\n               content_state_reason = 'retention-expired'\n           where medium = 'text' and content_state = 'available'\n             and retention_deadline <= ?",
+  );
 }
 
-export interface ChannelContextExistingRevisionSelectConversationEventsRow {
-  id: number;
+export function conversationMaintainDeleteConversationEvents(
+  database: Database.Database,
+): PreparedStatement<[number], unknown, unknown> {
+  return database.prepare<[number]>(
+    "delete from conversation_events\n           where medium = 'voice' and retention_deadline <= ?",
+  );
+}
+
+export interface ConversationRecordInsertConversationEventsArgs {
+  platformEventId: string;
+  discordMessageId: string;
+  guildId: string;
+  channelId: string;
+  requestId: string | null;
+  logicalResponseId: string | null;
+  role: string;
+  speakerId: string | null;
+  speakerName: string | null;
+  medium: string;
+  replyToMessageId: string | null;
+  content: string;
+  attachmentMetadataJson: string;
   occurredAt: number;
   editedAt: number | null;
+  recentUntil: number;
+  retentionDeadline: number;
   revisionChecksum: string;
+  responseChunkIndex: number | null;
 }
 
-export function channelContextExistingRevisionSelectConversationEvents(
+export function conversationRecordInsertConversationEvents(
   database: Database.Database,
 ): PreparedStatement<
-  [string, string, string],
-  ChannelContextExistingRevisionSelectConversationEventsRow,
-  number
+  [ConversationRecordInsertConversationEventsArgs],
+  unknown,
+  unknown
+> {
+  return database.prepare<[ConversationRecordInsertConversationEventsArgs]>(
+    "insert into conversation_events\n           (platform_event_id, discord_message_id, guild_id, channel_id,\n            request_id, logical_response_id, role, speaker_id, speaker_name,\n            medium, reply_to_message_id, content, attachment_metadata_json,\n            occurred_at, edited_at, recent_until, retention_deadline,\n            content_state, content_state_reason, revision_checksum,\n            response_chunk_index)\n         values (@platformEventId, @discordMessageId, @guildId, @channelId,\n                 @requestId, @logicalResponseId, @role, @speakerId,\n                 @speakerName, @medium, @replyToMessageId, @content,\n                 @attachmentMetadataJson, @occurredAt, @editedAt,\n                 @recentUntil, @retentionDeadline, 'available', 'retained',\n                 @revisionChecksum, @responseChunkIndex)\n         on conflict(guild_id, channel_id, discord_message_id) do update set\n           speaker_name = excluded.speaker_name,\n           speaker_id = excluded.speaker_id,\n           edited_at = excluded.edited_at,\n           reply_to_message_id = excluded.reply_to_message_id,\n           response_chunk_index = coalesce(\n             excluded.response_chunk_index,\n             conversation_events.response_chunk_index\n           ),\n           content = case when conversation_events.content_state = 'available'\n             then excluded.content else conversation_events.content end,\n           attachment_metadata_json = case\n             when conversation_events.content_state = 'available'\n             then excluded.attachment_metadata_json\n             else conversation_events.attachment_metadata_json end,\n           revision_checksum = excluded.revision_checksum",
+  );
+}
+
+export function discordReconciliationServiceRunPassDeleteDiscordReconciliationSeen(
+  database: Database.Database,
+): PreparedStatement<[string, string], unknown, unknown> {
+  return database.prepare<[string, string]>(
+    'delete from discord_reconciliation_seen\n             where scope_id = ? and pass_key = ?',
+  );
+}
+
+export function discordReconciliationServiceRunPassUpdateDiscordReconciliationState(
+  database: Database.Database,
+): PreparedStatement<
+  [string | null, string | null, string | null, number, string],
+  unknown,
+  unknown
 > {
   return database.prepare<
-    [string, string, string],
-    ChannelContextExistingRevisionSelectConversationEventsRow
+    [string | null, string | null, string | null, number, string]
   >(
-    'select id, occurred_at as occurredAt, edited_at as editedAt,\n                  revision_checksum as revisionChecksum\n           from conversation_events\n           where guild_id = ? and channel_id = ? and discord_message_id = ?',
+    'update discord_reconciliation_state\n             set phase = ?, pass_key = ?, cursor_message_id = null,\n                 covered_oldest_message_id = null,\n                 covered_newest_message_id = null,\n                 scan_upper_bound_message_id = ?, updated_at = ?\n             where scope_id = ?',
+  );
+}
+
+export function discordReconciliationServiceApplyPageInsertDiscordReconciliationSeen(
+  database: Database.Database,
+): PreparedStatement<
+  [string, string, string, number, string],
+  unknown,
+  unknown
+> {
+  return database.prepare<[string, string, string, number, string]>(
+    'insert into discord_reconciliation_seen\n         (scope_id, pass_key, message_id, observed_at, revision_checksum)\n       values (?, ?, ?, ?, ?)\n       on conflict(scope_id, pass_key, message_id) do update set\n         observed_at = excluded.observed_at,\n         revision_checksum = excluded.revision_checksum',
+  );
+}
+
+export function discordReconciliationServiceUpdateProgressUpdateDiscordReconciliationState(
+  database: Database.Database,
+): PreparedStatement<
+  [string | null, string | null, string | null, number, string],
+  unknown,
+  unknown
+> {
+  return database.prepare<
+    [string | null, string | null, string | null, number, string]
+  >(
+    'update discord_reconciliation_state\n         set cursor_message_id = ?, covered_oldest_message_id = ?,\n             covered_newest_message_id = ?, updated_at = ?\n         where scope_id = ?',
+  );
+}
+
+export interface DiscordReconciliationServiceInferCoveredDeletionsSelectDiscordReconciliationSeenRow {
+  message_id: string;
+}
+
+export function discordReconciliationServiceInferCoveredDeletionsSelectDiscordReconciliationSeen(
+  database: Database.Database,
+): PreparedStatement<
+  [string, string],
+  DiscordReconciliationServiceInferCoveredDeletionsSelectDiscordReconciliationSeenRow,
+  string
+> {
+  return database.prepare<
+    [string, string],
+    DiscordReconciliationServiceInferCoveredDeletionsSelectDiscordReconciliationSeenRow
+  >(
+    'select message_id from discord_reconciliation_seen\n           where scope_id = ? and pass_key = ?',
   ) as unknown as PreparedStatement<
-    [string, string, string],
-    ChannelContextExistingRevisionSelectConversationEventsRow,
-    number
+    [string, string],
+    DiscordReconciliationServiceInferCoveredDeletionsSelectDiscordReconciliationSeenRow,
+    string
   >;
+}
+
+export interface DiscordReconciliationServiceInferCoveredDeletionsSelectConversationEventsRow {
+  discord_message_id: string;
+}
+
+export function discordReconciliationServiceInferCoveredDeletionsSelectConversationEvents(
+  database: Database.Database,
+): PreparedStatement<
+  [string, string],
+  DiscordReconciliationServiceInferCoveredDeletionsSelectConversationEventsRow,
+  string
+> {
+  return database.prepare<
+    [string, string],
+    DiscordReconciliationServiceInferCoveredDeletionsSelectConversationEventsRow
+  >(
+    "select distinct c.discord_message_id\n         from conversation_events c\n         where c.guild_id = ? and c.channel_id = ? and c.medium = 'text'\n           and (\n             c.content_state = 'available'\n             or (\n               c.content_state = 'scrubbed'\n               and c.content_state_reason = 'retention-expired'\n               and exists (\n                 select 1 from source_events s\n                 where s.platform_source_id = c.discord_message_id\n                   and s.medium = 'text'\n                   and s.source_scope_id =\n                     c.guild_id || '/' || c.channel_id || '/' ||\n                     c.discord_message_id\n               )\n             )\n           )",
+  ) as unknown as PreparedStatement<
+    [string, string],
+    DiscordReconciliationServiceInferCoveredDeletionsSelectConversationEventsRow,
+    string
+  >;
+}
+
+export interface DiscordReconciliationServiceCompletePassSelectDiscordReconciliationSeenRow {
+  message_id: string;
+}
+
+export function discordReconciliationServiceCompletePassSelectDiscordReconciliationSeen(
+  database: Database.Database,
+): PreparedStatement<
+  [string, string],
+  DiscordReconciliationServiceCompletePassSelectDiscordReconciliationSeenRow,
+  string
+> {
+  return database.prepare<
+    [string, string],
+    DiscordReconciliationServiceCompletePassSelectDiscordReconciliationSeenRow
+  >(
+    'select message_id from discord_reconciliation_seen\n           where scope_id = ? and pass_key = ?',
+  ) as unknown as PreparedStatement<
+    [string, string],
+    DiscordReconciliationServiceCompletePassSelectDiscordReconciliationSeenRow,
+    string
+  >;
+}
+
+export function discordReconciliationServiceCompletePassUpdateDiscordReconciliationState(
+  database: Database.Database,
+): PreparedStatement<
+  [string | null, number | null, unknown, number | null, number, string],
+  unknown,
+  unknown
+> {
+  return database.prepare<
+    [string | null, number | null, unknown, number | null, number, string]
+  >(
+    "update discord_reconciliation_state\n           set high_water_message_id = ?, phase = null, pass_key = null,\n               cursor_message_id = null, covered_oldest_message_id = null,\n               covered_newest_message_id = null, last_complete_at = ?,\n               scan_upper_bound_message_id = null,\n               last_full_scan_at = case when ? = 'full' then ?\n                                        else last_full_scan_at end,\n               updated_at = ? where scope_id = ?",
+  );
+}
+
+export function discordReconciliationServiceCompletePassDeleteDiscordReconciliationSeen(
+  database: Database.Database,
+): PreparedStatement<[string, string, string], unknown, unknown> {
+  return database.prepare<[string, string, string]>(
+    'delete from discord_reconciliation_seen\n           where scope_id = ? and pass_key like ? and pass_key <> ?',
+  );
+}
+
+export function discordReconciliationServiceEnsureStateInsertDiscordReconciliationState(
+  database: Database.Database,
+): PreparedStatement<[string, number], unknown, unknown> {
+  return database.prepare<[string, number]>(
+    'insert into discord_reconciliation_state (scope_id, updated_at)\n         values (?, ?) on conflict(scope_id) do nothing',
+  );
+}
+
+export interface DiscordReconciliationServiceStateSelectDiscordReconciliationStateRow {
+  highWaterMessageId: string | null;
+  phase: string | null;
+  passKey: string | null;
+  cursorMessageId: string | null;
+  coveredOldestMessageId: string | null;
+  coveredNewestMessageId: string | null;
+  scanUpperBoundMessageId: string | null;
+  lastCompleteAt: number | null;
+  lastFullScanAt: number | null;
+}
+
+export function discordReconciliationServiceStateSelectDiscordReconciliationState(
+  database: Database.Database,
+): PreparedStatement<
+  [string],
+  DiscordReconciliationServiceStateSelectDiscordReconciliationStateRow,
+  string | null
+> {
+  return database.prepare<
+    [string],
+    DiscordReconciliationServiceStateSelectDiscordReconciliationStateRow
+  >(
+    'select high_water_message_id as highWaterMessageId, phase,\n                pass_key as passKey, cursor_message_id as cursorMessageId,\n                covered_oldest_message_id as coveredOldestMessageId,\n                covered_newest_message_id as coveredNewestMessageId,\n                scan_upper_bound_message_id as scanUpperBoundMessageId,\n                last_complete_at as lastCompleteAt,\n                last_full_scan_at as lastFullScanAt\n         from discord_reconciliation_state where scope_id = ?',
+  ) as unknown as PreparedStatement<
+    [string],
+    DiscordReconciliationServiceStateSelectDiscordReconciliationStateRow,
+    string | null
+  >;
+}
+
+export function conversationQualityCorpusReplayConversationQualityCaseUpdateConversationEvents(
+  database: Database.Database,
+): PreparedStatement<[string, number], unknown, unknown> {
+  return database.prepare<[string, number]>(
+    "update conversation_events\n             set content = '', content_state = 'scrubbed',\n                 content_state_reason = ? where id = ?",
+  );
+}
+
+export function conversationQualityCorpusInsertQualityDocumentInsertContextDocuments(
+  database: Database.Database,
+): PreparedStatement<
+  [
+    number,
+    string,
+    string,
+    number,
+    number | null,
+    string | null,
+    string | null,
+    string,
+    number,
+    number,
+  ],
+  unknown,
+  unknown
+> {
+  return database.prepare<
+    [
+      number,
+      string,
+      string,
+      number,
+      number | null,
+      string | null,
+      string | null,
+      string,
+      number,
+      number,
+    ]
+  >(
+    "insert into context_documents\n         (id, document_key, tier, period_start, period_end, timezone,\n          topic_key, topic_label, revision, completeness, state,\n          content_state, content_state_reason, summary, confidence,\n          retention_deadline, created_at, updated_at, is_internal)\n       values (?, ?, ?, ?, ?, 'America/New_York', ?, ?, 1, 'final',\n               'active', 'available', 'retained', ?, 0.95, null, ?, ?, 0)",
+  );
+}
+
+export function conversationQualityCorpusInsertQualityDocumentInsertContextDocumentEvents(
+  database: Database.Database,
+): PreparedStatement<[number, number], unknown, unknown> {
+  return database.prepare<[number, number]>(
+    'insert into context_document_events (document_id, event_id) values (?, ?)',
+  );
 }
 
 export interface MemoryObserveSelectSourceEventsRow {
@@ -2826,6 +3153,216 @@ export function memoryConsolidateExactDuplicatesUpdateMemories(
   );
 }
 
+export interface MemoryObserveInsertSourceEventsArgs {
+  platformSourceId: string;
+  sourceScopeId: string;
+  revisionChecksum: string;
+  canModerateContext: number;
+  speakerId: string;
+  medium: string;
+  content: string;
+  occurredAt: number;
+  retentionDeadline: number;
+}
+
+export function memoryObserveInsertSourceEvents(
+  database: Database.Database,
+): PreparedStatement<[MemoryObserveInsertSourceEventsArgs], unknown, unknown> {
+  return database.prepare<[MemoryObserveInsertSourceEventsArgs]>(
+    'insert into source_events\n             (platform_source_id, source_scope_id, revision_checksum,\n              can_moderate_context, speaker_id, medium, content, occurred_at,\n              retention_deadline)\n           values (@platformSourceId, @sourceScopeId, @revisionChecksum,\n                   @canModerateContext, @speakerId, @medium, @content,\n                   @occurredAt, @retentionDeadline)\n           on conflict(platform_source_id) do update set\n             content = excluded.content,\n             source_scope_id = excluded.source_scope_id,\n             revision_checksum = excluded.revision_checksum,\n             can_moderate_context = excluded.can_moderate_context,\n             retention_deadline = excluded.retention_deadline',
+  );
+}
+
+export interface DatabaseOpenChiefDatabaseSelectStatementRow {
+  vec_version: unknown;
+}
+
+export function databaseOpenChiefDatabaseSelectStatement(
+  database: Database.Database,
+): PreparedStatement<[], DatabaseOpenChiefDatabaseSelectStatementRow, unknown> {
+  return database.prepare<[], DatabaseOpenChiefDatabaseSelectStatementRow>(
+    'select vec_version()',
+  );
+}
+
+export interface RecoveryVerifyRestorableDatabaseSelectStatementRow {
+  vec_version: unknown;
+}
+
+export function recoveryVerifyRestorableDatabaseSelectStatement(
+  database: Database.Database,
+): PreparedStatement<
+  [],
+  RecoveryVerifyRestorableDatabaseSelectStatementRow,
+  unknown
+> {
+  return database.prepare<
+    [],
+    RecoveryVerifyRestorableDatabaseSelectStatementRow
+  >('select vec_version()');
+}
+
+export interface RecoveryVerifyRestorableDatabaseSelectContextBackfillsRow {
+  exists: number;
+}
+
+export function recoveryVerifyRestorableDatabaseSelectContextBackfills(
+  database: Database.Database,
+): PreparedStatement<
+  [],
+  RecoveryVerifyRestorableDatabaseSelectContextBackfillsRow,
+  number
+> {
+  return database.prepare<
+    [],
+    RecoveryVerifyRestorableDatabaseSelectContextBackfillsRow
+  >(
+    'select exists(\n               select 1 from context_backfills b\n               where b.page_count != (\n                 select count(*) from context_backfill_pages p\n                 where p.run_id = b.id\n               )\n             )',
+  ) as unknown as PreparedStatement<
+    [],
+    RecoveryVerifyRestorableDatabaseSelectContextBackfillsRow,
+    number
+  >;
+}
+
+export interface RecoveryVerifyRestorableDatabaseSelectContextTombstonesRow {
+  scopeType: string;
+  scopeId: string;
+  reason: string;
+  occurredAt: number;
+  checksum: string;
+}
+
+export function recoveryVerifyRestorableDatabaseSelectContextTombstones(
+  database: Database.Database,
+): PreparedStatement<
+  [],
+  RecoveryVerifyRestorableDatabaseSelectContextTombstonesRow,
+  string
+> {
+  return database.prepare<
+    [],
+    RecoveryVerifyRestorableDatabaseSelectContextTombstonesRow
+  >(
+    'select scope_type as scopeType, scope_id as scopeId, reason,\n                occurred_at as occurredAt, checksum\n         from context_tombstones',
+  ) as unknown as PreparedStatement<
+    [],
+    RecoveryVerifyRestorableDatabaseSelectContextTombstonesRow,
+    string
+  >;
+}
+
+export interface RecoveryScrubMemoriesSelectMemories2Row {
+  state: string;
+}
+
+export function recoveryScrubMemoriesSelectMemories2(
+  database: Database.Database,
+): PreparedStatement<
+  [number],
+  RecoveryScrubMemoriesSelectMemories2Row,
+  string
+> {
+  return database.prepare<[number], RecoveryScrubMemoriesSelectMemories2Row>(
+    'select state from memories where id = ?',
+  ) as unknown as PreparedStatement<
+    [number],
+    RecoveryScrubMemoriesSelectMemories2Row,
+    string
+  >;
+}
+
+export function recoveryRecordContextJournalInsertContextTombstones(
+  database: Database.Database,
+): PreparedStatement<
+  [string, string, string, string, number, string],
+  unknown,
+  unknown
+> {
+  return database.prepare<[string, string, string, string, number, string]>(
+    'insert into context_tombstones\n           (tombstone_key, scope_type, scope_id, reason, occurred_at, checksum)\n         values (?, ?, ?, ?, ?, ?)\n         on conflict(tombstone_key) do nothing',
+  );
+}
+
+export function recoveryRecordContextJournalInsertContextForgetJournal(
+  database: Database.Database,
+): PreparedStatement<
+  [string, string, string, number, string, string, number | null],
+  unknown,
+  unknown
+> {
+  return database.prepare<
+    [string, string, string, number, string, string, number | null]
+  >(
+    "insert into context_forget_journal\n           (journal_key, scope_id, tombstone_key, occurred_at, checksum,\n            payload_json, upload_status, uploaded_at)\n         values (?, ?, ?, ?, ?, ?, 'uploaded', ?)\n         on conflict(journal_key) do update set\n           upload_status = 'uploaded', uploaded_at = excluded.uploaded_at",
+  );
+}
+
+export interface RuntimeStartChiefSelectMemoryJobsRow {
+  failed: number;
+  pending: number;
+}
+
+export function runtimeStartChiefSelectMemoryJobs(
+  database: Database.Database,
+): PreparedStatement<[], RuntimeStartChiefSelectMemoryJobsRow, number> {
+  return database.prepare<[], RuntimeStartChiefSelectMemoryJobsRow>(
+    "select\n               count(*) filter (where status = 'failed') as failed,\n               count(*) filter (where status in ('pending', 'leased')) as pending\n             from memory_jobs",
+  ) as unknown as PreparedStatement<
+    [],
+    RuntimeStartChiefSelectMemoryJobsRow,
+    number
+  >;
+}
+
+export function runtimeCheckDatabaseInsertMaintenanceRuns(
+  database: Database.Database,
+): PreparedStatement<[number, number | null], unknown, unknown> {
+  return database.prepare<[number, number | null]>(
+    "insert into maintenance_runs (kind, started_at, completed_at, status)\n           values ('health', ?, ?, 'completed')",
+  );
+}
+
+export function runtimeCheckDatabaseDeleteMaintenanceRuns(
+  database: Database.Database,
+): PreparedStatement<[], unknown, unknown> {
+  return database.prepare<[]>(
+    "delete from maintenance_runs where kind = 'health'",
+  );
+}
+
+export interface RuntimeCheckDatabaseSelectStatementRow {
+  vec_version: unknown;
+}
+
+export function runtimeCheckDatabaseSelectStatement(
+  database: Database.Database,
+): PreparedStatement<[], RuntimeCheckDatabaseSelectStatementRow, unknown> {
+  return database.prepare<[], RuntimeCheckDatabaseSelectStatementRow>(
+    'select vec_version()',
+  );
+}
+
+export interface RuntimeCheckDatabaseSelectConversationEventsRow {
+  count: number;
+}
+
+export function runtimeCheckDatabaseSelectConversationEvents(
+  database: Database.Database,
+): PreparedStatement<
+  [],
+  RuntimeCheckDatabaseSelectConversationEventsRow,
+  number
+> {
+  return database.prepare<[], RuntimeCheckDatabaseSelectConversationEventsRow>(
+    'select count(*) from conversation_events where 0',
+  ) as unknown as PreparedStatement<
+    [],
+    RuntimeCheckDatabaseSelectConversationEventsRow,
+    number
+  >;
+}
+
 export function usageLedgerCancelDeleteUsageLedger(
   database: Database.Database,
 ): PreparedStatement<[string], unknown, unknown> {
@@ -2959,94 +3496,6 @@ export function usageLedgerReconcileWithUpdateContextBackfills(
   );
 }
 
-export interface ConversationRecordInsertConversationEventsArgs {
-  platformEventId: string;
-  discordMessageId: string;
-  guildId: string;
-  channelId: string;
-  requestId: string | null;
-  logicalResponseId: string | null;
-  role: string;
-  speakerId: string | null;
-  speakerName: string | null;
-  medium: string;
-  replyToMessageId: string | null;
-  content: string;
-  attachmentMetadataJson: string;
-  occurredAt: number;
-  editedAt: number | null;
-  recentUntil: number;
-  retentionDeadline: number;
-  revisionChecksum: string;
-  responseChunkIndex: number | null;
-}
-
-export function conversationRecordInsertConversationEvents(
-  database: Database.Database,
-): PreparedStatement<
-  [ConversationRecordInsertConversationEventsArgs],
-  unknown,
-  unknown
-> {
-  return database.prepare<[ConversationRecordInsertConversationEventsArgs]>(
-    "insert into conversation_events\n           (platform_event_id, discord_message_id, guild_id, channel_id,\n            request_id, logical_response_id, role, speaker_id, speaker_name,\n            medium, reply_to_message_id, content, attachment_metadata_json,\n            occurred_at, edited_at, recent_until, retention_deadline,\n            content_state, content_state_reason, revision_checksum,\n            response_chunk_index)\n         values (@platformEventId, @discordMessageId, @guildId, @channelId,\n                 @requestId, @logicalResponseId, @role, @speakerId,\n                 @speakerName, @medium, @replyToMessageId, @content,\n                 @attachmentMetadataJson, @occurredAt, @editedAt,\n                 @recentUntil, @retentionDeadline, 'available', 'retained',\n                 @revisionChecksum, @responseChunkIndex)\n         on conflict(guild_id, channel_id, discord_message_id) do update set\n           speaker_name = excluded.speaker_name,\n           speaker_id = excluded.speaker_id,\n           edited_at = excluded.edited_at,\n           reply_to_message_id = excluded.reply_to_message_id,\n           response_chunk_index = coalesce(\n             excluded.response_chunk_index,\n             conversation_events.response_chunk_index\n           ),\n           content = case when conversation_events.content_state = 'available'\n             then excluded.content else conversation_events.content end,\n           attachment_metadata_json = case\n             when conversation_events.content_state = 'available'\n             then excluded.attachment_metadata_json\n             else conversation_events.attachment_metadata_json end,\n           revision_checksum = excluded.revision_checksum",
-  );
-}
-
-export interface ContextActivateDocumentRevisionInsertContextDocumentsArgs {
-  documentKey: string;
-  tier: string;
-  periodStart: number;
-  periodEnd: number | null;
-  timeZone: string;
-  topicKey: string | null;
-  topicLabel: string | null;
-  revision: number;
-  completeness: string;
-  summary: string;
-  confidence: number;
-  retentionDeadline: number | null;
-  createdAt: number;
-  generationInputTokens: number;
-  generationOutputTokens: number;
-  generationUsageUsd: number;
-  isInternal: number;
-}
-
-export function contextActivateDocumentRevisionInsertContextDocuments(
-  database: Database.Database,
-): PreparedStatement<
-  [ContextActivateDocumentRevisionInsertContextDocumentsArgs],
-  unknown,
-  unknown
-> {
-  return database.prepare<
-    [ContextActivateDocumentRevisionInsertContextDocumentsArgs]
-  >(
-    "insert into context_documents\n              (document_key, tier, period_start, period_end, timezone,\n              topic_key, topic_label, revision, completeness, state, content_state,\n              content_state_reason, summary, confidence, retention_deadline,\n              created_at, updated_at, generation_input_tokens,\n              generation_output_tokens, generation_usage_usd, is_internal)\n           values\n             (@documentKey, @tier, @periodStart, @periodEnd, @timeZone,\n              @topicKey, @topicLabel, @revision, @completeness, 'active', 'available',\n              'retained', @summary, @confidence, @retentionDeadline,\n              @createdAt, @createdAt, @generationInputTokens,\n              @generationOutputTokens, @generationUsageUsd, @isInternal)",
-  );
-}
-
-export interface MemoryObserveInsertSourceEventsArgs {
-  platformSourceId: string;
-  sourceScopeId: string;
-  revisionChecksum: string;
-  canModerateContext: number;
-  speakerId: string;
-  medium: string;
-  content: string;
-  occurredAt: number;
-  retentionDeadline: number;
-}
-
-export function memoryObserveInsertSourceEvents(
-  database: Database.Database,
-): PreparedStatement<[MemoryObserveInsertSourceEventsArgs], unknown, unknown> {
-  return database.prepare<[MemoryObserveInsertSourceEventsArgs]>(
-    'insert into source_events\n             (platform_source_id, source_scope_id, revision_checksum,\n              can_moderate_context, speaker_id, medium, content, occurred_at,\n              retention_deadline)\n           values (@platformSourceId, @sourceScopeId, @revisionChecksum,\n                   @canModerateContext, @speakerId, @medium, @content,\n                   @occurredAt, @retentionDeadline)\n           on conflict(platform_source_id) do update set\n             content = excluded.content,\n             source_scope_id = excluded.source_scope_id,\n             revision_checksum = excluded.revision_checksum,\n             can_moderate_context = excluded.can_moderate_context,\n             retention_deadline = excluded.retention_deadline',
-  );
-}
-
 export interface UsageLedgerRecordInsertUsageLedgerArgs {
   id: string;
   operation: string;
@@ -3070,950 +3519,5 @@ export function usageLedgerRecordInsertUsageLedger(
 > {
   return database.prepare<[UsageLedgerRecordInsertUsageLedgerArgs]>(
     'insert into usage_ledger\n           (id, operation, work_category, priority, reservation_usd,\n            actual_usd, occurred_at, occurrence_month, backfill_run_id,\n            reconciled_at, reservation_origin, origin_backfill_run_id)\n         values (@id, @operation, @workCategory, @priority, @reservationUsd,\n                 @actualUsd, @occurredAt, @occurrenceMonth, @backfillRunId,\n                 case when @actualUsd is null then null else @occurredAt end,\n                 @reservationOrigin, @originBackfillRunId)',
-  );
-}
-
-export function discordReconciliationServiceRunPassDeleteDiscordReconciliationSeen(
-  database: Database.Database,
-): PreparedStatement<[string, string], unknown, unknown> {
-  return database.prepare<[string, string]>(
-    'delete from discord_reconciliation_seen\n             where scope_id = ? and pass_key = ?',
-  );
-}
-
-export function discordReconciliationServiceRunPassUpdateDiscordReconciliationState(
-  database: Database.Database,
-): PreparedStatement<
-  [string | null, string | null, string | null, number, string],
-  unknown,
-  unknown
-> {
-  return database.prepare<
-    [string | null, string | null, string | null, number, string]
-  >(
-    'update discord_reconciliation_state\n             set phase = ?, pass_key = ?, cursor_message_id = null,\n                 covered_oldest_message_id = null,\n                 covered_newest_message_id = null,\n                 scan_upper_bound_message_id = ?, updated_at = ?\n             where scope_id = ?',
-  );
-}
-
-export function discordReconciliationServiceApplyPageInsertDiscordReconciliationSeen(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string, string, number, string],
-  unknown,
-  unknown
-> {
-  return database.prepare<[string, string, string, number, string]>(
-    'insert into discord_reconciliation_seen\n         (scope_id, pass_key, message_id, observed_at, revision_checksum)\n       values (?, ?, ?, ?, ?)\n       on conflict(scope_id, pass_key, message_id) do update set\n         observed_at = excluded.observed_at,\n         revision_checksum = excluded.revision_checksum',
-  );
-}
-
-export function discordReconciliationServiceUpdateProgressUpdateDiscordReconciliationState(
-  database: Database.Database,
-): PreparedStatement<
-  [string | null, string | null, string | null, number, string],
-  unknown,
-  unknown
-> {
-  return database.prepare<
-    [string | null, string | null, string | null, number, string]
-  >(
-    'update discord_reconciliation_state\n         set cursor_message_id = ?, covered_oldest_message_id = ?,\n             covered_newest_message_id = ?, updated_at = ?\n         where scope_id = ?',
-  );
-}
-
-export interface DiscordReconciliationServiceInferCoveredDeletionsSelectDiscordReconciliationSeenRow {
-  message_id: string;
-}
-
-export function discordReconciliationServiceInferCoveredDeletionsSelectDiscordReconciliationSeen(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string],
-  DiscordReconciliationServiceInferCoveredDeletionsSelectDiscordReconciliationSeenRow,
-  string
-> {
-  return database.prepare<
-    [string, string],
-    DiscordReconciliationServiceInferCoveredDeletionsSelectDiscordReconciliationSeenRow
-  >(
-    'select message_id from discord_reconciliation_seen\n           where scope_id = ? and pass_key = ?',
-  ) as unknown as PreparedStatement<
-    [string, string],
-    DiscordReconciliationServiceInferCoveredDeletionsSelectDiscordReconciliationSeenRow,
-    string
-  >;
-}
-
-export interface DiscordReconciliationServiceInferCoveredDeletionsSelectConversationEventsRow {
-  discord_message_id: string;
-}
-
-export function discordReconciliationServiceInferCoveredDeletionsSelectConversationEvents(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string],
-  DiscordReconciliationServiceInferCoveredDeletionsSelectConversationEventsRow,
-  string
-> {
-  return database.prepare<
-    [string, string],
-    DiscordReconciliationServiceInferCoveredDeletionsSelectConversationEventsRow
-  >(
-    "select distinct c.discord_message_id\n         from conversation_events c\n         where c.guild_id = ? and c.channel_id = ? and c.medium = 'text'\n           and (\n             c.content_state = 'available'\n             or (\n               c.content_state = 'scrubbed'\n               and c.content_state_reason = 'retention-expired'\n               and exists (\n                 select 1 from source_events s\n                 where s.platform_source_id = c.discord_message_id\n                   and s.medium = 'text'\n                   and s.source_scope_id =\n                     c.guild_id || '/' || c.channel_id || '/' ||\n                     c.discord_message_id\n               )\n             )\n           )",
-  ) as unknown as PreparedStatement<
-    [string, string],
-    DiscordReconciliationServiceInferCoveredDeletionsSelectConversationEventsRow,
-    string
-  >;
-}
-
-export interface DiscordReconciliationServiceCompletePassSelectDiscordReconciliationSeenRow {
-  message_id: string;
-}
-
-export function discordReconciliationServiceCompletePassSelectDiscordReconciliationSeen(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string],
-  DiscordReconciliationServiceCompletePassSelectDiscordReconciliationSeenRow,
-  string
-> {
-  return database.prepare<
-    [string, string],
-    DiscordReconciliationServiceCompletePassSelectDiscordReconciliationSeenRow
-  >(
-    'select message_id from discord_reconciliation_seen\n           where scope_id = ? and pass_key = ?',
-  ) as unknown as PreparedStatement<
-    [string, string],
-    DiscordReconciliationServiceCompletePassSelectDiscordReconciliationSeenRow,
-    string
-  >;
-}
-
-export function discordReconciliationServiceCompletePassUpdateDiscordReconciliationState(
-  database: Database.Database,
-): PreparedStatement<
-  [string | null, number | null, unknown, number | null, number, string],
-  unknown,
-  unknown
-> {
-  return database.prepare<
-    [string | null, number | null, unknown, number | null, number, string]
-  >(
-    "update discord_reconciliation_state\n           set high_water_message_id = ?, phase = null, pass_key = null,\n               cursor_message_id = null, covered_oldest_message_id = null,\n               covered_newest_message_id = null, last_complete_at = ?,\n               scan_upper_bound_message_id = null,\n               last_full_scan_at = case when ? = 'full' then ?\n                                        else last_full_scan_at end,\n               updated_at = ? where scope_id = ?",
-  );
-}
-
-export function discordReconciliationServiceCompletePassDeleteDiscordReconciliationSeen(
-  database: Database.Database,
-): PreparedStatement<[string, string, string], unknown, unknown> {
-  return database.prepare<[string, string, string]>(
-    'delete from discord_reconciliation_seen\n           where scope_id = ? and pass_key like ? and pass_key <> ?',
-  );
-}
-
-export function discordReconciliationServiceEnsureStateInsertDiscordReconciliationState(
-  database: Database.Database,
-): PreparedStatement<[string, number], unknown, unknown> {
-  return database.prepare<[string, number]>(
-    'insert into discord_reconciliation_state (scope_id, updated_at)\n         values (?, ?) on conflict(scope_id) do nothing',
-  );
-}
-
-export interface DiscordReconciliationServiceStateSelectDiscordReconciliationStateRow {
-  highWaterMessageId: string | null;
-  phase: string | null;
-  passKey: string | null;
-  cursorMessageId: string | null;
-  coveredOldestMessageId: string | null;
-  coveredNewestMessageId: string | null;
-  scanUpperBoundMessageId: string | null;
-  lastCompleteAt: number | null;
-  lastFullScanAt: number | null;
-}
-
-export function discordReconciliationServiceStateSelectDiscordReconciliationState(
-  database: Database.Database,
-): PreparedStatement<
-  [string],
-  DiscordReconciliationServiceStateSelectDiscordReconciliationStateRow,
-  string | null
-> {
-  return database.prepare<
-    [string],
-    DiscordReconciliationServiceStateSelectDiscordReconciliationStateRow
-  >(
-    'select high_water_message_id as highWaterMessageId, phase,\n                pass_key as passKey, cursor_message_id as cursorMessageId,\n                covered_oldest_message_id as coveredOldestMessageId,\n                covered_newest_message_id as coveredNewestMessageId,\n                scan_upper_bound_message_id as scanUpperBoundMessageId,\n                last_complete_at as lastCompleteAt,\n                last_full_scan_at as lastFullScanAt\n         from discord_reconciliation_state where scope_id = ?',
-  ) as unknown as PreparedStatement<
-    [string],
-    DiscordReconciliationServiceStateSelectDiscordReconciliationStateRow,
-    string | null
-  >;
-}
-
-export interface ContextStoreAssertInputsAvailableSelectContextTombstonesRow {
-  exists: number;
-}
-
-export interface ContextStoreAssertInputsAvailableSelectContextTombstonesArgs {
-  documentKey: string;
-  documentGenerationScopeId: string;
-  topicKey: string | null;
-}
-
-export function contextStoreAssertInputsAvailableSelectContextTombstones(
-  database: Database.Database,
-): PreparedStatement<
-  [ContextStoreAssertInputsAvailableSelectContextTombstonesArgs],
-  ContextStoreAssertInputsAvailableSelectContextTombstonesRow,
-  number
-> {
-  return database.prepare<
-    [ContextStoreAssertInputsAvailableSelectContextTombstonesArgs],
-    ContextStoreAssertInputsAvailableSelectContextTombstonesRow
-  >(
-    "select exists(\n           select 1 from context_tombstones\n           where (scope_type = 'document' and scope_id = @documentKey)\n              or (scope_type = 'document'\n                  and scope_id = @documentGenerationScopeId)\n              or (scope_type = 'topic' and scope_id = @topicKey)\n         )",
-  ) as unknown as PreparedStatement<
-    [ContextStoreAssertInputsAvailableSelectContextTombstonesArgs],
-    ContextStoreAssertInputsAvailableSelectContextTombstonesRow,
-    number
-  >;
-}
-
-export interface DatabaseOpenChiefDatabaseSelectStatementRow {
-  vec_version: unknown;
-}
-
-export function databaseOpenChiefDatabaseSelectStatement(
-  database: Database.Database,
-): PreparedStatement<[], DatabaseOpenChiefDatabaseSelectStatementRow, unknown> {
-  return database.prepare<[], DatabaseOpenChiefDatabaseSelectStatementRow>(
-    'select vec_version()',
-  );
-}
-
-export interface RecoveryVerifyRestorableDatabaseSelectStatementRow {
-  vec_version: unknown;
-}
-
-export function recoveryVerifyRestorableDatabaseSelectStatement(
-  database: Database.Database,
-): PreparedStatement<
-  [],
-  RecoveryVerifyRestorableDatabaseSelectStatementRow,
-  unknown
-> {
-  return database.prepare<
-    [],
-    RecoveryVerifyRestorableDatabaseSelectStatementRow
-  >('select vec_version()');
-}
-
-export interface RecoveryVerifyRestorableDatabaseSelectContextBackfillsRow {
-  exists: number;
-}
-
-export function recoveryVerifyRestorableDatabaseSelectContextBackfills(
-  database: Database.Database,
-): PreparedStatement<
-  [],
-  RecoveryVerifyRestorableDatabaseSelectContextBackfillsRow,
-  number
-> {
-  return database.prepare<
-    [],
-    RecoveryVerifyRestorableDatabaseSelectContextBackfillsRow
-  >(
-    'select exists(\n               select 1 from context_backfills b\n               where b.page_count != (\n                 select count(*) from context_backfill_pages p\n                 where p.run_id = b.id\n               )\n             )',
-  ) as unknown as PreparedStatement<
-    [],
-    RecoveryVerifyRestorableDatabaseSelectContextBackfillsRow,
-    number
-  >;
-}
-
-export interface RecoveryVerifyRestorableDatabaseSelectContextTombstonesRow {
-  scopeType: string;
-  scopeId: string;
-  reason: string;
-  occurredAt: number;
-  checksum: string;
-}
-
-export function recoveryVerifyRestorableDatabaseSelectContextTombstones(
-  database: Database.Database,
-): PreparedStatement<
-  [],
-  RecoveryVerifyRestorableDatabaseSelectContextTombstonesRow,
-  string
-> {
-  return database.prepare<
-    [],
-    RecoveryVerifyRestorableDatabaseSelectContextTombstonesRow
-  >(
-    'select scope_type as scopeType, scope_id as scopeId, reason,\n                occurred_at as occurredAt, checksum\n         from context_tombstones',
-  ) as unknown as PreparedStatement<
-    [],
-    RecoveryVerifyRestorableDatabaseSelectContextTombstonesRow,
-    string
-  >;
-}
-
-export interface RecoveryScrubMemoriesSelectMemories2Row {
-  state: string;
-}
-
-export function recoveryScrubMemoriesSelectMemories2(
-  database: Database.Database,
-): PreparedStatement<
-  [number],
-  RecoveryScrubMemoriesSelectMemories2Row,
-  string
-> {
-  return database.prepare<[number], RecoveryScrubMemoriesSelectMemories2Row>(
-    'select state from memories where id = ?',
-  ) as unknown as PreparedStatement<
-    [number],
-    RecoveryScrubMemoriesSelectMemories2Row,
-    string
-  >;
-}
-
-export function recoveryRecordContextJournalInsertContextTombstones(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string, string, string, number, string],
-  unknown,
-  unknown
-> {
-  return database.prepare<[string, string, string, string, number, string]>(
-    'insert into context_tombstones\n           (tombstone_key, scope_type, scope_id, reason, occurred_at, checksum)\n         values (?, ?, ?, ?, ?, ?)\n         on conflict(tombstone_key) do nothing',
-  );
-}
-
-export function recoveryRecordContextJournalInsertContextForgetJournal(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string, string, number, string, string, number | null],
-  unknown,
-  unknown
-> {
-  return database.prepare<
-    [string, string, string, number, string, string, number | null]
-  >(
-    "insert into context_forget_journal\n           (journal_key, scope_id, tombstone_key, occurred_at, checksum,\n            payload_json, upload_status, uploaded_at)\n         values (?, ?, ?, ?, ?, ?, 'uploaded', ?)\n         on conflict(journal_key) do update set\n           upload_status = 'uploaded', uploaded_at = excluded.uploaded_at",
-  );
-}
-
-export function recoveryRecordContextJournalInsertContextForgetJournal2(
-  database: Database.Database,
-): PreparedStatement<
-  [string, string, string, number, string, number | null],
-  unknown,
-  unknown
-> {
-  return database.prepare<
-    [string, string, string, number, string, number | null]
-  >(
-    "insert into context_forget_journal\n           (journal_key, scope_id, tombstone_key, occurred_at, checksum,\n            upload_status, uploaded_at)\n         values (?, ?, ?, ?, ?, 'uploaded', ?)\n         on conflict(journal_key) do update set\n           upload_status = 'uploaded', uploaded_at = excluded.uploaded_at",
-  );
-}
-
-export interface RuntimeStartChiefSelectMemoryJobsRow {
-  failed: number;
-  pending: number;
-}
-
-export function runtimeStartChiefSelectMemoryJobs(
-  database: Database.Database,
-): PreparedStatement<[], RuntimeStartChiefSelectMemoryJobsRow, number> {
-  return database.prepare<[], RuntimeStartChiefSelectMemoryJobsRow>(
-    "select\n               count(*) filter (where status = 'failed') as failed,\n               count(*) filter (where status in ('pending', 'leased')) as pending\n             from memory_jobs",
-  ) as unknown as PreparedStatement<
-    [],
-    RuntimeStartChiefSelectMemoryJobsRow,
-    number
-  >;
-}
-
-export function runtimeCheckDatabaseInsertMaintenanceRuns(
-  database: Database.Database,
-): PreparedStatement<[number, number | null], unknown, unknown> {
-  return database.prepare<[number, number | null]>(
-    "insert into maintenance_runs (kind, started_at, completed_at, status)\n           values ('health', ?, ?, 'completed')",
-  );
-}
-
-export function runtimeCheckDatabaseDeleteMaintenanceRuns(
-  database: Database.Database,
-): PreparedStatement<[], unknown, unknown> {
-  return database.prepare<[]>(
-    "delete from maintenance_runs where kind = 'health'",
-  );
-}
-
-export interface RuntimeCheckDatabaseSelectStatementRow {
-  vec_version: unknown;
-}
-
-export function runtimeCheckDatabaseSelectStatement(
-  database: Database.Database,
-): PreparedStatement<[], RuntimeCheckDatabaseSelectStatementRow, unknown> {
-  return database.prepare<[], RuntimeCheckDatabaseSelectStatementRow>(
-    'select vec_version()',
-  );
-}
-
-export interface RuntimeCheckDatabaseSelectConversationEventsRow {
-  count: number;
-}
-
-export function runtimeCheckDatabaseSelectConversationEvents(
-  database: Database.Database,
-): PreparedStatement<
-  [],
-  RuntimeCheckDatabaseSelectConversationEventsRow,
-  number
-> {
-  return database.prepare<[], RuntimeCheckDatabaseSelectConversationEventsRow>(
-    'select count(*) from conversation_events where 0',
-  ) as unknown as PreparedStatement<
-    [],
-    RuntimeCheckDatabaseSelectConversationEventsRow,
-    number
-  >;
-}
-
-export interface RepairLegacyDataGuardLegacyBackfillAccountingSelectContextBackfillsRow {
-  id: number;
-}
-
-export function repairLegacyDataGuardLegacyBackfillAccountingSelectContextBackfills(
-  database: Database.Database,
-): PreparedStatement<
-  [],
-  RepairLegacyDataGuardLegacyBackfillAccountingSelectContextBackfillsRow,
-  number
-> {
-  return database.prepare<
-    [],
-    RepairLegacyDataGuardLegacyBackfillAccountingSelectContextBackfillsRow
-  >(
-    "select id from context_backfills\n       where status in ('active', 'paused')\n       order by id desc",
-  ) as unknown as PreparedStatement<
-    [],
-    RepairLegacyDataGuardLegacyBackfillAccountingSelectContextBackfillsRow,
-    number
-  >;
-}
-
-export function repairLegacyDataGuardLegacyBackfillAccountingUpdateContextBackfills(
-  database: Database.Database,
-): PreparedStatement<[number, number], unknown, unknown> {
-  return database.prepare<[number, number]>(
-    "update context_backfills\n       set status = 'failed',\n           pause_reason = 'migration-accounting-rebuild-required',\n           updated_at = ?\n       where status in ('active', 'paused') and id != ?",
-  );
-}
-
-export function repairLegacyDataGuardLegacyBackfillAccountingUpdateContextBackfills2(
-  database: Database.Database,
-): PreparedStatement<[number, number], unknown, unknown> {
-  return database.prepare<[number, number]>(
-    "update context_backfills\n       set status = 'paused',\n           pause_reason = 'migration-accounting-resume-required',\n           updated_at = ?\n       where id = ? and status in ('active', 'paused')",
-  );
-}
-
-export function repairLegacyDataGuardLegacyBackfillAccountingUpdateContextJobs(
-  database: Database.Database,
-): PreparedStatement<[number | null], unknown, unknown> {
-  return database.prepare<[number | null]>(
-    "update context_jobs set backfill_run_id = ?\n       where backfill_run_id is null and status in ('pending', 'leased')",
-  );
-}
-
-export interface RepairLegacyDataTargetLegacyBackfillAccountingSelectContextJobsRow {
-  id: number;
-  tier: string;
-  periodStart: number;
-  periodEnd: number | null;
-  sourceDocumentIdsJson: string;
-  usageReservationId: string | null;
-  backfillRunId: number | null;
-  reservationOccurredAt: number | null;
-}
-
-export function repairLegacyDataTargetLegacyBackfillAccountingSelectContextJobs(
-  database: Database.Database,
-): PreparedStatement<
-  [],
-  RepairLegacyDataTargetLegacyBackfillAccountingSelectContextJobsRow,
-  number
-> {
-  return database.prepare<
-    [],
-    RepairLegacyDataTargetLegacyBackfillAccountingSelectContextJobsRow
-  >(
-    "select j.id, j.tier, j.period_start as periodStart,\n              j.period_end as periodEnd,\n              j.source_document_ids_json as sourceDocumentIdsJson,\n              j.usage_reservation_id as usageReservationId,\n              j.backfill_run_id as backfillRunId,\n              l.occurred_at as reservationOccurredAt\n       from context_jobs j\n       left join usage_ledger l on l.id = j.usage_reservation_id\n       where j.status in ('pending', 'leased')",
-  ) as unknown as PreparedStatement<
-    [],
-    RepairLegacyDataTargetLegacyBackfillAccountingSelectContextJobsRow,
-    number
-  >;
-}
-
-export function repairLegacyDataTargetLegacyBackfillAccountingUpdateContextJobs(
-  database: Database.Database,
-): PreparedStatement<[number | null, number], unknown, unknown> {
-  return database.prepare<[number | null, number]>(
-    'update context_jobs set backfill_run_id = ? where id = ?',
-  );
-}
-
-export function repairLegacyDataTargetLegacyBackfillAccountingUpdateUsageLedger(
-  database: Database.Database,
-): PreparedStatement<[number | null, string], unknown, unknown> {
-  return database.prepare<[number | null, string]>(
-    'update usage_ledger set backfill_run_id = ?\n             where id = ? and actual_usd is null',
-  );
-}
-
-export function repairLegacyDataTargetLegacyBackfillAccountingUpdateUsageLedger2(
-  database: Database.Database,
-): PreparedStatement<[string, number | null], unknown, unknown> {
-  return database.prepare<[string, number | null]>(
-    'update usage_ledger set backfill_run_id = null\n             where id = ? and actual_usd is null\n               and backfill_run_id = ?',
-  );
-}
-
-export function repairLegacyDataTargetLegacyBackfillAccountingUpdateContextJobs2(
-  database: Database.Database,
-): PreparedStatement<[number], unknown, unknown> {
-  return database.prepare<[number]>(
-    'update context_jobs set backfill_run_id = null where id = ?',
-  );
-}
-
-export function repairLegacyDataTargetLegacyBackfillAccountingUpdateContextBackfills(
-  database: Database.Database,
-): PreparedStatement<[number, number], unknown, unknown> {
-  return database.prepare<[number, number]>(
-    "update context_backfills\n     set status = 'paused', completed_at = null,\n         pause_reason = 'migration-accounting-resume-required',\n         updated_at = ?\n     where id = ? and (\n       status in ('active', 'paused', 'completed')\n       or pause_reason = 'migration-accounting-rebuild-required'\n     )",
-  );
-}
-
-export interface RepairLegacyDataProvableBackfillRunIdsSelectContextBackfillSegmentsRow {
-  run_id: number;
-}
-
-export function repairLegacyDataProvableBackfillRunIdsSelectContextBackfillSegments(
-  database: Database.Database,
-): PreparedStatement<
-  [number, number],
-  RepairLegacyDataProvableBackfillRunIdsSelectContextBackfillSegmentsRow,
-  number
-> {
-  return database.prepare<
-    [number, number],
-    RepairLegacyDataProvableBackfillRunIdsSelectContextBackfillSegmentsRow
-  >(
-    'select distinct s.run_id\n       from context_backfill_segments s\n       join context_backfills b on b.id = s.run_id\n       where b.created_at <= ? and s.committed_at <= ?\n       order by s.run_id desc',
-  ) as unknown as PreparedStatement<
-    [number, number],
-    RepairLegacyDataProvableBackfillRunIdsSelectContextBackfillSegmentsRow,
-    number
-  >;
-}
-
-export interface RepairLegacyDataProvableBackfillRunIdsSelectContextBackfillSegments2Row {
-  exists: number;
-}
-
-export function repairLegacyDataProvableBackfillRunIdsSelectContextBackfillSegments2(
-  database: Database.Database,
-): PreparedStatement<
-  [number, number, number],
-  RepairLegacyDataProvableBackfillRunIdsSelectContextBackfillSegments2Row,
-  number
-> {
-  return database.prepare<
-    [number, number, number],
-    RepairLegacyDataProvableBackfillRunIdsSelectContextBackfillSegments2Row
-  >(
-    'select exists(\n             select 1 from context_backfill_segments\n             where run_id = ? and period_start >= ? and period_end <= ?\n           )',
-  ) as unknown as PreparedStatement<
-    [number, number, number],
-    RepairLegacyDataProvableBackfillRunIdsSelectContextBackfillSegments2Row,
-    number
-  >;
-}
-
-export interface RepairLegacyDataMigrationGuardedRunSelectContextBackfillsRow {
-  exists: number;
-}
-
-export function repairLegacyDataMigrationGuardedRunSelectContextBackfills(
-  database: Database.Database,
-): PreparedStatement<
-  [number],
-  RepairLegacyDataMigrationGuardedRunSelectContextBackfillsRow,
-  number
-> {
-  return database.prepare<
-    [number],
-    RepairLegacyDataMigrationGuardedRunSelectContextBackfillsRow
-  >(
-    "select exists(\n           select 1 from context_backfills where id = ? and pause_reason in (\n             'migration-accounting-resume-required',\n             'migration-accounting-rebuild-required'\n           )\n         )",
-  ) as unknown as PreparedStatement<
-    [number],
-    RepairLegacyDataMigrationGuardedRunSelectContextBackfillsRow,
-    number
-  >;
-}
-
-export interface RepairLegacyDataRepairBackfillOwnershipSelectContextJobsRow {
-  id: number;
-  tier: string;
-  periodStart: number;
-  periodEnd: number | null;
-  sourceRevisionChecksum: string;
-  sourceDocumentIdsJson: string;
-  usageReservationId: string | null;
-  backfillRunId: number | null;
-}
-
-export function repairLegacyDataRepairBackfillOwnershipSelectContextJobs(
-  database: Database.Database,
-): PreparedStatement<
-  [],
-  RepairLegacyDataRepairBackfillOwnershipSelectContextJobsRow,
-  number
-> {
-  return database.prepare<
-    [],
-    RepairLegacyDataRepairBackfillOwnershipSelectContextJobsRow
-  >(
-    "select id, tier, period_start as periodStart, period_end as periodEnd,\n              source_revision_checksum as sourceRevisionChecksum,\n              source_document_ids_json as sourceDocumentIdsJson,\n              usage_reservation_id as usageReservationId,\n              backfill_run_id as backfillRunId\n       from context_jobs where status in ('pending', 'leased')",
-  ) as unknown as PreparedStatement<
-    [],
-    RepairLegacyDataRepairBackfillOwnershipSelectContextJobsRow,
-    number
-  >;
-}
-
-export function repairLegacyDataRepairBackfillOwnershipUpdateContextJobs(
-  database: Database.Database,
-): PreparedStatement<[number | null, number], unknown, unknown> {
-  return database.prepare<[number | null, number]>(
-    'update context_jobs set backfill_run_id = ? where id = ?',
-  );
-}
-
-export function repairLegacyDataRepairBackfillOwnershipUpdateUsageLedger(
-  database: Database.Database,
-): PreparedStatement<[number | null, string], unknown, unknown> {
-  return database.prepare<[number | null, string]>(
-    'update usage_ledger set backfill_run_id = ?\n     where id = ? and actual_usd is null',
-  );
-}
-
-export function repairLegacyDataRepairBackfillOwnershipUpdateContextBackfills(
-  database: Database.Database,
-): PreparedStatement<[number, number], unknown, unknown> {
-  return database.prepare<[number, number]>(
-    "update context_backfills\n     set status = 'paused', completed_at = null,\n         pause_reason = 'migration-accounting-resume-required',\n         updated_at = ?\n     where id = ? and (\n       status in ('active', 'paused', 'completed')\n       or pause_reason in (\n         'migration-accounting-resume-required',\n         'migration-accounting-rebuild-required'\n       )\n     )",
-  );
-}
-
-export interface RepairLegacyDataRepairReservationOriginOwnershipSelectContextJobsRow {
-  id: number;
-  tier: string;
-  periodStart: number;
-  periodEnd: number | null;
-  sourceRevisionChecksum: string;
-  sourceDocumentIdsJson: string;
-  usageReservationId: string | null;
-  backfillRunId: number | null;
-  ledgerReservationId: string | null;
-  reservationActualUsd: number | null;
-  reservationBackfillRunId: number | null;
-  reservationOrigin: string | null;
-  originBackfillRunId: number | null;
-}
-
-export function repairLegacyDataRepairReservationOriginOwnershipSelectContextJobs(
-  database: Database.Database,
-): PreparedStatement<
-  [],
-  RepairLegacyDataRepairReservationOriginOwnershipSelectContextJobsRow,
-  number
-> {
-  return database.prepare<
-    [],
-    RepairLegacyDataRepairReservationOriginOwnershipSelectContextJobsRow
-  >(
-    "select j.id, j.tier, j.period_start as periodStart,\n              j.period_end as periodEnd,\n              j.source_revision_checksum as sourceRevisionChecksum,\n              j.source_document_ids_json as sourceDocumentIdsJson,\n              j.usage_reservation_id as usageReservationId,\n              j.backfill_run_id as backfillRunId,\n              l.id as ledgerReservationId,\n              l.actual_usd as reservationActualUsd,\n              l.backfill_run_id as reservationBackfillRunId,\n              l.reservation_origin as reservationOrigin,\n              l.origin_backfill_run_id as originBackfillRunId\n       from context_jobs j\n       left join usage_ledger l on l.id = j.usage_reservation_id\n       where j.status in ('pending', 'leased')",
-  ) as unknown as PreparedStatement<
-    [],
-    RepairLegacyDataRepairReservationOriginOwnershipSelectContextJobsRow,
-    number
-  >;
-}
-
-export function repairLegacyDataRepairReservationOriginOwnershipUpdateContextJobs(
-  database: Database.Database,
-): PreparedStatement<[number | null, number], unknown, unknown> {
-  return database.prepare<[number | null, number]>(
-    'update context_jobs set backfill_run_id = ? where id = ?',
-  );
-}
-
-export function repairLegacyDataRepairReservationOriginOwnershipUpdateUsageLedger(
-  database: Database.Database,
-): PreparedStatement<[number | null, string], unknown, unknown> {
-  return database.prepare<[number | null, string]>(
-    'update usage_ledger set backfill_run_id = ?\n     where id = ? and actual_usd is null',
-  );
-}
-
-export function repairLegacyDataRepairReservationOriginOwnershipUpdateContextJobs2(
-  database: Database.Database,
-): PreparedStatement<[number], unknown, unknown> {
-  return database.prepare<[number]>(
-    "update context_jobs\n     set status = 'failed', lease_expires_at = null,\n         last_error_category = 'migration-accounting-ambiguous'\n     where id = ?",
-  );
-}
-
-export function repairLegacyDataRepairReservationOriginOwnershipInsertContextAccountingHolds(
-  database: Database.Database,
-): PreparedStatement<
-  [string, number, number | null, number],
-  unknown,
-  unknown
-> {
-  return database.prepare<[string, number, number | null, number]>(
-    "insert into context_accounting_holds\n       (reservation_id, job_id, run_id, reason, created_at)\n     values (?, ?, ?, 'migration-accounting-ambiguous', ?)",
-  );
-}
-
-export function repairLegacyDataRepairReservationOriginOwnershipUpdateContextBackfills(
-  database: Database.Database,
-): PreparedStatement<[number, number], unknown, unknown> {
-  return database.prepare<[number, number]>(
-    "update context_backfills\n     set status = 'failed', completed_at = null,\n         pause_reason = 'migration-accounting-rebuild-required',\n         updated_at = ?\n     where id = ?",
-  );
-}
-
-export function repairLegacyDataRepairReservationOriginOwnershipUpdateContextBackfills2(
-  database: Database.Database,
-): PreparedStatement<[number, number], unknown, unknown> {
-  return database.prepare<[number, number]>(
-    "update context_backfills\n     set status = 'paused', completed_at = null,\n         pause_reason = 'migration-accounting-resume-required',\n         updated_at = ?\n     where id = ? and (\n       status in ('active', 'paused', 'completed')\n       or pause_reason in (\n         'migration-accounting-resume-required',\n         'migration-accounting-rebuild-required'\n       )\n     )",
-  );
-}
-
-export interface RepairLegacyDataExactBackfillRunIdsSelectContextBackfillSegmentsRow {
-  run_id: number;
-}
-
-export function repairLegacyDataExactBackfillRunIdsSelectContextBackfillSegments(
-  database: Database.Database,
-): PreparedStatement<
-  [],
-  RepairLegacyDataExactBackfillRunIdsSelectContextBackfillSegmentsRow,
-  number
-> {
-  return database.prepare<
-    [],
-    RepairLegacyDataExactBackfillRunIdsSelectContextBackfillSegmentsRow
-  >(
-    'select distinct run_id from context_backfill_segments\n       order by run_id desc',
-  ) as unknown as PreparedStatement<
-    [],
-    RepairLegacyDataExactBackfillRunIdsSelectContextBackfillSegmentsRow,
-    number
-  >;
-}
-
-export interface RepairLegacyDataExactJobDocumentIdsSelectContextDocuments2Row {
-  id: number;
-  revision: number;
-}
-
-export function repairLegacyDataExactJobDocumentIdsSelectContextDocuments2(
-  database: Database.Database,
-): PreparedStatement<
-  [string, number, number | null],
-  RepairLegacyDataExactJobDocumentIdsSelectContextDocuments2Row,
-  number
-> {
-  return database.prepare<
-    [string, number, number | null],
-    RepairLegacyDataExactJobDocumentIdsSelectContextDocuments2Row
-  >(
-    "select id, revision from context_documents\n       where tier = ? and completeness = 'final' and state = 'active'\n         and content_state = 'available' and is_internal = 0\n         and period_start >= ? and period_end <= ?\n       order by period_start, id",
-  ) as unknown as PreparedStatement<
-    [string, number, number | null],
-    RepairLegacyDataExactJobDocumentIdsSelectContextDocuments2Row,
-    number
-  >;
-}
-
-export interface RepairLegacyDataExactHourlyBackfillRunIdsSelectContextBackfillsRow {
-  runId: number;
-  scopeId: string;
-}
-
-export function repairLegacyDataExactHourlyBackfillRunIdsSelectContextBackfills(
-  database: Database.Database,
-): PreparedStatement<
-  [],
-  RepairLegacyDataExactHourlyBackfillRunIdsSelectContextBackfillsRow,
-  number
-> {
-  return database.prepare<
-    [],
-    RepairLegacyDataExactHourlyBackfillRunIdsSelectContextBackfillsRow
-  >(
-    'select distinct b.id as runId, b.scope_id as scopeId\n       from context_backfills b\n       join context_backfill_pages p on p.run_id = b.id\n       order by b.id desc',
-  ) as unknown as PreparedStatement<
-    [],
-    RepairLegacyDataExactHourlyBackfillRunIdsSelectContextBackfillsRow,
-    number
-  >;
-}
-
-export interface RepairLegacyDataExactHourlyBackfillRunIdsSelectConversationEventsRow {
-  id: number;
-  discordMessageId: string;
-  content: string;
-  editedAt: number | null;
-}
-
-export function repairLegacyDataExactHourlyBackfillRunIdsSelectConversationEvents(
-  database: Database.Database,
-): PreparedStatement<
-  [string, number, number],
-  RepairLegacyDataExactHourlyBackfillRunIdsSelectConversationEventsRow,
-  number
-> {
-  return database.prepare<
-    [string, number, number],
-    RepairLegacyDataExactHourlyBackfillRunIdsSelectConversationEventsRow
-  >(
-    "select id, discord_message_id as discordMessageId, content,\n                edited_at as editedAt\n         from conversation_events\n         where guild_id || '/' || channel_id = ? and medium = 'text'\n           and content_state = 'available'\n           and occurred_at >= ? and occurred_at < ?\n         order by id",
-  ) as unknown as PreparedStatement<
-    [string, number, number],
-    RepairLegacyDataExactHourlyBackfillRunIdsSelectConversationEventsRow,
-    number
-  >;
-}
-
-export interface RepairLegacyDataExactHourlyBackfillRunIdsSelectContextBackfillPagesRow {
-  exists: number;
-}
-
-export function repairLegacyDataExactHourlyBackfillRunIdsSelectContextBackfillPages(
-  database: Database.Database,
-): PreparedStatement<
-  [number, string],
-  RepairLegacyDataExactHourlyBackfillRunIdsSelectContextBackfillPagesRow,
-  number
-> {
-  return database.prepare<
-    [number, string],
-    RepairLegacyDataExactHourlyBackfillRunIdsSelectContextBackfillPagesRow
-  >(
-    'select exists(\n         select 1 from context_backfill_pages\n         where run_id = ? and cast(? as integer) between\n           min(cast(oldest_source_id as integer),\n               cast(newest_source_id as integer)) and\n           max(cast(oldest_source_id as integer),\n               cast(newest_source_id as integer))\n       )',
-  ) as unknown as PreparedStatement<
-    [number, string],
-    RepairLegacyDataExactHourlyBackfillRunIdsSelectContextBackfillPagesRow,
-    number
-  >;
-}
-
-export interface RepairLegacyDataBackfillContextForgetJournalsSelectContextTombstonesRow {
-  journalKey: string;
-  occurredAt: number;
-  scopeId: string;
-  tombstoneKey: string;
-  reason: unknown;
-}
-
-export function repairLegacyDataBackfillContextForgetJournalsSelectContextTombstones(
-  database: Database.Database,
-): PreparedStatement<
-  [],
-  RepairLegacyDataBackfillContextForgetJournalsSelectContextTombstonesRow,
-  string
-> {
-  return database.prepare<
-    [],
-    RepairLegacyDataBackfillContextForgetJournalsSelectContextTombstonesRow
-  >(
-    "select journal_key as journalKey, occurred_at as occurredAt,\n              scope_id as scopeId, tombstone_key as tombstoneKey,\n              coalesce(\n                (select t.reason from context_tombstones t\n                 where t.tombstone_key = context_forget_journal.tombstone_key\n                   and t.reason in ('discord-deleted', 'locally-forgotten')),\n                (select c.content_state_reason from conversation_events c\n                 where c.guild_id || '/' || c.channel_id || '/' ||\n                       c.discord_message_id = context_forget_journal.scope_id\n                   and c.content_state_reason in (\n                     'discord-deleted', 'locally-forgotten'\n                   )\n                 order by c.id desc limit 1),\n                'locally-forgotten'\n              ) as reason\n       from context_forget_journal where payload_json = '{}'",
-  ) as unknown as PreparedStatement<
-    [],
-    RepairLegacyDataBackfillContextForgetJournalsSelectContextTombstonesRow,
-    string
-  >;
-}
-
-export function repairLegacyDataBackfillContextForgetJournalsUpdateContextForgetJournal(
-  database: Database.Database,
-): PreparedStatement<[string, string, string], unknown, unknown> {
-  return database.prepare<[string, string, string]>(
-    'update context_forget_journal\n     set payload_json = ?, checksum = ? where journal_key = ?',
-  );
-}
-
-export function conversationQualityCorpusReplayConversationQualityCaseUpdateConversationEvents(
-  database: Database.Database,
-): PreparedStatement<[string, number], unknown, unknown> {
-  return database.prepare<[string, number]>(
-    "update conversation_events\n             set content = '', content_state = 'scrubbed',\n                 content_state_reason = ? where id = ?",
-  );
-}
-
-export function conversationQualityCorpusInsertQualityDocumentInsertContextDocuments(
-  database: Database.Database,
-): PreparedStatement<
-  [
-    number,
-    string,
-    string,
-    number,
-    number | null,
-    string | null,
-    string | null,
-    string,
-    number,
-    number,
-  ],
-  unknown,
-  unknown
-> {
-  return database.prepare<
-    [
-      number,
-      string,
-      string,
-      number,
-      number | null,
-      string | null,
-      string | null,
-      string,
-      number,
-      number,
-    ]
-  >(
-    "insert into context_documents\n         (id, document_key, tier, period_start, period_end, timezone,\n          topic_key, topic_label, revision, completeness, state,\n          content_state, content_state_reason, summary, confidence,\n          retention_deadline, created_at, updated_at, is_internal)\n       values (?, ?, ?, ?, ?, 'America/New_York', ?, ?, 1, 'final',\n               'active', 'available', 'retained', ?, 0.95, null, ?, ?, 0)",
-  );
-}
-
-export function conversationQualityCorpusInsertQualityDocumentInsertContextDocumentEvents(
-  database: Database.Database,
-): PreparedStatement<[number, number], unknown, unknown> {
-  return database.prepare<[number, number]>(
-    'insert into context_document_events (document_id, event_id) values (?, ?)',
   );
 }

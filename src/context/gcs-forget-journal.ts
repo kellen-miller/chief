@@ -34,7 +34,7 @@ export function createGcsForgetJournalUploader(
     }
     const content = Buffer.from(JSON.stringify({ ...entry, schemaVersion: 1 }));
     const object = bucket.file(
-      `forget-journal/${String(entry.occurredAt)}-${entry.checksum}.json`,
+      `forget-journal/v1/${String(entry.occurredAt)}-${entry.checksum}.json`,
     );
     try {
       await object.save(content, {

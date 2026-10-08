@@ -362,7 +362,7 @@ function indexSource(
   content: string,
 ): void {
   database
-    .prepare(readSqliteStatement('insertConversationEventFts'))
+    .prepare(readSqliteStatement('conversation/insertConversationEventFts'))
     .run(eventId, content);
 }
 
@@ -409,12 +409,12 @@ function insertQualityDocument(
     )
     .run(input.id, input.eventId);
   database
-    .prepare(readSqliteStatement('insertContextDocumentFts'))
+    .prepare(readSqliteStatement('context/insertContextDocumentFts'))
     .run(input.id, input.summary);
   database
     .prepare(
       readSqliteStatement(
-        'conversationQualityCorpusInsertQualityDocumentInsertContextDocumentVectors',
+        'evaluation/conversationQualityCorpusInsertQualityDocumentInsertContextDocumentVectors',
       ),
     )
     .run(BigInt(input.id), JSON.stringify(Array.from(input.embedding)));

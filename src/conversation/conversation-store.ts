@@ -167,7 +167,9 @@ export class ConversationStore {
     }
     const rows = this.#database
       .prepare(
-        readSqliteStatement('conversationStoreRecentSelectConversationEvents'),
+        readSqliteStatement(
+          'conversation/conversationStoreRecentSelectConversationEvents',
+        ),
       )
       .all({
         beforeEventId: input.beforeEventId ?? null,
@@ -211,18 +213,18 @@ export class ConversationStore {
     const eventExclusion =
       excludedEventIds.length === 0
         ? ''
-        : readSqliteStatement('excludedConversationEventFilter', [
+        : readSqliteStatement('conversation/excludedConversationEventFilter', [
             excludedEventIds.map(() => '?').join(', '),
           ]);
     const responseExclusion =
       excludedResponseIds.length === 0
         ? ''
-        : readSqliteStatement('excludedLogicalResponseFilter', [
+        : readSqliteStatement('conversation/excludedLogicalResponseFilter', [
             excludedResponseIds.map(() => '?').join(', '),
           ]);
     const search = this.#database.prepare(
       readSqliteStatement(
-        'conversationStoreSearchTextSourceGroupsSelectConversationEventFts',
+        'conversation/conversationStoreSearchTextSourceGroupsSelectConversationEventFts',
         [eventExclusion, responseExclusion],
       ),
     );
@@ -297,7 +299,7 @@ export class ConversationStore {
         .pluck()
         .all(now);
       const deleteSearchRow = this.#database.prepare(
-        readSqliteStatement('deleteConversationEventFts'),
+        readSqliteStatement('conversation/deleteConversationEventFts'),
       );
       for (const id of expiredTextIds) deleteSearchRow.run(id);
       const scrubbed = queries

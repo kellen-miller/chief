@@ -8,7 +8,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node -e \"require('node:fs').cpSync('sql', 'dist/sql', { recursive: true })\"",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').cpSync('sql', 'dist/sql', { recursive: true })\"",
     "chief": "tsx src/cli.ts",
     "eval:conversation": "tsx scripts/evaluate-conversation-quality.ts",
     "format": "prettier --write .",

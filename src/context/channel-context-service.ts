@@ -667,10 +667,10 @@ export class ChannelContextService {
         .pluck()
         .all(now);
       const deleteFts = this.#database.prepare(
-        readSqliteStatement('deleteContextDocumentFts'),
+        readSqliteStatement('context/deleteContextDocumentFts'),
       );
       const deleteVector = this.#database.prepare(
-        readSqliteStatement('deleteContextDocumentVector'),
+        readSqliteStatement('context/deleteContextDocumentVector'),
       );
       for (const documentId of expiringDocumentIds) {
         deleteFts.run(documentId);
@@ -681,7 +681,7 @@ export class ChannelContextService {
         this.#database
           .prepare(
             readSqliteStatement(
-              'channelContextServiceMaintainUpdateContextDocuments',
+              'context/channelContextServiceMaintainUpdateContextDocuments',
               [placeholders],
             ),
           )
@@ -1152,7 +1152,7 @@ export class ChannelContextService {
     return this.#database
       .prepare(
         readSqliteStatement(
-          'channelContextServiceJobSourcesSelectContextDocuments',
+          'context/channelContextServiceJobSourcesSelectContextDocuments',
           [placeholders],
         ),
       )
@@ -1382,7 +1382,9 @@ export class ChannelContextService {
     const placeholders = documentIds.map(() => '?').join(', ');
     const rows = this.#database
       .prepare(
-        readSqliteStatement('selectContextDocumentRevisions', [placeholders]),
+        readSqliteStatement('context/selectContextDocumentRevisions', [
+          placeholders,
+        ]),
       )
       .all(...documentIds);
     return digest(rows);
@@ -1463,10 +1465,10 @@ export class ChannelContextService {
     }
 
     this.#database
-      .prepare(readSqliteStatement('deleteConversationEventFts'))
+      .prepare(readSqliteStatement('conversation/deleteConversationEventFts'))
       .run(eventId);
     this.#database
-      .prepare(readSqliteStatement('insertConversationEventFts'))
+      .prepare(readSqliteStatement('conversation/insertConversationEventFts'))
       .run(eventId, canonical.content);
     this.#scheduleHourlyJobs(canonical.occurredAt, backfillRunId);
     let memorySourceEventId: number | null = null;
@@ -1610,23 +1612,25 @@ export class ChannelContextService {
     const documentIds = this.#database
       .prepare(
         readSqliteStatement(
-          'channelContextServiceSuppressDescendantsSelectContextDocumentEvents',
+          'context/channelContextServiceSuppressDescendantsSelectContextDocumentEvents',
         ),
       )
       .pluck()
       .all(eventId) as number[];
     for (const documentId of documentIds) {
       this.#database
-        .prepare(readSqliteStatement('deleteContextDocumentFts'))
+        .prepare(readSqliteStatement('context/deleteContextDocumentFts'))
         .run(documentId);
       this.#database
-        .prepare(readSqliteStatement('deleteContextDocumentVector'))
+        .prepare(readSqliteStatement('context/deleteContextDocumentVector'))
         .run(BigInt(documentId));
     }
     if (documentIds.length === 0) return;
     const placeholders = documentIds.map(() => '?').join(', ');
     this.#database
-      .prepare(readSqliteStatement('suppressContextDocuments', [placeholders]))
+      .prepare(
+        readSqliteStatement('context/suppressContextDocuments', [placeholders]),
+      )
       .run(reason, now, ...documentIds);
   }
 
@@ -1640,7 +1644,7 @@ export class ChannelContextService {
     const documentIds = this.#database
       .prepare(
         readSqliteStatement(
-          'channelContextServiceSuppressDocumentDescendantsSelectContextDocumentParents',
+          'context/channelContextServiceSuppressDocumentDescendantsSelectContextDocumentParents',
           [placeholders],
         ),
       )
@@ -1648,17 +1652,19 @@ export class ChannelContextService {
       .all(...parentDocumentIds) as number[];
     for (const documentId of documentIds) {
       this.#database
-        .prepare(readSqliteStatement('deleteContextDocumentFts'))
+        .prepare(readSqliteStatement('context/deleteContextDocumentFts'))
         .run(documentId);
       this.#database
-        .prepare(readSqliteStatement('deleteContextDocumentVector'))
+        .prepare(readSqliteStatement('context/deleteContextDocumentVector'))
         .run(BigInt(documentId));
     }
     if (documentIds.length === 0) return;
     const affectedPlaceholders = documentIds.map(() => '?').join(', ');
     this.#database
       .prepare(
-        readSqliteStatement('suppressContextDocuments', [affectedPlaceholders]),
+        readSqliteStatement('context/suppressContextDocuments', [
+          affectedPlaceholders,
+        ]),
       )
       .run(reason, now, ...documentIds);
   }
@@ -1677,10 +1683,10 @@ export class ChannelContextService {
     this.#database
       .prepare(
         readSqliteStatement(
-          'channelContextServiceInvalidateEventJobsUpdateContextJobs',
+          'context/channelContextServiceInvalidateEventJobsUpdateContextJobs',
           [
             pendingOnly
-              ? readSqliteStatement('incompleteContextJobFilter')
+              ? readSqliteStatement('context/incompleteContextJobFilter')
               : '',
           ],
         ),

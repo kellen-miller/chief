@@ -4,11 +4,11 @@ import * as sqliteVec from 'sqlite-vec';
 import { readSqliteStatement } from '../database/sqlite-statements.js';
 import * as queries from '../../gen/sql/application.js';
 
-import { verifyRecordedMigrationSet } from '../database/migrations.js';
+import { verifyDatabaseMigrations } from '../database/migrations.js';
 
 export {
   migrateChiefDatabase,
-  verifyRecordedMigrationSet,
+  verifyDatabaseMigrations,
 } from '../database/migrations.js';
 
 export function openChiefDatabase(path: string): Database.Database {
@@ -34,17 +34,7 @@ export function verifyContextDatabaseSchema(
   database: Database.Database,
 ): boolean {
   try {
-    if (!verifyRecordedMigrationSet(database)) return false;
-    if (
-      !database
-        .prepare(
-          readSqliteStatement(
-            'databaseVerifyContextDatabaseSchemaSelectSchemaMigrations',
-          ),
-        )
-        .get()
-    )
-      return false;
+    if (!verifyDatabaseMigrations(database)) return false;
     for (const table of [
       'conversation_event_fts',
       'context_document_fts',
@@ -57,12 +47,7 @@ export function verifyContextDatabaseSchema(
       'discord_reconciliation_seen',
     ]) {
       database
-        .prepare(
-          readSqliteStatement(
-            'databaseVerifyContextDatabaseSchemaSelectStatement',
-            [table],
-          ),
-        )
+        .prepare(readSqliteStatement('migrations/verifyTable', [table]))
         .pluck()
         .get();
     }

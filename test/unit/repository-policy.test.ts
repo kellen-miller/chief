@@ -181,7 +181,7 @@ describe('repository policy', () => {
     expect(runContainerScript).toContain('database-capability');
     expect(restoreScript).toContain('database-capability');
     expect(dockerfile).toContain(
-      'LABEL io.chief.database-capability="0003_channel_context"',
+      'LABEL io.chief.database-capability="chief-v1"',
     );
     expect(runContainerScript.indexOf('recover-forget-journals')).toBeLessThan(
       runContainerScript.indexOf('const discordToken'),

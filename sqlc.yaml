@@ -7,7 +7,15 @@ plugins:
 sql:
   - engine: sqlite
     schema: sql/migrations
-    queries: sql/queries/application.sql
+    queries:
+      - sql/queries/context.sql
+      - sql/queries/context-backfill.sql
+      - sql/queries/context-deletion.sql
+      - sql/queries/conversation.sql
+      - sql/queries/evaluation.sql
+      - sql/queries/memory.sql
+      - sql/queries/recovery.sql
+      - sql/queries/usage.sql
     codegen:
       - plugin: typescript
         out: gen/sql
@@ -17,8 +25,6 @@ sql:
             emit: prepared
             filename: application.ts
             parameter_types:
-              repairLegacyDataExactHourlyBackfillRunIdsSelectContextBackfillPages:
-                '2': string
               contextStoreAssertInputsAvailableSelectContextTombstones:
                 '3': string | null
               contextBackfillRecordManifestPageUpdateContextBackfills:

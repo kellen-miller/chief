@@ -37,9 +37,9 @@ describe('restore transaction', () => {
       `#!/usr/bin/env bash
 printf 'docker %s\n' "$*" >>"$COMMAND_LOG"
 if [[ "$1 $2" == 'image inspect' ]]; then
-  printf '0003_channel_context\n'
+  printf 'chief-v1\n'
 elif [[ " $* " == *' database-capability '* ]]; then
-  printf '0003_channel_context\n'
+  printf 'chief-v1\n'
 fi
 `,
     );
@@ -106,7 +106,7 @@ printf 'docker %s\n' "$*" >>"$COMMAND_LOG"
 if [[ "$1 $2" == 'image inspect' ]]; then
   printf '0002_conversation_events\n'
 elif [[ " $* " == *' database-capability '* ]]; then
-  printf '0003_channel_context\n'
+  printf 'chief-v1\n'
 fi
 `,
     );

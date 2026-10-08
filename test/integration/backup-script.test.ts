@@ -1,5 +1,4 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import {
   chmodSync,
   cpSync,
@@ -163,26 +162,9 @@ copyFileSync(source, join(process.env.TEST_UPLOADED, basename(source)));
             .pluck()
             .get(),
         ).toBe('file_discovery_test');
-        expect(
-          upgraded
-            .prepare(
-              "select checksum from schema_migrations where id = '0015_file_discovery'",
-            )
-            .pluck()
-            .get(),
-        ).toBe(createHash('sha256').update(sql).digest('hex'));
       } finally {
         upgraded.close();
       }
-
-      writeFileSync(migrationPath, sql + '-- changed\n');
-      expect(() =>
-        execFileSync(process.execPath, migrateArgs, {
-          cwd: runtime,
-          timeout: 20_000,
-          stdio: 'pipe',
-        }),
-      ).toThrow('migration checksum mismatch for 0015_file_discovery');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

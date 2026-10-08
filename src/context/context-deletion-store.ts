@@ -145,7 +145,7 @@ export class ContextDeletionStore {
         this.#database
           .prepare(
             readSqliteStatement(
-              'contextDeletionStoreDiscoverSelectConversationEventFts',
+              'context-deletion/contextDeletionStoreDiscoverSelectConversationEventFts',
             ),
           )
           .all(lexicalQuery, this.#guildId, this.#channelId, limit, offset) as {
@@ -159,7 +159,7 @@ export class ContextDeletionStore {
         this.#database
           .prepare(
             readSqliteStatement(
-              'contextDeletionStoreDiscoverSelectContextDocumentFts',
+              'context-deletion/contextDeletionStoreDiscoverSelectContextDocumentFts',
             ),
           )
           .all(lexicalQuery, limit, offset) as {
@@ -172,7 +172,9 @@ export class ContextDeletionStore {
       (limit, offset) =>
         this.#database
           .prepare(
-            readSqliteStatement('contextDeletionStoreDiscoverSelectMemoryFts'),
+            readSqliteStatement(
+              'context-deletion/contextDeletionStoreDiscoverSelectMemoryFts',
+            ),
           )
           .all(lexicalQuery, limit, offset) as {
           readonly id: number;
@@ -257,7 +259,7 @@ export class ContextDeletionStore {
     const authors = this.#database
       .prepare(
         readSqliteStatement(
-          'contextDeletionStoreRequesterCanDeleteSelectConversationEvents',
+          'context-deletion/contextDeletionStoreRequesterCanDeleteSelectConversationEvents',
           [placeholders],
         ),
       )
@@ -676,7 +678,9 @@ export class ContextDeletionStore {
       }
       for (const source of sources) {
         this.#database
-          .prepare(readSqliteStatement('deleteConversationEventFts'))
+          .prepare(
+            readSqliteStatement('conversation/deleteConversationEventFts'),
+          )
           .run(source.id);
       }
       if (sources.length > 0) {
@@ -684,11 +688,13 @@ export class ContextDeletionStore {
         this.#database
           .prepare(
             readSqliteStatement(
-              'contextDeletionStoreReplayForgetJournalUpdateConversationEvents',
+              'context-deletion/contextDeletionStoreReplayForgetJournalUpdateConversationEvents',
               [
                 placeholders,
                 reason === 'discord-deleted'
-                  ? readSqliteStatement('availableContentFilter')
+                  ? readSqliteStatement(
+                      'context-deletion/availableContentFilter',
+                    )
                   : '',
               ],
             ),
@@ -876,7 +882,7 @@ export class ContextDeletionStore {
 
     for (const source of sources) {
       this.#database
-        .prepare(readSqliteStatement('deleteConversationEventFts'))
+        .prepare(readSqliteStatement('conversation/deleteConversationEventFts'))
         .run(source.id);
     }
     if (sources.length > 0) {
@@ -884,11 +890,11 @@ export class ContextDeletionStore {
       this.#database
         .prepare(
           readSqliteStatement(
-            'contextDeletionStoreMutateSuppressionUpdateConversationEvents',
+            'context-deletion/contextDeletionStoreMutateSuppressionUpdateConversationEvents',
             [
               placeholders,
               input.reason === 'discord-deleted'
-                ? readSqliteStatement('availableContentFilter')
+                ? readSqliteStatement('context-deletion/availableContentFilter')
                 : '',
             ],
           ),
@@ -952,13 +958,13 @@ export class ContextDeletionStore {
     const snowflakePredicate =
       snowflakes.length === 0
         ? ''
-        : readSqliteStatement('conversationSnowflakeFilter', [
+        : readSqliteStatement('context-deletion/conversationSnowflakeFilter', [
             snowflakes.map(() => '?').join(', '),
           ]);
     return this.#database
       .prepare(
         readSqliteStatement(
-          'contextDeletionStoreSourceRowsSelectConversationEvents',
+          'context-deletion/contextDeletionStoreSourceRowsSelectConversationEvents',
           [placeholders, snowflakePredicate],
         ),
       )
@@ -976,7 +982,7 @@ export class ContextDeletionStore {
         ...(this.#database
           .prepare(
             readSqliteStatement(
-              'contextDeletionStoreAffectedDocumentsSelectContextDocumentEvents',
+              'context-deletion/contextDeletionStoreAffectedDocumentsSelectContextDocumentEvents',
               [placeholders],
             ),
           )
@@ -990,7 +996,7 @@ export class ContextDeletionStore {
         ...(this.#database
           .prepare(
             readSqliteStatement(
-              'contextDeletionStoreAffectedDocumentsSelectContextDocuments',
+              'context-deletion/contextDeletionStoreAffectedDocumentsSelectContextDocuments',
               [placeholders],
             ),
           )
@@ -1004,7 +1010,7 @@ export class ContextDeletionStore {
     return this.#database
       .prepare(
         readSqliteStatement(
-          'contextDeletionStoreAffectedDocumentsSelectStatement',
+          'context-deletion/contextDeletionStoreAffectedDocumentsSelectStatement',
           [values],
         ),
       )
@@ -1019,7 +1025,7 @@ export class ContextDeletionStore {
     const lineage = this.#database
       .prepare(
         readSqliteStatement(
-          'contextDeletionStoreDocumentHasSurvivingLineageSelectContextDocuments',
+          'context-deletion/contextDeletionStoreDocumentHasSurvivingLineageSelectContextDocuments',
         ),
       )
       .all(documentKey) as {
@@ -1054,10 +1060,10 @@ export class ContextDeletionStore {
         continue;
       }
       this.#database
-        .prepare(readSqliteStatement('deleteContextDocumentFts'))
+        .prepare(readSqliteStatement('context/deleteContextDocumentFts'))
         .run(document.id);
       this.#database
-        .prepare(readSqliteStatement('deleteContextDocumentVector'))
+        .prepare(readSqliteStatement('context/deleteContextDocumentVector'))
         .run(BigInt(document.id));
     }
     if (documents.length === 0) return;
@@ -1080,7 +1086,7 @@ export class ContextDeletionStore {
     this.#database
       .prepare(
         readSqliteStatement(
-          'contextDeletionStoreScrubDocumentsUpdateContextDocuments',
+          'context-deletion/contextDeletionStoreScrubDocumentsUpdateContextDocuments',
           [placeholders],
         ),
       )
@@ -1088,20 +1094,22 @@ export class ContextDeletionStore {
     const jobPredicates = [
       topicKeys.length === 0
         ? null
-        : readSqliteStatement('contextJobTopicKeyFilter', [
+        : readSqliteStatement('context-deletion/contextJobTopicKeyFilter', [
             topicKeys.map(() => '?').join(', '),
           ]),
       topicLabels.length === 0
         ? null
-        : readSqliteStatement('contextJobTopicLabelFilter', [
+        : readSqliteStatement('context-deletion/contextJobTopicLabelFilter', [
             topicLabels.map(() => '?').join(', '),
           ]),
-      readSqliteStatement('contextJobSourceDocumentFilter', [placeholders]),
+      readSqliteStatement('context-deletion/contextJobSourceDocumentFilter', [
+        placeholders,
+      ]),
     ].filter((predicate): predicate is string => predicate !== null);
     this.#database
       .prepare(
         readSqliteStatement(
-          'contextDeletionStoreScrubDocumentsUpdateContextJobs',
+          'context-deletion/contextDeletionStoreScrubDocumentsUpdateContextJobs',
           [jobPredicates.join(' or ')],
         ),
       )
@@ -1228,7 +1236,7 @@ export class ContextDeletionStore {
     return this.#database
       .prepare(
         readSqliteStatement(
-          'contextDeletionStoreActiveDocumentIdsSelectContextDocuments',
+          'context-deletion/contextDeletionStoreActiveDocumentIdsSelectContextDocuments',
           [placeholders],
         ),
       )
@@ -1241,7 +1249,9 @@ export class ContextDeletionStore {
     const placeholders = documentIds.map(() => '?').join(', ');
     return this.#database
       .prepare(
-        readSqliteStatement('selectContextDocumentRevisions', [placeholders]),
+        readSqliteStatement('context/selectContextDocumentRevisions', [
+          placeholders,
+        ]),
       )
       .all(...documentIds);
   }
@@ -1252,7 +1262,7 @@ export class ContextDeletionStore {
     return this.#database
       .prepare(
         readSqliteStatement(
-          'contextDeletionStoreMemorySourceScopesSelectMemories',
+          'context-deletion/contextDeletionStoreMemorySourceScopesSelectMemories',
           [placeholders],
         ),
       )
@@ -1266,7 +1276,7 @@ export class ContextDeletionStore {
     return this.#database
       .prepare(
         readSqliteStatement(
-          'contextDeletionStoreAffectedMemorySourceScopesSelectMemories',
+          'context-deletion/contextDeletionStoreAffectedMemorySourceScopesSelectMemories',
           [placeholders],
         ),
       )
@@ -1284,13 +1294,13 @@ export class ContextDeletionStore {
     const snowflakePredicate =
       snowflakes.length === 0
         ? ''
-        : readSqliteStatement('memorySourceSnowflakeFilter', [
+        : readSqliteStatement('memory/memorySourceSnowflakeFilter', [
             snowflakes.map(() => '?').join(', '),
           ]);
     return this.#database
       .prepare(
         readSqliteStatement(
-          'contextDeletionStoreSourceDerivedMemoryIdsSelectMemories',
+          'context-deletion/contextDeletionStoreSourceDerivedMemoryIdsSelectMemories',
           [placeholders, snowflakePredicate],
         ),
       )
@@ -1304,7 +1314,7 @@ export class ContextDeletionStore {
     return this.#database
       .prepare(
         readSqliteStatement(
-          'contextDeletionStoreDocumentSourceScopesSelectContextDocuments',
+          'context-deletion/contextDeletionStoreDocumentSourceScopesSelectContextDocuments',
           [placeholders],
         ),
       )

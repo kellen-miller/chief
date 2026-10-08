@@ -9,7 +9,7 @@ import type Database from 'better-sqlite3';
 import { z } from 'zod';
 
 import type { ContextForgetJournalEntry } from '../context/context-deletion-store.js';
-import { verifyRecordedMigrationSet } from './database.js';
+import { verifyDatabaseMigrations } from './database.js';
 
 const journalPayloadSchema = z
   .object({
@@ -32,21 +32,12 @@ const journalSchema = z
   })
   .strict();
 
-export type RestorableDatabaseCapability =
-  '0002_conversation_events' | '0003_channel_context';
+export type RestorableDatabaseCapability = 'chief-v1';
 
 export function restorableDatabaseCapability(
   database: Database.Database,
 ): RestorableDatabaseCapability | null {
-  if (!verifyRestorableDatabase(database)) return null;
-  if (hasMigration(database, '0003_channel_context')) {
-    return verifyRestorableDatabase(database, '0003_channel_context')
-      ? '0003_channel_context'
-      : null;
-  }
-  return hasMigration(database, '0002_conversation_events')
-    ? '0002_conversation_events'
-    : null;
+  return verifyRestorableDatabase(database, 'chief-v1') ? 'chief-v1' : null;
 }
 
 export function verifyRestorableDatabase(
@@ -54,12 +45,12 @@ export function verifyRestorableDatabase(
   requiredMigration?: string,
 ): boolean {
   try {
-    if (!verifyRecordedMigrationSet(database)) return false;
+    if (!verifyDatabaseMigrations(database)) return false;
     if (
       database
         .prepare(
           readSqliteStatement(
-            'recoveryVerifyRestorableDatabasePragmaStatement',
+            'recovery/recoveryVerifyRestorableDatabasePragmaStatement',
           ),
         )
         .pluck()
@@ -76,28 +67,21 @@ export function verifyRestorableDatabase(
       return false;
     }
     if (requiredMigration === undefined) return true;
-    if (requiredMigration !== '0003_channel_context') return false;
-    if (!hasMigration(database, requiredMigration)) return false;
+    if (requiredMigration !== 'chief-v1') return false;
     if ((database.pragma('foreign_key_check') as unknown[]).length !== 0) {
       return false;
     }
-    if (
-      !verifyContextIndexes(
-        database,
-        hasMigration(database, '0004_discord_source_lifecycle'),
-      )
-    ) {
+    if (!verifyContextIndexes(database)) {
       return false;
     }
-    const hasBackfillProgress = hasMigration(database, '0006_context_backfill');
-    if (hasBackfillProgress) {
-      const inconsistentBackfillProgress =
-        queries
-          .recoveryVerifyRestorableDatabaseSelectContextBackfills(database)
-          .pluck()
-          .get() === 1;
-      if (inconsistentBackfillProgress) return false;
-    }
+
+    const inconsistentBackfillProgress =
+      queries
+        .recoveryVerifyRestorableDatabaseSelectContextBackfills(database)
+        .pluck()
+        .get() === 1;
+    if (inconsistentBackfillProgress) return false;
+
     const tombstones = queries
       .recoveryVerifyRestorableDatabaseSelectContextTombstones(database)
       .all() as {
@@ -114,18 +98,17 @@ export function verifyRestorableDatabase(
     ) {
       return false;
     }
-    const requiredTables = ['context_tombstones', 'context_backfills'];
-    if (hasBackfillProgress) {
-      requiredTables.push(
-        'context_backfill_pages',
-        'context_backfill_segments',
-      );
-    }
+    const requiredTables = [
+      'context_tombstones',
+      'context_backfills',
+      'context_backfill_pages',
+      'context_backfill_segments',
+    ];
     for (const table of requiredTables) {
       database
         .prepare(
           readSqliteStatement(
-            'recoveryVerifyRestorableDatabaseSelectStatement2',
+            'recovery/recoveryVerifyRestorableDatabaseSelectStatement2',
             [table],
           ),
         )
@@ -138,15 +121,12 @@ export function verifyRestorableDatabase(
   }
 }
 
-function verifyContextIndexes(
-  database: Database.Database,
-  hasInternalDocuments: boolean,
-): boolean {
-  const publicDocumentFilter = hasInternalDocuments
-    ? readSqliteStatement('publicContextDocumentFilter')
-    : '';
+function verifyContextIndexes(database: Database.Database): boolean {
+  const publicDocumentFilter = readSqliteStatement(
+    'recovery/publicContextDocumentFilter',
+  );
   database.exec(
-    readSqliteStatement('recoveryVerifyContextIndexesDropIf', [
+    readSqliteStatement('recovery/recoveryVerifyContextIndexesDropIf', [
       publicDocumentFilter,
     ]),
   );
@@ -155,7 +135,7 @@ function verifyContextIndexes(
       database
         .prepare(
           readSqliteStatement(
-            'recoveryVerifyContextIndexesSelectContextDocuments',
+            'recovery/recoveryVerifyContextIndexesSelectContextDocuments',
             [publicDocumentFilter],
           ),
         )
@@ -166,7 +146,7 @@ function verifyContextIndexes(
       database
         .prepare(
           readSqliteStatement(
-            'recoveryVerifyContextIndexesSelectContextRestoreExpectedVocab',
+            'recovery/recoveryVerifyContextIndexesSelectContextRestoreExpectedVocab',
           ),
         )
         .pluck()
@@ -174,9 +154,10 @@ function verifyContextIndexes(
     if (lexicalMismatch) return false;
     const tierRows = database
       .prepare(
-        readSqliteStatement('recoveryVerifyContextIndexesSelectTiers', [
-          publicDocumentFilter,
-        ]),
+        readSqliteStatement(
+          'recovery/recoveryVerifyContextIndexesSelectTiers',
+          [publicDocumentFilter],
+        ),
       )
       .all() as { readonly count: number; readonly tier: string }[];
     return (
@@ -186,7 +167,9 @@ function verifyContextIndexes(
       )
     );
   } finally {
-    database.exec(readSqliteStatement('recoveryVerifyContextIndexesDropIf2'));
+    database.exec(
+      readSqliteStatement('recovery/recoveryVerifyContextIndexesDropIf2'),
+    );
   }
 }
 
@@ -232,7 +215,7 @@ export function replayForgetJournals(
   entries: readonly ContextForgetJournalEntry[],
   now: number,
 ): void {
-  if (!verifyRecordedMigrationSet(database)) {
+  if (!verifyDatabaseMigrations(database)) {
     throw new Error('forget journal recovery requires a migrated database');
   }
   for (const entry of entries) assertJournalChecksum(entry);
@@ -246,7 +229,6 @@ function replayCompatibleJournal(
   entry: ContextForgetJournalEntry,
   now: number,
 ): void {
-  const contextSchema = hasMigration(database, '0003_channel_context');
   const sourceIds = [
     ...new Set(
       entry.payload.sourceScopeIds.flatMap((scopeId) => [
@@ -255,41 +237,28 @@ function replayCompatibleJournal(
       ]),
     ),
   ];
-  const conversationColumns = tableColumns(database, 'conversation_events');
-  const conversationIdColumn = conversationColumns.has('discord_message_id')
-    ? 'discord_message_id'
-    : 'platform_event_id';
   const conversationEventIds = selectIds(
     database,
     'conversation_events',
-    conversationIdColumn,
+    'discord_message_id',
     sourceIds,
   );
-  if (contextSchema) {
-    for (const eventId of conversationEventIds) {
-      database
-        .prepare(readSqliteStatement('deleteConversationEventFts'))
-        .run(eventId);
-    }
-    updateIds(
-      database,
-      'conversation_events',
-      `content = '', attachment_metadata_json = '[]', deleted_at = ?,
-       content_state = 'scrubbed', content_state_reason = ?`,
-      [entry.occurredAt, entry.payload.reason ?? 'locally-forgotten'],
-      conversationEventIds,
-    );
-    scrubContextDocuments(database, entry, conversationEventIds, now);
-    recordContextJournal(database, entry, now);
-  } else {
-    updateIds(
-      database,
-      'conversation_events',
-      "content = ''",
-      [],
-      conversationEventIds,
-    );
+
+  for (const eventId of conversationEventIds) {
+    database
+      .prepare(readSqliteStatement('conversation/deleteConversationEventFts'))
+      .run(eventId);
   }
+  updateIds(
+    database,
+    'conversation_events',
+    readSqliteStatement('recovery/scrubConversationAssignments'),
+    [entry.occurredAt, entry.payload.reason ?? 'locally-forgotten'],
+    conversationEventIds,
+  );
+  scrubContextDocuments(database, entry, conversationEventIds, now);
+  recordContextJournal(database, entry, now);
+
   scrubMemories(database, entry, sourceIds, now);
 }
 
@@ -299,12 +268,9 @@ function scrubMemories(
   sourceIds: readonly string[],
   now: number,
 ): void {
-  const sourceColumns = tableColumns(database, 'source_events');
   const sourceEventIds = [
     ...new Set([
-      ...(sourceColumns.has('source_scope_id')
-        ? selectIds(database, 'source_events', 'source_scope_id', sourceIds)
-        : []),
+      ...selectIds(database, 'source_events', 'source_scope_id', sourceIds),
       ...selectIds(database, 'source_events', 'platform_source_id', sourceIds),
     ]),
   ];
@@ -313,7 +279,7 @@ function scrubMemories(
     const placeholders = sourceEventIds.map(() => '?').join(', ');
     for (const id of database
       .prepare(
-        readSqliteStatement('recoveryScrubMemoriesSelectMemories', [
+        readSqliteStatement('recovery/recoveryScrubMemoriesSelectMemories', [
           placeholders,
         ]),
       )
@@ -323,7 +289,7 @@ function scrubMemories(
     }
     database
       .prepare(
-        readSqliteStatement('recoveryScrubMemoriesDeleteMemoryJobs', [
+        readSqliteStatement('recovery/recoveryScrubMemoriesDeleteMemoryJobs', [
           placeholders,
         ]),
       )
@@ -331,7 +297,7 @@ function scrubMemories(
     updateIds(
       database,
       'source_events',
-      "content = '', extraction_status = 'completed'",
+      readSqliteStatement('recovery/scrubSourceAssignments'),
       [],
       sourceEventIds,
     );
@@ -345,13 +311,15 @@ function scrubMemories(
       .pluck()
       .get(id);
     if (state !== 'active') continue;
-    database.prepare(readSqliteStatement('deleteMemoryFts')).run(id);
-    database.prepare(readSqliteStatement('deleteMemoryVector')).run(BigInt(id));
+    database.prepare(readSqliteStatement('memory/deleteMemoryFts')).run(id);
+    database
+      .prepare(readSqliteStatement('memory/deleteMemoryVector'))
+      .run(BigInt(id));
   }
   updateIds(
     database,
     'memories',
-    "canonical_text = '', provenance_json = '{}', state = 'superseded', superseded_by = null, updated_at = ?",
+    readSqliteStatement('recovery/scrubMemoryAssignments'),
     [now],
     affectedMemoryIds,
   );
@@ -371,7 +339,7 @@ function scrubContextDocuments(
     for (const id of database
       .prepare(
         readSqliteStatement(
-          'recoveryScrubContextDocumentsSelectContextDocuments',
+          'recovery/recoveryScrubContextDocumentsSelectContextDocuments',
           [placeholders],
         ),
       )
@@ -385,7 +353,7 @@ function scrubContextDocuments(
     for (const id of database
       .prepare(
         readSqliteStatement(
-          'recoveryScrubContextDocumentsSelectContextDocumentEvents',
+          'recovery/recoveryScrubContextDocumentsSelectContextDocumentEvents',
           [placeholders],
         ),
       )
@@ -398,15 +366,17 @@ function scrubContextDocuments(
     (id) => Number.isSafeInteger(id) && id > 0,
   );
   for (const id of ids) {
-    database.prepare(readSqliteStatement('deleteContextDocumentFts')).run(id);
     database
-      .prepare(readSqliteStatement('deleteContextDocumentVector'))
+      .prepare(readSqliteStatement('context/deleteContextDocumentFts'))
+      .run(id);
+    database
+      .prepare(readSqliteStatement('context/deleteContextDocumentVector'))
       .run(BigInt(id));
   }
   updateIds(
     database,
     'context_documents',
-    "summary = '', state = 'suppressed', content_state = 'scrubbed', content_state_reason = ?, updated_at = ?",
+    readSqliteStatement('recovery/scrubContextAssignments'),
     [entry.payload.reason ?? 'locally-forgotten', now],
     ids,
   );
@@ -452,31 +422,17 @@ function recordContextJournal(
   if (primaryTombstone === undefined) {
     throw new Error('forget journal has no tombstone');
   }
-  const columns = tableColumns(database, 'context_forget_journal');
-  if (columns.has('payload_json')) {
-    queries
-      .recoveryRecordContextJournalInsertContextForgetJournal(database)
-      .run(
-        entry.journalKey,
-        entry.payload.sourceScopeIds[0] ?? primaryTombstone,
-        primaryTombstone,
-        entry.occurredAt,
-        entry.checksum,
-        JSON.stringify(entry.payload),
-        now,
-      );
-  } else {
-    queries
-      .recoveryRecordContextJournalInsertContextForgetJournal2(database)
-      .run(
-        entry.journalKey,
-        entry.payload.sourceScopeIds[0] ?? primaryTombstone,
-        primaryTombstone,
-        entry.occurredAt,
-        entry.checksum,
-        now,
-      );
-  }
+  queries
+    .recoveryRecordContextJournalInsertContextForgetJournal(database)
+    .run(
+      entry.journalKey,
+      entry.payload.sourceScopeIds[0] ?? primaryTombstone,
+      primaryTombstone,
+      entry.occurredAt,
+      entry.checksum,
+      JSON.stringify(entry.payload),
+      now,
+    );
 }
 
 function assertJournalChecksum(entry: ContextForgetJournalEntry): void {
@@ -512,28 +468,6 @@ function tombstoneChecksum(input: {
     .digest('hex');
 }
 
-function hasMigration(
-  database: Database.Database,
-  migrationId: string,
-): boolean {
-  return (
-    database
-      .prepare(
-        readSqliteStatement('recoveryHasMigrationSelectSchemaMigrations'),
-      )
-      .pluck()
-      .get(migrationId) === 1
-  );
-}
-
-function tableColumns(database: Database.Database, table: string): Set<string> {
-  return new Set(
-    (
-      database.pragma(`table_info(${table})`) as { readonly name: string }[]
-    ).map(({ name }) => name),
-  );
-}
-
 function selectIds(
   database: Database.Database,
   table: string,
@@ -544,7 +478,7 @@ function selectIds(
   const placeholders = values.map(() => '?').join(', ');
   return database
     .prepare(
-      readSqliteStatement('recoverySelectIdsSelectStatement', [
+      readSqliteStatement('recovery/recoverySelectIdsSelectStatement', [
         table,
         column,
         placeholders,
@@ -565,7 +499,7 @@ function updateIds(
   const placeholders = ids.map(() => '?').join(', ');
   database
     .prepare(
-      readSqliteStatement('recoveryUpdateIdsUpdateStatement', [
+      readSqliteStatement('recovery/recoveryUpdateIdsUpdateStatement', [
         table,
         assignments,
         placeholders,

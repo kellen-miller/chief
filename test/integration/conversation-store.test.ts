@@ -65,24 +65,15 @@ describe('ConversationStore', () => {
     ]);
     expect(
       reopened
-        .prepare('select id from schema_migrations order by id')
+        .prepare('select name from knex_migrations order by id')
         .pluck()
         .all(),
     ).toEqual([
-      '0001_initial',
-      '0002_conversation_events',
-      '0003_channel_context',
-      '0004_discord_source_lifecycle',
-      '0005_context_forgetting',
-      '0006_context_backfill',
-      '0007_context_backfill_accounting',
-      '0008_context_backfill_lifecycle',
-      '0009_context_backfill_targeting',
-      '0010_context_backfill_ownership',
-      '0011_usage_reservation_origin',
-      '0012_context_accounting_origin',
-      '0013_legacy_source_scope',
-      '0014_monitoring_alerts',
+      '0001_memory.sql',
+      '0002_conversation.sql',
+      '0003_context.sql',
+      '0004_usage.sql',
+      '0005_monitoring.sql',
     ]);
     reopened.close();
   });

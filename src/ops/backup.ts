@@ -76,7 +76,7 @@ export function backup(arguments_: readonly string[]): void {
       '--backup',
       backupPath,
       '--require-migration',
-      '0003_channel_context',
+      'chief-v1',
     ],
     { timeout: 120_000 },
   );
@@ -160,7 +160,7 @@ export function restoreDrill(arguments_: readonly string[]): void {
       '--backup',
       database,
       '--require-migration',
-      '0003_channel_context',
+      'chief-v1',
     ],
     { timeout: 120_000 },
   );
