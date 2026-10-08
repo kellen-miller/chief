@@ -4,16 +4,20 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@discordjs/opus@0.10.0': 09980b60f049539427f4fdebce1fcd336bd7dce46233abe2a974c9b350fd2a9f
+  prebuild-install@7.1.3: fb81b28b812621ed5b6efa301978996efe8e2831142174db26331b9de2647e67
+
 importers:
 
   .:
     dependencies:
       '@discordjs/opus':
         specifier: 0.10.0
-        version: 0.10.0
+        version: 0.10.0(patch_hash=09980b60f049539427f4fdebce1fcd336bd7dce46233abe2a974c9b350fd2a9f)
       '@discordjs/voice':
         specifier: 0.19.2
-        version: 0.19.2(@discordjs/opus@0.10.0)(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)
+        version: 0.19.2(@discordjs/opus@0.10.0(patch_hash=09980b60f049539427f4fdebce1fcd336bd7dce46233abe2a974c9b350fd2a9f))(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)
       '@google-cloud/secret-manager':
         specifier: 6.2.0
         version: 6.2.0
@@ -2678,7 +2682,7 @@ snapshots:
       - encoding
       - supports-color
 
-  '@discordjs/opus@0.10.0':
+  '@discordjs/opus@0.10.0(patch_hash=09980b60f049539427f4fdebce1fcd336bd7dce46233abe2a974c9b350fd2a9f)':
     dependencies:
       '@discordjs/node-pre-gyp': 0.4.5
       node-addon-api: 8.9.0
@@ -2702,12 +2706,12 @@ snapshots:
     dependencies:
       discord-api-types: 0.38.49
 
-  '@discordjs/voice@0.19.2(@discordjs/opus@0.10.0)(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)':
+  '@discordjs/voice@0.19.2(@discordjs/opus@0.10.0(patch_hash=09980b60f049539427f4fdebce1fcd336bd7dce46233abe2a974c9b350fd2a9f))(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)':
     dependencies:
       '@snazzah/davey': 0.1.12(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)
       '@types/ws': 8.18.1
       discord-api-types: 0.38.49
-      prism-media: 1.3.5(@discordjs/opus@0.10.0)
+      prism-media: 1.3.5(@discordjs/opus@0.10.0(patch_hash=09980b60f049539427f4fdebce1fcd336bd7dce46233abe2a974c9b350fd2a9f))
       tslib: 2.8.1
       ws: 8.21.0
     transitivePeerDependencies:
@@ -3509,7 +3513,7 @@ snapshots:
   better-sqlite3@12.11.1:
     dependencies:
       bindings: 1.5.0
-      prebuild-install: 7.1.3
+      prebuild-install: 7.1.3(patch_hash=fb81b28b812621ed5b6efa301978996efe8e2831142174db26331b9de2647e67)
 
   bignumber.js@9.3.1: {}
 
@@ -4642,7 +4646,7 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.1
 
-  prebuild-install@7.1.3:
+  prebuild-install@7.1.3(patch_hash=fb81b28b812621ed5b6efa301978996efe8e2831142174db26331b9de2647e67):
     dependencies:
       detect-libc: 2.1.2
       expand-template: 2.0.3
@@ -4661,9 +4665,9 @@ snapshots:
 
   prettier@3.9.5: {}
 
-  prism-media@1.3.5(@discordjs/opus@0.10.0):
+  prism-media@1.3.5(@discordjs/opus@0.10.0(patch_hash=09980b60f049539427f4fdebce1fcd336bd7dce46233abe2a974c9b350fd2a9f)):
     optionalDependencies:
-      '@discordjs/opus': 0.10.0
+      '@discordjs/opus': 0.10.0(patch_hash=09980b60f049539427f4fdebce1fcd336bd7dce46233abe2a974c9b350fd2a9f)
 
   process-warning@5.0.0: {}
 

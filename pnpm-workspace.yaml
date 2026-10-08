@@ -9,3 +9,8 @@ minimumReleaseAgeExclude:
   - '@openai/agents-realtime@0.13.2'
   - '@openai/agents@0.13.2'
   - eslint@10.7.0
+patchedDependencies:
+  '@discordjs/opus@0.10.0': patches/@discordjs__opus@0.10.0.patch
+  prebuild-install@7.1.3: patches/prebuild-install@7.1.3.patch
+# Shorten patch hashes before node-gyp emits Makefile target paths.
+virtualStoreDirMaxLength: 60
