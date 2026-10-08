@@ -84,22 +84,23 @@ jobs:
           echo "reference=$IMAGE_REPOSITORY@$digest" >>"$GITHUB_OUTPUT"
 
       - name: Install deployment transaction
+        timeout-minutes: 10
         run: |
           gcloud compute scp scripts/configure-google-cloud-apt.sh scripts/install-node.sh \
             "chief:/tmp/" \
             --project="${{ vars.GCP_PROJECT_ID }}" \
             --zone="${{ vars.GCP_ZONE }}" \
-            --tunnel-through-iap --quiet
+            --tunnel-through-iap --scp-flag=-O --quiet
           gcloud compute scp --recurse src/ops \
             "chief:/tmp/chief-ops-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --project="${{ vars.GCP_PROJECT_ID }}" \
             --zone="${{ vars.GCP_ZONE }}" \
-            --tunnel-through-iap --quiet
+            --tunnel-through-iap --scp-flag=-O --quiet
           gcloud compute scp gen/sql/monitoring.ts \
             "chief:/tmp/chief-monitoring-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.ts" \
             --project="${{ vars.GCP_PROJECT_ID }}" \
             --zone="${{ vars.GCP_ZONE }}" \
-            --tunnel-through-iap --quiet
+            --tunnel-through-iap --scp-flag=-O --quiet
           gcloud compute ssh chief \
             --project="${{ vars.GCP_PROJECT_ID }}" \
             --zone="${{ vars.GCP_ZONE }}" \

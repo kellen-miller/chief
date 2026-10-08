@@ -103,11 +103,6 @@ legacy IDs, checksums, or data-repair callbacks are maintained. Startup awaits
 migrations before serving work. Run migrations with
 `pnpm chief -- migrate --database /path/to/chief.db`.
 
-This is a hard cutover to a fresh database. Run the one-time
-`scripts/cutover-database.ts` script over SSH before deploying; see
-[the cutover procedure](docs/operations.md#database-cutover). Previous databases
-and backups require their previous image and are not upgraded automatically.
-
 Transactions, domain validation, and recovery verification remain in TypeScript;
 all SQL text lives under `sql/`. `sqlc.yaml` records narrow parameter type overrides for nullable comparisons and
 CASE parameters that sqlc infers incorrectly; they do not alter executable SQL.
