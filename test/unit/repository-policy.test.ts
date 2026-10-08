@@ -139,13 +139,16 @@ describe('repository policy', () => {
     );
     expect(app).not.toContain('metadata_startup_script');
     expect(deploy).toContain('/opt/chief/src/ops/cli.ts');
-    expect(deploy).toContain('--recurse src/ops');
+    expect(deploy).toContain('src/ops gen/sql/monitoring.ts');
+    const bundleVerification = deploy.indexOf('sha256sum --check --status');
+    expect(bundleVerification).toBeGreaterThanOrEqual(0);
+    expect(bundleVerification).toBeLessThan(deploy.indexOf('tar -xzf'));
     expect(deploy).toContain('scripts/configure-google-cloud-apt.sh');
     expect(deploy).toContain(
-      'install -m 0640 /tmp/chief-ops-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/*.ts /opt/chief/src/ops/',
+      'install -m 0640 /tmp/$bundle/src/ops/*.ts /opt/chief/src/ops/',
     );
     expect(deploy).toContain(
-      'install -m 0750 /tmp/configure-google-cloud-apt.sh /opt/chief/configure-google-cloud-apt.sh',
+      'install -m 0750 /tmp/$bundle/scripts/configure-google-cloud-apt.sh /opt/chief/configure-google-cloud-apt.sh',
     );
     expect(deploy).toContain('sudo /opt/chief/configure-google-cloud-apt.sh');
     expect(deploy).toContain('--command="set -e');
