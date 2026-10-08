@@ -177,8 +177,7 @@ describe('OpenAiChiefAgent', () => {
   });
 
   it('normalizes output, citations, and configurable token cost', async () => {
-    const execute = vi.fn((prompt: string) => {
-      void prompt;
+    const execute = vi.fn((_prompt: string) => {
       return Promise.resolve({
         inputTokens: 1_000,
         output: 'The current answer is at https://example.com/source',
@@ -216,8 +215,7 @@ describe('OpenAiChiefAgent', () => {
   });
 
   it('serializes communal memories into the text request', async () => {
-    const execute = vi.fn((prompt: string) => {
-      void prompt;
+    const execute = vi.fn((_prompt: string) => {
       return Promise.resolve({
         inputTokens: 0,
         output: 'Noted',
@@ -253,8 +251,7 @@ describe('OpenAiChiefAgent', () => {
   });
 
   it('keeps historical discussion separate and untrusted', async () => {
-    const execute = vi.fn((prompt: string) => {
-      void prompt;
+    const execute = vi.fn((_prompt: string) => {
       return Promise.resolve({
         inputTokens: 0,
         output: 'Noted',
@@ -315,8 +312,7 @@ describe('OpenAiChiefAgent', () => {
   });
 
   it('labels recent conversation and sanitizes display labels', async () => {
-    const execute = vi.fn((prompt: string) => {
-      void prompt;
+    const execute = vi.fn((_prompt: string) => {
       return Promise.resolve({
         inputTokens: 0,
         output: 'New Mexico',

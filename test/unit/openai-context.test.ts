@@ -12,13 +12,10 @@ describe('createOpenAiContextSummarizer', () => {
   it('uses the configured memory model pricing and validates source IDs', async () => {
     const runAgent = vi.fn(
       (
-        agent: unknown,
-        prompt: string,
-        options: { readonly maxTurns: number; readonly signal: AbortSignal },
+        _agent: unknown,
+        _prompt: string,
+        _options: { readonly maxTurns: number; readonly signal: AbortSignal },
       ) => {
-        void agent;
-        void prompt;
-        void options;
         return Promise.resolve({
           finalOutput: {
             confidence: 0.9,
