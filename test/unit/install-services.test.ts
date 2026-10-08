@@ -23,7 +23,9 @@ it('upgrades older VMs without existing recovery-pruning units', () => {
   vi.spyOn(fs, 'readFileSync').mockImplementation((path, options) => {
     const source = units.get(path.toString());
     if (source === undefined) throw new Error('unit missing');
-    return options === 'utf8' ? source : Buffer.from(source);
+    const encoding = typeof options === 'string' ? options : options?.encoding;
+
+    return encoding === 'utf8' ? source : Buffer.from(source);
   });
   vi.spyOn(hostState, 'atomicWrite').mockImplementation((path, source) => {
     units.set(path, source);

@@ -257,12 +257,11 @@ describe('ConversationOrchestrator prepared context', () => {
       }),
     );
     const assemble = vi.fn(
-      (input: {
+      (_input: {
         readonly beforeEventId?: number;
         readonly now: number;
         readonly prompt: string;
       }) => {
-        void input;
         return Promise.resolve({
           approximateTokens: 42,
           degraded: false,

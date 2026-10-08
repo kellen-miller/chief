@@ -279,8 +279,7 @@ describe('Realtime context recall', () => {
       ],
       usageUsd: 0.003,
     };
-    const execute = vi.fn((prompt: string) => {
-      void prompt;
+    const execute = vi.fn((_prompt: string) => {
       return Promise.resolve({
         inputTokens: 0,
         output: 'Noted',
@@ -360,12 +359,11 @@ describe('Realtime context recall', () => {
     const sourceLink =
       'https://discord.com/channels/32345678901234567/22345678901234567/52345678901234567';
     const assemble = vi.fn(
-      (input: {
+      (_input: {
         readonly beforeEventId?: number;
         readonly now: number;
         readonly prompt: string;
       }) => {
-        void input;
         return Promise.resolve({
           approximateTokens: 25,
           degraded: false,
