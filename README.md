@@ -84,7 +84,10 @@ initial host/apt/Node environment or forwards existing script entrypoints to
 Ordinary database statements live in `sql/queries/application.sql`. `pnpm generate:sql`
 reads `sql/migrations/` directly with sqlc 1.31.1 and emits
 synchronous `better-sqlite3` statements and binding/row types into
-`src/database/queries.ts`. Generation uses our
+`gen/sql/application.ts`. All generated code lives under `gen/` (future protobuf
+output belongs there too). SQLite extension queries, dynamic SQL, and recovery
+statements unsupported by sqlc live in `sql/queries/sqlite/`; handwritten
+TypeScript loads those files rather than embedding SQL. Generation uses our
 [sqlc TypeScript plugin fork](https://github.com/kellen-miller/sqlc-gen-typescript),
 pinned to a WASM release and SHA256 in `sqlc.yaml`. The fork supports synchronous
 prepared statements, named/positional bindings, SQLite types, alias casing, and

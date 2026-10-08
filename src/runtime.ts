@@ -1,6 +1,8 @@
 import { mkdir, readFile, statfs, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
+import * as queries from '../gen/sql/application.js';
+
 import pino from 'pino';
 import { setTracingDisabled } from '@openai/agents';
 
@@ -296,13 +298,8 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     }),
     diagnostics: () =>
       Promise.resolve({
-        memoryJobs: database
-          .prepare(
-            `select
-               count(*) filter (where status = 'failed') as failed,
-               count(*) filter (where status in ('pending', 'leased')) as pending
-             from memory_jobs`,
-          )
+        memoryJobs: queries
+          .runtimeStartChiefSelectMemoryJobs(database)
           .get() as { readonly failed: number; readonly pending: number },
         models: {
           text: config.models.text,
@@ -460,20 +457,16 @@ function checkDatabase(
 ): boolean {
   try {
     return database.transaction(() => {
-      database
-        .prepare(
-          `insert into maintenance_runs (kind, started_at, completed_at, status)
-           values ('health', ?, ?, 'completed')`,
-        )
+      queries
+        .runtimeCheckDatabaseInsertMaintenanceRuns(database)
         .run(Date.now(), Date.now());
-      database
-        .prepare("delete from maintenance_runs where kind = 'health'")
-        .run();
+      queries.runtimeCheckDatabaseDeleteMaintenanceRuns(database).run();
       return (
-        database.prepare('select vec_version()').pluck().get() === 'v0.1.9' &&
+        queries.runtimeCheckDatabaseSelectStatement(database).pluck().get() ===
+          'v0.1.9' &&
         verifyContextDatabaseSchema(database) &&
-        database
-          .prepare('select count(*) from conversation_events where 0')
+        queries
+          .runtimeCheckDatabaseSelectConversationEvents(database)
           .pluck()
           .get() === 0
       );

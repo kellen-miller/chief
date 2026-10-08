@@ -9,7 +9,7 @@ import {
   type MonitoringMarkDeliveredArgs,
   type MonitoringPruneAlertsArgs,
   type MonitoringRecordAlertArgs,
-} from './alert-queries.ts';
+} from '../../gen/sql/monitoring.ts';
 
 import {
   deploymentGraceSeconds,

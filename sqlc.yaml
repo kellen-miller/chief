@@ -10,13 +10,17 @@ sql:
     queries: sql/queries/application.sql
     codegen:
       - plugin: typescript
-        out: src/database
+        out: gen/sql
         options:
           driver: better-sqlite3
           sqlite:
             emit: prepared
-            filename: queries.ts
+            filename: application.ts
             parameter_types:
+              repairLegacyDataExactHourlyBackfillRunIdsSelectContextBackfillPages:
+                '2': string
+              contextStoreAssertInputsAvailableSelectContextTombstones:
+                '3': string | null
               contextBackfillRecordManifestPageUpdateContextBackfills:
                 '7': string | null
                 '10': string | null
@@ -29,9 +33,9 @@ sql:
     queries: sql/queries/monitoring.sql
     codegen:
       - plugin: typescript
-        out: src/ops
+        out: gen/sql
         options:
           driver: better-sqlite3
           sqlite:
             emit: functions
-            filename: alert-queries.ts
+            filename: monitoring.ts

@@ -1,6 +1,9 @@
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 
+import { readSqliteStatement } from '../database/sqlite-statements.js';
+import * as queries from '../../gen/sql/application.js';
+
 import { verifyRecordedMigrationSet } from '../database/migrations.js';
 
 export {
@@ -11,7 +14,10 @@ export {
 export function openChiefDatabase(path: string): Database.Database {
   const database = new Database(path);
   sqliteVec.load(database);
-  const vectorVersion = database.prepare('select vec_version()').pluck().get();
+  const vectorVersion = queries
+    .databaseOpenChiefDatabaseSelectStatement(database)
+    .pluck()
+    .get();
   if (vectorVersion !== 'v0.1.9') {
     database.close();
     throw new Error(`unsupported sqlite-vec version: ${String(vectorVersion)}`);
@@ -32,7 +38,9 @@ export function verifyContextDatabaseSchema(
     if (
       !database
         .prepare(
-          "select 1 from schema_migrations where id = '0013_legacy_source_scope'",
+          readSqliteStatement(
+            'databaseVerifyContextDatabaseSchemaSelectSchemaMigrations',
+          ),
         )
         .get()
     )
@@ -48,7 +56,15 @@ export function verifyContextDatabaseSchema(
       'discord_reconciliation_state',
       'discord_reconciliation_seen',
     ]) {
-      database.prepare(`select count(*) from ${table} where 0`).pluck().get();
+      database
+        .prepare(
+          readSqliteStatement(
+            'databaseVerifyContextDatabaseSchemaSelectStatement',
+            [table],
+          ),
+        )
+        .pluck()
+        .get();
     }
     return true;
   } catch {

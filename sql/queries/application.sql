@@ -1180,3 +1180,395 @@ insert into usage_ledger
                  @actualUsd, @occurredAt, @occurrenceMonth, @backfillRunId,
                  case when @actualUsd is null then null else @occurredAt end,
                  @reservationOrigin, @originBackfillRunId);
+
+-- name: discordReconciliationServiceRunPassDeleteDiscordReconciliationSeen :exec
+delete from discord_reconciliation_seen
+             where scope_id = ? and pass_key = ?;
+
+-- name: discordReconciliationServiceRunPassUpdateDiscordReconciliationState :exec
+update discord_reconciliation_state
+             set phase = ?, pass_key = ?, cursor_message_id = null,
+                 covered_oldest_message_id = null,
+                 covered_newest_message_id = null,
+                 scan_upper_bound_message_id = ?, updated_at = ?
+             where scope_id = ?;
+
+-- name: discordReconciliationServiceApplyPageInsertDiscordReconciliationSeen :exec
+insert into discord_reconciliation_seen
+         (scope_id, pass_key, message_id, observed_at, revision_checksum)
+       values (?, ?, ?, ?, ?)
+       on conflict(scope_id, pass_key, message_id) do update set
+         observed_at = excluded.observed_at,
+         revision_checksum = excluded.revision_checksum;
+
+-- name: discordReconciliationServiceUpdateProgressUpdateDiscordReconciliationState :exec
+update discord_reconciliation_state
+         set cursor_message_id = ?, covered_oldest_message_id = ?,
+             covered_newest_message_id = ?, updated_at = ?
+         where scope_id = ?;
+
+-- name: discordReconciliationServiceInferCoveredDeletionsSelectDiscordReconciliationSeen :many
+select message_id from discord_reconciliation_seen
+           where scope_id = ? and pass_key = ?;
+
+-- name: discordReconciliationServiceInferCoveredDeletionsSelectConversationEvents :many
+select distinct c.discord_message_id
+         from conversation_events c
+         where c.guild_id = ? and c.channel_id = ? and c.medium = 'text'
+           and (
+             c.content_state = 'available'
+             or (
+               c.content_state = 'scrubbed'
+               and c.content_state_reason = 'retention-expired'
+               and exists (
+                 select 1 from source_events s
+                 where s.platform_source_id = c.discord_message_id
+                   and s.medium = 'text'
+                   and s.source_scope_id =
+                     c.guild_id || '/' || c.channel_id || '/' ||
+                     c.discord_message_id
+               )
+             )
+           );
+
+-- name: discordReconciliationServiceCompletePassSelectDiscordReconciliationSeen :many
+select message_id from discord_reconciliation_seen
+           where scope_id = ? and pass_key = ?;
+
+-- name: discordReconciliationServiceCompletePassUpdateDiscordReconciliationState :exec
+update discord_reconciliation_state
+           set high_water_message_id = ?, phase = null, pass_key = null,
+               cursor_message_id = null, covered_oldest_message_id = null,
+               covered_newest_message_id = null, last_complete_at = ?,
+               scan_upper_bound_message_id = null,
+               last_full_scan_at = case when ? = 'full' then ?
+                                        else last_full_scan_at end,
+               updated_at = ? where scope_id = ?;
+
+-- name: discordReconciliationServiceCompletePassDeleteDiscordReconciliationSeen :exec
+delete from discord_reconciliation_seen
+           where scope_id = ? and pass_key like ? and pass_key <> ?;
+
+-- name: discordReconciliationServiceEnsureStateInsertDiscordReconciliationState :exec
+insert into discord_reconciliation_state (scope_id, updated_at)
+         values (?, ?) on conflict(scope_id) do nothing;
+
+-- name: discordReconciliationServiceStateSelectDiscordReconciliationState :many
+select high_water_message_id as highWaterMessageId, phase,
+                pass_key as passKey, cursor_message_id as cursorMessageId,
+                covered_oldest_message_id as coveredOldestMessageId,
+                covered_newest_message_id as coveredNewestMessageId,
+                scan_upper_bound_message_id as scanUpperBoundMessageId,
+                last_complete_at as lastCompleteAt,
+                last_full_scan_at as lastFullScanAt
+         from discord_reconciliation_state where scope_id = ?;
+
+-- name: contextStoreAssertInputsAvailableSelectContextTombstones :many
+select exists(
+           select 1 from context_tombstones
+           where (scope_type = 'document' and scope_id = @documentKey)
+              or (scope_type = 'document'
+                  and scope_id = @documentGenerationScopeId)
+              or (scope_type = 'topic' and scope_id = @topicKey)
+         );
+
+-- name: databaseOpenChiefDatabaseSelectStatement :many
+select vec_version();
+
+-- name: recoveryVerifyRestorableDatabaseSelectStatement :many
+select vec_version();
+
+-- name: recoveryVerifyRestorableDatabaseSelectContextBackfills :many
+select exists(
+               select 1 from context_backfills b
+               where b.page_count != (
+                 select count(*) from context_backfill_pages p
+                 where p.run_id = b.id
+               )
+             );
+
+-- name: recoveryVerifyRestorableDatabaseSelectContextTombstones :many
+select scope_type as scopeType, scope_id as scopeId, reason,
+                occurred_at as occurredAt, checksum
+         from context_tombstones;
+
+-- name: recoveryScrubMemoriesSelectMemories2 :many
+select state from memories where id = ?;
+
+-- name: recoveryRecordContextJournalInsertContextTombstones :exec
+insert into context_tombstones
+           (tombstone_key, scope_type, scope_id, reason, occurred_at, checksum)
+         values (?, ?, ?, ?, ?, ?)
+         on conflict(tombstone_key) do nothing;
+
+-- name: recoveryRecordContextJournalInsertContextForgetJournal :exec
+insert into context_forget_journal
+           (journal_key, scope_id, tombstone_key, occurred_at, checksum,
+            payload_json, upload_status, uploaded_at)
+         values (?, ?, ?, ?, ?, ?, 'uploaded', ?)
+         on conflict(journal_key) do update set
+           upload_status = 'uploaded', uploaded_at = excluded.uploaded_at;
+
+-- name: recoveryRecordContextJournalInsertContextForgetJournal2 :exec
+insert into context_forget_journal
+           (journal_key, scope_id, tombstone_key, occurred_at, checksum,
+            upload_status, uploaded_at)
+         values (?, ?, ?, ?, ?, 'uploaded', ?)
+         on conflict(journal_key) do update set
+           upload_status = 'uploaded', uploaded_at = excluded.uploaded_at;
+
+-- name: runtimeStartChiefSelectMemoryJobs :many
+select
+               count(*) filter (where status = 'failed') as failed,
+               count(*) filter (where status in ('pending', 'leased')) as pending
+             from memory_jobs;
+
+-- name: runtimeCheckDatabaseInsertMaintenanceRuns :exec
+insert into maintenance_runs (kind, started_at, completed_at, status)
+           values ('health', ?, ?, 'completed');
+
+-- name: runtimeCheckDatabaseDeleteMaintenanceRuns :exec
+delete from maintenance_runs where kind = 'health';
+
+-- name: runtimeCheckDatabaseSelectStatement :many
+select vec_version();
+
+-- name: runtimeCheckDatabaseSelectConversationEvents :many
+select count(*) from conversation_events where 0;
+
+-- name: repairLegacyDataGuardLegacyBackfillAccountingSelectContextBackfills :many
+select id from context_backfills
+       where status in ('active', 'paused')
+       order by id desc;
+
+-- name: repairLegacyDataGuardLegacyBackfillAccountingUpdateContextBackfills :exec
+update context_backfills
+       set status = 'failed',
+           pause_reason = 'migration-accounting-rebuild-required',
+           updated_at = ?
+       where status in ('active', 'paused') and id != ?;
+
+-- name: repairLegacyDataGuardLegacyBackfillAccountingUpdateContextBackfills2 :exec
+update context_backfills
+       set status = 'paused',
+           pause_reason = 'migration-accounting-resume-required',
+           updated_at = ?
+       where id = ? and status in ('active', 'paused');
+
+-- name: repairLegacyDataGuardLegacyBackfillAccountingUpdateContextJobs :exec
+update context_jobs set backfill_run_id = ?
+       where backfill_run_id is null and status in ('pending', 'leased');
+
+-- name: repairLegacyDataTargetLegacyBackfillAccountingSelectContextJobs :many
+select j.id, j.tier, j.period_start as periodStart,
+              j.period_end as periodEnd,
+              j.source_document_ids_json as sourceDocumentIdsJson,
+              j.usage_reservation_id as usageReservationId,
+              j.backfill_run_id as backfillRunId,
+              l.occurred_at as reservationOccurredAt
+       from context_jobs j
+       left join usage_ledger l on l.id = j.usage_reservation_id
+       where j.status in ('pending', 'leased');
+
+-- name: repairLegacyDataTargetLegacyBackfillAccountingUpdateContextJobs :exec
+update context_jobs set backfill_run_id = ? where id = ?;
+
+-- name: repairLegacyDataTargetLegacyBackfillAccountingUpdateUsageLedger :exec
+update usage_ledger set backfill_run_id = ?
+             where id = ? and actual_usd is null;
+
+-- name: repairLegacyDataTargetLegacyBackfillAccountingUpdateUsageLedger2 :exec
+update usage_ledger set backfill_run_id = null
+             where id = ? and actual_usd is null
+               and backfill_run_id = ?;
+
+-- name: repairLegacyDataTargetLegacyBackfillAccountingUpdateContextJobs2 :exec
+update context_jobs set backfill_run_id = null where id = ?;
+
+-- name: repairLegacyDataTargetLegacyBackfillAccountingUpdateContextBackfills :exec
+update context_backfills
+     set status = 'paused', completed_at = null,
+         pause_reason = 'migration-accounting-resume-required',
+         updated_at = ?
+     where id = ? and (
+       status in ('active', 'paused', 'completed')
+       or pause_reason = 'migration-accounting-rebuild-required'
+     );
+
+-- name: repairLegacyDataProvableBackfillRunIdsSelectContextBackfillSegments :many
+select distinct s.run_id
+       from context_backfill_segments s
+       join context_backfills b on b.id = s.run_id
+       where b.created_at <= ? and s.committed_at <= ?
+       order by s.run_id desc;
+
+-- name: repairLegacyDataProvableBackfillRunIdsSelectContextBackfillSegments2 :many
+select exists(
+             select 1 from context_backfill_segments
+             where run_id = ? and period_start >= ? and period_end <= ?
+           );
+
+-- name: repairLegacyDataMigrationGuardedRunSelectContextBackfills :many
+select exists(
+           select 1 from context_backfills where id = ? and pause_reason in (
+             'migration-accounting-resume-required',
+             'migration-accounting-rebuild-required'
+           )
+         );
+
+-- name: repairLegacyDataRepairBackfillOwnershipSelectContextJobs :many
+select id, tier, period_start as periodStart, period_end as periodEnd,
+              source_revision_checksum as sourceRevisionChecksum,
+              source_document_ids_json as sourceDocumentIdsJson,
+              usage_reservation_id as usageReservationId,
+              backfill_run_id as backfillRunId
+       from context_jobs where status in ('pending', 'leased');
+
+-- name: repairLegacyDataRepairBackfillOwnershipUpdateContextJobs :exec
+update context_jobs set backfill_run_id = ? where id = ?;
+
+-- name: repairLegacyDataRepairBackfillOwnershipUpdateUsageLedger :exec
+update usage_ledger set backfill_run_id = ?
+     where id = ? and actual_usd is null;
+
+-- name: repairLegacyDataRepairBackfillOwnershipUpdateContextBackfills :exec
+update context_backfills
+     set status = 'paused', completed_at = null,
+         pause_reason = 'migration-accounting-resume-required',
+         updated_at = ?
+     where id = ? and (
+       status in ('active', 'paused', 'completed')
+       or pause_reason in (
+         'migration-accounting-resume-required',
+         'migration-accounting-rebuild-required'
+       )
+     );
+
+-- name: repairLegacyDataRepairReservationOriginOwnershipSelectContextJobs :many
+select j.id, j.tier, j.period_start as periodStart,
+              j.period_end as periodEnd,
+              j.source_revision_checksum as sourceRevisionChecksum,
+              j.source_document_ids_json as sourceDocumentIdsJson,
+              j.usage_reservation_id as usageReservationId,
+              j.backfill_run_id as backfillRunId,
+              l.id as ledgerReservationId,
+              l.actual_usd as reservationActualUsd,
+              l.backfill_run_id as reservationBackfillRunId,
+              l.reservation_origin as reservationOrigin,
+              l.origin_backfill_run_id as originBackfillRunId
+       from context_jobs j
+       left join usage_ledger l on l.id = j.usage_reservation_id
+       where j.status in ('pending', 'leased');
+
+-- name: repairLegacyDataRepairReservationOriginOwnershipUpdateContextJobs :exec
+update context_jobs set backfill_run_id = ? where id = ?;
+
+-- name: repairLegacyDataRepairReservationOriginOwnershipUpdateUsageLedger :exec
+update usage_ledger set backfill_run_id = ?
+     where id = ? and actual_usd is null;
+
+-- name: repairLegacyDataRepairReservationOriginOwnershipUpdateContextJobs2 :exec
+update context_jobs
+     set status = 'failed', lease_expires_at = null,
+         last_error_category = 'migration-accounting-ambiguous'
+     where id = ?;
+
+-- name: repairLegacyDataRepairReservationOriginOwnershipInsertContextAccountingHolds :exec
+insert into context_accounting_holds
+       (reservation_id, job_id, run_id, reason, created_at)
+     values (?, ?, ?, 'migration-accounting-ambiguous', ?);
+
+-- name: repairLegacyDataRepairReservationOriginOwnershipUpdateContextBackfills :exec
+update context_backfills
+     set status = 'failed', completed_at = null,
+         pause_reason = 'migration-accounting-rebuild-required',
+         updated_at = ?
+     where id = ?;
+
+-- name: repairLegacyDataRepairReservationOriginOwnershipUpdateContextBackfills2 :exec
+update context_backfills
+     set status = 'paused', completed_at = null,
+         pause_reason = 'migration-accounting-resume-required',
+         updated_at = ?
+     where id = ? and (
+       status in ('active', 'paused', 'completed')
+       or pause_reason in (
+         'migration-accounting-resume-required',
+         'migration-accounting-rebuild-required'
+       )
+     );
+
+-- name: repairLegacyDataExactBackfillRunIdsSelectContextBackfillSegments :many
+select distinct run_id from context_backfill_segments
+       order by run_id desc;
+
+-- name: repairLegacyDataExactJobDocumentIdsSelectContextDocuments2 :many
+select id, revision from context_documents
+       where tier = ? and completeness = 'final' and state = 'active'
+         and content_state = 'available' and is_internal = 0
+         and period_start >= ? and period_end <= ?
+       order by period_start, id;
+
+-- name: repairLegacyDataExactHourlyBackfillRunIdsSelectContextBackfills :many
+select distinct b.id as runId, b.scope_id as scopeId
+       from context_backfills b
+       join context_backfill_pages p on p.run_id = b.id
+       order by b.id desc;
+
+-- name: repairLegacyDataExactHourlyBackfillRunIdsSelectConversationEvents :many
+select id, discord_message_id as discordMessageId, content,
+                edited_at as editedAt
+         from conversation_events
+         where guild_id || '/' || channel_id = ? and medium = 'text'
+           and content_state = 'available'
+           and occurred_at >= ? and occurred_at < ?
+         order by id;
+
+-- name: repairLegacyDataExactHourlyBackfillRunIdsSelectContextBackfillPages :many
+select exists(
+         select 1 from context_backfill_pages
+         where run_id = ? and cast(? as integer) between
+           min(cast(oldest_source_id as integer),
+               cast(newest_source_id as integer)) and
+           max(cast(oldest_source_id as integer),
+               cast(newest_source_id as integer))
+       );
+
+-- name: repairLegacyDataBackfillContextForgetJournalsSelectContextTombstones :many
+select journal_key as journalKey, occurred_at as occurredAt,
+              scope_id as scopeId, tombstone_key as tombstoneKey,
+              coalesce(
+                (select t.reason from context_tombstones t
+                 where t.tombstone_key = context_forget_journal.tombstone_key
+                   and t.reason in ('discord-deleted', 'locally-forgotten')),
+                (select c.content_state_reason from conversation_events c
+                 where c.guild_id || '/' || c.channel_id || '/' ||
+                       c.discord_message_id = context_forget_journal.scope_id
+                   and c.content_state_reason in (
+                     'discord-deleted', 'locally-forgotten'
+                   )
+                 order by c.id desc limit 1),
+                'locally-forgotten'
+              ) as reason
+       from context_forget_journal where payload_json = '{}';
+
+-- name: repairLegacyDataBackfillContextForgetJournalsUpdateContextForgetJournal :exec
+update context_forget_journal
+     set payload_json = ?, checksum = ? where journal_key = ?;
+
+-- name: conversationQualityCorpusReplayConversationQualityCaseUpdateConversationEvents :exec
+update conversation_events
+             set content = '', content_state = 'scrubbed',
+                 content_state_reason = ? where id = ?;
+
+-- name: conversationQualityCorpusInsertQualityDocumentInsertContextDocuments :exec
+insert into context_documents
+         (id, document_key, tier, period_start, period_end, timezone,
+          topic_key, topic_label, revision, completeness, state,
+          content_state, content_state_reason, summary, confidence,
+          retention_deadline, created_at, updated_at, is_internal)
+       values (?, ?, ?, ?, ?, 'America/New_York', ?, ?, 1, 'final',
+               'active', 'available', 'retained', ?, 0.95, null, ?, ?, 0);
+
+-- name: conversationQualityCorpusInsertQualityDocumentInsertContextDocumentEvents :exec
+insert into context_document_events (document_id, event_id) values (?, ?);

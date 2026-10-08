@@ -1,5 +1,8 @@
 import { readFile } from 'node:fs/promises';
 
+import { readSqliteStatement } from '../src/database/sqlite-statements.js';
+import * as queries from '../gen/sql/application.js';
+
 import { ContextAssembler } from '../src/context/context-assembler.js';
 import type {
   ContextTier,
@@ -156,11 +159,9 @@ export async function replayConversationQualityCase(
         evidence.contentState !== undefined &&
         evidence.contentState !== 'available'
       ) {
-        database
-          .prepare(
-            `update conversation_events
-             set content = '', content_state = 'scrubbed',
-                 content_state_reason = ? where id = ?`,
+        queries
+          .conversationQualityCorpusReplayConversationQualityCaseUpdateConversationEvents(
+            database,
           )
           .run(evidence.contentState, eventId);
       }
@@ -361,9 +362,7 @@ function indexSource(
   content: string,
 ): void {
   database
-    .prepare(
-      'insert into conversation_event_fts (rowid, content) values (?, ?)',
-    )
+    .prepare(readSqliteStatement('insertConversationEventFts'))
     .run(eventId, content);
 }
 
@@ -388,15 +387,9 @@ function insertQualityDocument(
           ? 7 * 24 * 60 * 60 * 1_000
           : 30 * 24 * 60 * 60 * 1_000;
   const periodEnd = now - input.periodOffset * intervalMs;
-  database
-    .prepare(
-      `insert into context_documents
-         (id, document_key, tier, period_start, period_end, timezone,
-          topic_key, topic_label, revision, completeness, state,
-          content_state, content_state_reason, summary, confidence,
-          retention_deadline, created_at, updated_at, is_internal)
-       values (?, ?, ?, ?, ?, 'America/New_York', ?, ?, 1, 'final',
-               'active', 'available', 'retained', ?, 0.95, null, ?, ?, 0)`,
+  queries
+    .conversationQualityCorpusInsertQualityDocumentInsertContextDocuments(
+      database,
     )
     .run(
       input.id,
@@ -410,17 +403,19 @@ function insertQualityDocument(
       now,
       now,
     );
-  database
-    .prepare(
-      'insert into context_document_events (document_id, event_id) values (?, ?)',
+  queries
+    .conversationQualityCorpusInsertQualityDocumentInsertContextDocumentEvents(
+      database,
     )
     .run(input.id, input.eventId);
   database
-    .prepare('insert into context_document_fts (rowid, content) values (?, ?)')
+    .prepare(readSqliteStatement('insertContextDocumentFts'))
     .run(input.id, input.summary);
   database
     .prepare(
-      'insert into context_document_vectors (document_id, embedding) values (?, ?)',
+      readSqliteStatement(
+        'conversationQualityCorpusInsertQualityDocumentInsertContextDocumentVectors',
+      ),
     )
     .run(BigInt(input.id), JSON.stringify(Array.from(input.embedding)));
 }

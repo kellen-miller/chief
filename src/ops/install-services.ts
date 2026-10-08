@@ -17,7 +17,7 @@ export function installServices(): void {
       path,
       source.replace(
         /^ExecStart=.+$/mu,
-        `ExecStart=/opt/chief/node/bin/node /opt/chief/ops/cli.ts ${command}`,
+        `ExecStart=/opt/chief/node/bin/node /opt/chief/src/ops/cli.ts ${command}`,
       ),
       0o644,
     );
@@ -32,7 +32,7 @@ Description=Prune expired Chief recovery artifacts
 
 [Service]
 Type=oneshot
-ExecStart=/opt/chief/node/bin/node /opt/chief/ops/cli.ts prune-recovery
+ExecStart=/opt/chief/node/bin/node /opt/chief/src/ops/cli.ts prune-recovery
 `,
     0o644,
   );

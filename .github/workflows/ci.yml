@@ -59,7 +59,7 @@ jobs:
         with:
           sqlc-version: 1.31.1
       - run: pnpm generate:sql
-      - run: git diff --exit-code -- src/database/queries.ts src/ops/alert-queries.ts
+      - run: git diff --exit-code -- gen/sql
       - run: shellcheck scripts/*.sh
       - run: terraform -chdir=infra/bootstrap init -backend=false
       - run: terraform -chdir=infra/bootstrap validate -no-color
@@ -104,4 +104,4 @@ jobs:
       - run: docker build --tag chief:test .
       - run: docker run --rm chief:test smoke
       - name: Smoke native host TypeScript
-        run: docker run --rm --entrypoint node --volume "$PWD/src/ops:/ops:ro" chief:test /ops/cli.ts configure-github-ruleset --dry-run
+        run: docker run --rm --entrypoint node --volume "$PWD/src/ops:/workspace/src/ops:ro" --volume "$PWD/gen:/workspace/gen:ro" chief:test /workspace/src/ops/cli.ts configure-github-ruleset --dry-run

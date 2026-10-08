@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { readSqliteStatement } from '../database/sqlite-statements.js';
+import * as queries from '../../gen/sql/application.js';
+
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 
@@ -52,10 +55,24 @@ export function verifyRestorableDatabase(
 ): boolean {
   try {
     if (!verifyRecordedMigrationSet(database)) return false;
-    if (database.prepare('pragma integrity_check').pluck().get() !== 'ok') {
+    if (
+      database
+        .prepare(
+          readSqliteStatement(
+            'recoveryVerifyRestorableDatabasePragmaStatement',
+          ),
+        )
+        .pluck()
+        .get() !== 'ok'
+    ) {
       return false;
     }
-    if (database.prepare('select vec_version()').pluck().get() !== 'v0.1.9') {
+    if (
+      queries
+        .recoveryVerifyRestorableDatabaseSelectStatement(database)
+        .pluck()
+        .get() !== 'v0.1.9'
+    ) {
       return false;
     }
     if (requiredMigration === undefined) return true;
@@ -75,26 +92,14 @@ export function verifyRestorableDatabase(
     const hasBackfillProgress = hasMigration(database, '0006_context_backfill');
     if (hasBackfillProgress) {
       const inconsistentBackfillProgress =
-        database
-          .prepare(
-            `select exists(
-               select 1 from context_backfills b
-               where b.page_count != (
-                 select count(*) from context_backfill_pages p
-                 where p.run_id = b.id
-               )
-             )`,
-          )
+        queries
+          .recoveryVerifyRestorableDatabaseSelectContextBackfills(database)
           .pluck()
           .get() === 1;
       if (inconsistentBackfillProgress) return false;
     }
-    const tombstones = database
-      .prepare(
-        `select scope_type as scopeType, scope_id as scopeId, reason,
-                occurred_at as occurredAt, checksum
-         from context_tombstones`,
-      )
+    const tombstones = queries
+      .recoveryVerifyRestorableDatabaseSelectContextTombstones(database)
       .all() as {
       readonly checksum: string;
       readonly occurredAt: number;
@@ -117,7 +122,15 @@ export function verifyRestorableDatabase(
       );
     }
     for (const table of requiredTables) {
-      database.prepare(`select count(*) from ${table}`).pluck().get();
+      database
+        .prepare(
+          readSqliteStatement(
+            'recoveryVerifyRestorableDatabaseSelectStatement2',
+            [table],
+          ),
+        )
+        .pluck()
+        .get();
     }
     return true;
   } catch {
@@ -130,49 +143,21 @@ function verifyContextIndexes(
   hasInternalDocuments: boolean,
 ): boolean {
   const publicDocumentFilter = hasInternalDocuments
-    ? 'and is_internal = 0'
+    ? readSqliteStatement('publicContextDocumentFilter')
     : '';
-  database.exec(`
-    drop table if exists temp.context_restore_actual_vocab;
-    drop table if exists temp.context_restore_expected_vocab;
-    drop table if exists temp.context_restore_expected_fts;
-    create virtual table temp.context_restore_expected_fts using fts5(
-      content, content='', contentless_delete=1
-    );
-    insert into temp.context_restore_expected_fts (rowid, content)
-      select id, summary from context_documents
-      where state = 'active' and content_state = 'available'
-        ${publicDocumentFilter};
-    create virtual table temp.context_restore_actual_vocab using fts5vocab(
-      main, context_document_fts, instance
-    );
-    create virtual table temp.context_restore_expected_vocab using fts5vocab(
-      temp, context_restore_expected_fts, instance
-    );
-  `);
+  database.exec(
+    readSqliteStatement('recoveryVerifyContextIndexesDropIf', [
+      publicDocumentFilter,
+    ]),
+  );
   try {
     const identityMismatch =
       database
         .prepare(
-          `with expected(id) as (
-             select id from context_documents
-             where state = 'active' and content_state = 'available'
-               ${publicDocumentFilter}
-           )
-           select
-             exists(
-               select id from expected
-               except select rowid from context_document_fts
-             ) or exists(
-               select rowid from context_document_fts
-               except select id from expected
-             ) or exists(
-               select id from expected
-               except select document_id from context_document_vectors
-             ) or exists(
-               select document_id from context_document_vectors
-               except select id from expected
-             )`,
+          readSqliteStatement(
+            'recoveryVerifyContextIndexesSelectContextDocuments',
+            [publicDocumentFilter],
+          ),
         )
         .pluck()
         .get() === 1;
@@ -180,37 +165,18 @@ function verifyContextIndexes(
     const lexicalMismatch =
       database
         .prepare(
-          `select
-             exists(
-               select term, doc, col, offset
-               from context_restore_expected_vocab
-               except
-               select term, doc, col, offset
-               from context_restore_actual_vocab
-             ) or exists(
-               select term, doc, col, offset
-               from context_restore_actual_vocab
-               except
-               select term, doc, col, offset
-               from context_restore_expected_vocab
-             )`,
+          readSqliteStatement(
+            'recoveryVerifyContextIndexesSelectContextRestoreExpectedVocab',
+          ),
         )
         .pluck()
         .get() === 1;
     if (lexicalMismatch) return false;
     const tierRows = database
       .prepare(
-        `with tiers(tier) as (
-           values ('hourly'), ('daily'), ('weekly'), ('long-term')
-         )
-         select t.tier, count(d.id) as count
-         from tiers t
-         left join context_documents d
-           on d.tier = t.tier and d.state = 'active'
-          and d.content_state = 'available' ${publicDocumentFilter}
-         left join context_document_fts f on f.rowid = d.id
-         left join context_document_vectors v on v.document_id = d.id
-         group by t.tier order by t.tier`,
+        readSqliteStatement('recoveryVerifyContextIndexesSelectTiers', [
+          publicDocumentFilter,
+        ]),
       )
       .all() as { readonly count: number; readonly tier: string }[];
     return (
@@ -220,11 +186,7 @@ function verifyContextIndexes(
       )
     );
   } finally {
-    database.exec(`
-      drop table if exists temp.context_restore_actual_vocab;
-      drop table if exists temp.context_restore_expected_vocab;
-      drop table if exists temp.context_restore_expected_fts;
-    `);
+    database.exec(readSqliteStatement('recoveryVerifyContextIndexesDropIf2'));
   }
 }
 
@@ -306,7 +268,7 @@ function replayCompatibleJournal(
   if (contextSchema) {
     for (const eventId of conversationEventIds) {
       database
-        .prepare('delete from conversation_event_fts where rowid = ?')
+        .prepare(readSqliteStatement('deleteConversationEventFts'))
         .run(eventId);
     }
     updateIds(
@@ -351,7 +313,9 @@ function scrubMemories(
     const placeholders = sourceEventIds.map(() => '?').join(', ');
     for (const id of database
       .prepare(
-        `select id from memories where source_event_id in (${placeholders})`,
+        readSqliteStatement('recoveryScrubMemoriesSelectMemories', [
+          placeholders,
+        ]),
       )
       .pluck()
       .all(...sourceEventIds) as number[]) {
@@ -359,7 +323,9 @@ function scrubMemories(
     }
     database
       .prepare(
-        `delete from memory_jobs where source_event_id in (${placeholders})`,
+        readSqliteStatement('recoveryScrubMemoriesDeleteMemoryJobs', [
+          placeholders,
+        ]),
       )
       .run(...sourceEventIds);
     updateIds(
@@ -374,15 +340,13 @@ function scrubMemories(
     (id) => Number.isSafeInteger(id) && id > 0,
   );
   for (const id of affectedMemoryIds) {
-    const state = database
-      .prepare('select state from memories where id = ?')
+    const state = queries
+      .recoveryScrubMemoriesSelectMemories2(database)
       .pluck()
       .get(id);
     if (state !== 'active') continue;
-    database.prepare('delete from memory_fts where rowid = ?').run(id);
-    database
-      .prepare('delete from memory_vectors where memory_id = ?')
-      .run(BigInt(id));
+    database.prepare(readSqliteStatement('deleteMemoryFts')).run(id);
+    database.prepare(readSqliteStatement('deleteMemoryVector')).run(BigInt(id));
   }
   updateIds(
     database,
@@ -406,7 +370,10 @@ function scrubContextDocuments(
     const placeholders = entry.payload.documentKeys.map(() => '?').join(', ');
     for (const id of database
       .prepare(
-        `select id from context_documents where document_key in (${placeholders})`,
+        readSqliteStatement(
+          'recoveryScrubContextDocumentsSelectContextDocuments',
+          [placeholders],
+        ),
       )
       .pluck()
       .all(...entry.payload.documentKeys) as number[]) {
@@ -417,13 +384,10 @@ function scrubContextDocuments(
     const placeholders = eventIds.map(() => '?').join(', ');
     for (const id of database
       .prepare(
-        `with recursive affected(id) as (
-           select document_id from context_document_events
-           where event_id in (${placeholders})
-           union
-           select p.document_id from context_document_parents p
-           join affected a on a.id = p.parent_document_id
-         ) select id from affected`,
+        readSqliteStatement(
+          'recoveryScrubContextDocumentsSelectContextDocumentEvents',
+          [placeholders],
+        ),
       )
       .pluck()
       .all(...eventIds) as number[]) {
@@ -434,11 +398,9 @@ function scrubContextDocuments(
     (id) => Number.isSafeInteger(id) && id > 0,
   );
   for (const id of ids) {
+    database.prepare(readSqliteStatement('deleteContextDocumentFts')).run(id);
     database
-      .prepare('delete from context_document_fts where rowid = ?')
-      .run(id);
-    database
-      .prepare('delete from context_document_vectors where document_id = ?')
+      .prepare(readSqliteStatement('deleteContextDocumentVector'))
       .run(BigInt(id));
   }
   updateIds(
@@ -472,26 +434,19 @@ function recordContextJournal(
     ) {
       throw new Error('forget journal tombstone is malformed');
     }
-    database
-      .prepare(
-        `insert into context_tombstones
-           (tombstone_key, scope_type, scope_id, reason, occurred_at, checksum)
-         values (?, ?, ?, ?, ?, ?)
-         on conflict(tombstone_key) do nothing`,
-      )
-      .run(
-        tombstoneKey,
-        scopeType,
-        scopeId,
+    queries.recoveryRecordContextJournalInsertContextTombstones(database).run(
+      tombstoneKey,
+      scopeType,
+      scopeId,
+      reason,
+      entry.occurredAt,
+      tombstoneChecksum({
+        occurredAt: entry.occurredAt,
         reason,
-        entry.occurredAt,
-        tombstoneChecksum({
-          occurredAt: entry.occurredAt,
-          reason,
-          scopeId,
-          scopeType: scopeType as 'document' | 'source' | 'topic',
-        }),
-      );
+        scopeId,
+        scopeType: scopeType as 'document' | 'source' | 'topic',
+      }),
+    );
   }
   const primaryTombstone = tombstones[0];
   if (primaryTombstone === undefined) {
@@ -499,15 +454,8 @@ function recordContextJournal(
   }
   const columns = tableColumns(database, 'context_forget_journal');
   if (columns.has('payload_json')) {
-    database
-      .prepare(
-        `insert into context_forget_journal
-           (journal_key, scope_id, tombstone_key, occurred_at, checksum,
-            payload_json, upload_status, uploaded_at)
-         values (?, ?, ?, ?, ?, ?, 'uploaded', ?)
-         on conflict(journal_key) do update set
-           upload_status = 'uploaded', uploaded_at = excluded.uploaded_at`,
-      )
+    queries
+      .recoveryRecordContextJournalInsertContextForgetJournal(database)
       .run(
         entry.journalKey,
         entry.payload.sourceScopeIds[0] ?? primaryTombstone,
@@ -518,15 +466,8 @@ function recordContextJournal(
         now,
       );
   } else {
-    database
-      .prepare(
-        `insert into context_forget_journal
-           (journal_key, scope_id, tombstone_key, occurred_at, checksum,
-            upload_status, uploaded_at)
-         values (?, ?, ?, ?, ?, 'uploaded', ?)
-         on conflict(journal_key) do update set
-           upload_status = 'uploaded', uploaded_at = excluded.uploaded_at`,
-      )
+    queries
+      .recoveryRecordContextJournalInsertContextForgetJournal2(database)
       .run(
         entry.journalKey,
         entry.payload.sourceScopeIds[0] ?? primaryTombstone,
@@ -577,7 +518,9 @@ function hasMigration(
 ): boolean {
   return (
     database
-      .prepare('select exists(select 1 from schema_migrations where id = ?)')
+      .prepare(
+        readSqliteStatement('recoveryHasMigrationSelectSchemaMigrations'),
+      )
       .pluck()
       .get(migrationId) === 1
   );
@@ -600,7 +543,13 @@ function selectIds(
   if (values.length === 0) return [];
   const placeholders = values.map(() => '?').join(', ');
   return database
-    .prepare(`select id from ${table} where ${column} in (${placeholders})`)
+    .prepare(
+      readSqliteStatement('recoverySelectIdsSelectStatement', [
+        table,
+        column,
+        placeholders,
+      ]),
+    )
     .pluck()
     .all(...values) as number[];
 }
@@ -615,6 +564,12 @@ function updateIds(
   if (ids.length === 0) return;
   const placeholders = ids.map(() => '?').join(', ');
   database
-    .prepare(`update ${table} set ${assignments} where id in (${placeholders})`)
+    .prepare(
+      readSqliteStatement('recoveryUpdateIdsUpdateStatement', [
+        table,
+        assignments,
+        placeholders,
+      ]),
+    )
     .run(...values, ...ids);
 }

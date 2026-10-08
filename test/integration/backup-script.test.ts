@@ -53,7 +53,7 @@ describe('online host backup', () => {
         ],
         { timeout: 20_000 },
       );
-      cpSync(resolve('sql/migrations'), join(runtime, 'sql', 'migrations'), {
+      cpSync(resolve('sql'), join(runtime, 'dist', 'sql'), {
         recursive: true,
       });
       writeFileSync(join(runtime, 'package.json'), '{"type":"module"}');
@@ -135,6 +135,7 @@ copyFileSync(source, join(process.env.TEST_UPLOADED, basename(source)));
       // A new SQL file is sufficient: no source registry or constants change.
       const migrationPath = join(
         runtime,
+        'dist',
         'sql',
         'migrations',
         '0015_file_discovery.sql',
@@ -143,7 +144,7 @@ copyFileSync(source, join(process.env.TEST_UPLOADED, basename(source)));
         'create table file_discovery_test (id integer primary key);\n';
       writeFileSync(migrationPath, sql);
       const migrateArgs = [
-        join(runtime, 'dist', 'cli.js'),
+        join(runtime, 'dist', 'src', 'cli.js'),
         'migrate',
         '--database',
         join(data, 'chief.db'),

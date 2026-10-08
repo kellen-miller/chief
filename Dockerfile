@@ -10,6 +10,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
+COPY gen ./gen
+COPY sql ./sql
 RUN pnpm build && pnpm prune --prod
 
 FROM node:24-bookworm-slim@sha256:cb4e8f7c443347358b7875e717c29e27bf9befc8f5a26cf18af3c3dec80e58c5 AS runtime
@@ -27,10 +29,9 @@ WORKDIR /app
 COPY --from=build --chown=node:node /app/package.json ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
-COPY --chown=node:node sql/migrations ./sql/migrations
 USER node
 VOLUME ["/var/lib/chief"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
-ENTRYPOINT ["node", "dist/cli.js"]
+ENTRYPOINT ["node", "dist/src/cli.js"]
 CMD ["run"]

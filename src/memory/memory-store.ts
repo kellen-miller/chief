@@ -1,5 +1,7 @@
-import * as queries from '../database/queries.js';
 import { createHash } from 'node:crypto';
+
+import { readSqliteStatement } from '../database/sqlite-statements.js';
+import * as queries from '../../gen/sql/application.js';
 
 import type Database from 'better-sqlite3';
 
@@ -345,20 +347,13 @@ export class SqliteMemoryStore {
     const lexicalQuery = buildLexicalQuery(query.text, 'AND');
     if (lexicalQuery !== undefined && lexicalQuery.length > 0) {
       const rows = this.#database
-        .prepare(
-          `select m.id from memory_fts f join memories m on m.id = f.rowid
-           where memory_fts match ? and m.state = 'active'
-           order by bm25(memory_fts) limit ?`,
-        )
+        .prepare(readSqliteStatement('memoryStoreRetrieveSelectMemoryFts'))
         .all(lexicalQuery, query.limit * 2) as { id: number }[];
       rows.forEach((row, index) => ranks.set(row.id, 1 / (60 + index + 1)));
     }
 
     const vectorRows = this.#database
-      .prepare(
-        `select memory_id as id from memory_vectors
-         where embedding match ? and k = ? order by distance`,
-      )
+      .prepare(readSqliteStatement('memoryStoreRetrieveSelectMemoryVectors'))
       .all(JSON.stringify(Array.from(query.embedding)), query.limit * 2) as {
       id: number;
     }[];
@@ -371,8 +366,9 @@ export class SqliteMemoryStore {
     const placeholders = ids.map(() => '?').join(',');
     const rows = this.#database
       .prepare(
-        `select id, canonical_text, confidence, kind from memories
-         where state = 'active' and id in (${placeholders})`,
+        readSqliteStatement('memoryStoreRetrieveSelectMemories', [
+          placeholders,
+        ]),
       )
       .all(...ids) as MemoryRow[];
     return rows
@@ -391,12 +387,7 @@ export class SqliteMemoryStore {
     const lexicalQuery = buildLexicalQuery(text, 'OR');
     if (lexicalQuery === undefined || lexicalQuery.length === 0) return [];
     return this.#database
-      .prepare(
-        `select m.id, m.canonical_text as canonicalText
-         from memory_fts f join memories m on m.id = f.rowid
-         where memory_fts match ? and m.state = 'active'
-         order by bm25(memory_fts) limit ?`,
-      )
+      .prepare(readSqliteStatement('memoryStoreFindLexicalSelectMemoryFts'))
       .all(lexicalQuery, limit) as MemoryCandidate[];
   }
 
@@ -423,10 +414,10 @@ export class SqliteMemoryStore {
 
   #deleteIndexes(memoryId: number): void {
     this.#database
-      .prepare('delete from memory_fts where rowid = ?')
+      .prepare(readSqliteStatement('deleteMemoryFts'))
       .run(memoryId);
     this.#database
-      .prepare('delete from memory_vectors where memory_id = ?')
+      .prepare(readSqliteStatement('deleteMemoryVector'))
       .run(BigInt(memoryId));
   }
 
@@ -458,8 +449,9 @@ export class SqliteMemoryStore {
     const placeholders = uniqueIds.map(() => '?').join(', ');
     const memories = this.#database
       .prepare(
-        `select id, state from memories
-         where id in (${placeholders}) order by id`,
+        readSqliteStatement('memoryStoreDeleteContextMemoriesSelectMemories', [
+          placeholders,
+        ]),
       )
       .all(...uniqueIds) as { readonly id: number; readonly state: string }[];
     for (const { id, state } of memories) {
@@ -469,7 +461,12 @@ export class SqliteMemoryStore {
     if (existingIds.length > 0) {
       const existingPlaceholders = existingIds.map(() => '?').join(', ');
       this.#database
-        .prepare(`delete from memories where id in (${existingPlaceholders})`)
+        .prepare(
+          readSqliteStatement(
+            'memoryStoreDeleteContextMemoriesDeleteMemories',
+            [existingPlaceholders],
+          ),
+        )
         .run(...existingIds);
     }
     return existingIds;
@@ -487,7 +484,12 @@ export class SqliteMemoryStore {
     if (sourceEventIds.length === 0) return;
     const sourcePlaceholders = sourceEventIds.map(() => '?').join(', ');
     this.#database
-      .prepare(`delete from source_events where id in (${sourcePlaceholders})`)
+      .prepare(
+        readSqliteStatement(
+          'memoryStoreDeleteContextSourcesDeleteSourceEvents',
+          [sourcePlaceholders],
+        ),
+      )
       .run(...sourceEventIds);
   }
 
@@ -504,14 +506,10 @@ export class SqliteMemoryStore {
     const placeholders = uniqueIds.map(() => '?').join(', ');
     const affected = this.#database
       .prepare(
-        `with recursive affected(id) as (
-           select id from memories where id in (${placeholders})
-           union
-           select m.id from memories m join affected a
-             on m.superseded_by = a.id
-         )
-         select m.id, m.state from affected a join memories m on m.id = a.id
-         order by m.id`,
+        readSqliteStatement(
+          'memoryStoreSupersedeForContextDeletionSelectMemories',
+          [placeholders],
+        ),
       )
       .all(...uniqueIds) as { readonly id: number; readonly state: string }[];
     const existingIds = affected.map(({ id }) => id);
@@ -522,10 +520,10 @@ export class SqliteMemoryStore {
       const existingPlaceholders = existingIds.map(() => '?').join(', ');
       this.#database
         .prepare(
-          `update memories
-           set canonical_text = '', provenance_json = '{}',
-               state = 'superseded', superseded_by = null, updated_at = ?
-           where id in (${existingPlaceholders})`,
+          readSqliteStatement(
+            'memoryStoreSupersedeForContextDeletionUpdateMemories',
+            [existingPlaceholders],
+          ),
         )
         .run(now, ...existingIds);
     }
@@ -542,15 +540,17 @@ export class SqliteMemoryStore {
     const placeholders = sourceEventIds.map(() => '?').join(', ');
     this.#database
       .prepare(
-        `delete from memory_jobs
-         where source_event_id in (${placeholders})`,
+        readSqliteStatement('memoryStoreScrubContextSourcesDeleteMemoryJobs', [
+          placeholders,
+        ]),
       )
       .run(...sourceEventIds);
     this.#database
       .prepare(
-        `update source_events
-         set content = '', extraction_status = 'completed'
-         where id in (${placeholders})`,
+        readSqliteStatement(
+          'memoryStoreScrubContextSourcesUpdateSourceEvents',
+          [placeholders],
+        ),
       )
       .run(...sourceEventIds);
   }
@@ -572,14 +572,15 @@ export class SqliteMemoryStore {
     const snowflakePredicate =
       snowflakes.length === 0
         ? ''
-        : `or (medium = 'text' and platform_source_id in
-             (${snowflakes.map(() => '?').join(', ')}))`;
+        : readSqliteStatement('memorySnowflakeFilter', [
+            snowflakes.map(() => '?').join(', '),
+          ]);
     return this.#database
       .prepare(
-        `select id from source_events
-         where source_scope_id in (${scopePlaceholders})
-           ${snowflakePredicate}
-         order by id`,
+        readSqliteStatement('memoryStoreSourceEventIdsSelectSourceEvents', [
+          scopePlaceholders,
+          snowflakePredicate,
+        ]),
       )
       .pluck()
       .all(...uniqueScopeIds, ...snowflakes) as number[];
@@ -642,11 +643,11 @@ export class SqliteMemoryStore {
       );
     const id = Number(result.lastInsertRowid);
     this.#database
-      .prepare('insert into memory_fts (rowid, canonical_text) values (?, ?)')
+      .prepare(readSqliteStatement('memoryStoreInsertMemoryInsertMemoryFts'))
       .run(id, memory.canonicalText);
     this.#database
       .prepare(
-        'insert into memory_vectors (memory_id, embedding) values (?, ?)',
+        readSqliteStatement('memoryStoreInsertMemoryInsertMemoryVectors'),
       )
       .run(BigInt(id), JSON.stringify(Array.from(memory.embedding)));
     return id;
@@ -673,8 +674,10 @@ export class SqliteMemoryStore {
         const ids = group.ids.split(',').map(Number);
         const keep = this.#database
           .prepare(
-            `select id from memories where id in (${ids.map(() => '?').join(',')})
-             order by confidence desc, updated_at desc, id desc limit 1`,
+            readSqliteStatement(
+              'memoryStoreConsolidateExactDuplicatesSelectMemories',
+              [ids.map(() => '?').join(',')],
+            ),
           )
           .pluck()
           .get(...ids) as number;

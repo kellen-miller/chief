@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import * as queries from '../../src/database/queries.js';
+import * as queries from '../../gen/sql/application.js';
 import {
   migrateChiefDatabase,
   openChiefDatabase,

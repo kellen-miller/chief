@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 
+import { readSqliteStatement } from './sqlite-statements.js';
+
 import type Database from 'better-sqlite3';
 import knex, { type Knex } from 'knex';
 
@@ -32,7 +34,7 @@ export function verifyRecordedMigrationSet(
 ): boolean {
   try {
     const rows = database
-      .prepare('select id, checksum from schema_migrations')
+      .prepare(readSqliteStatement('selectRecordedMigrations'))
       .all() as { readonly checksum: string; readonly id: string }[];
     if (rows.length === 0) return false;
     const recorded = new Map(rows.map((row) => [row.id, row.checksum]));
@@ -60,12 +62,14 @@ export async function migrateChiefDatabase(
     throw new Error(`unknown migration target: ${throughMigrationId}`);
   }
   database.exec(
-    'create table if not exists schema_migrations (id text primary key, checksum text not null, applied_at integer not null)',
+    readSqliteStatement('migrationsMigrateChiefDatabaseCreateSchemaMigrations'),
   );
 
   const applied = new Map(
     (
-      database.prepare('select id, checksum from schema_migrations').all() as {
+      database
+        .prepare(readSqliteStatement('selectRecordedMigrations'))
+        .all() as {
         id: string;
         checksum: string;
       }[]
@@ -83,11 +87,17 @@ export async function migrateChiefDatabase(
 
   if (
     database
-      .prepare("select 1 from sqlite_master where name = 'knex_migrations'")
+      .prepare(
+        readSqliteStatement('migrationsMigrateChiefDatabaseSelectSqliteMaster'),
+      )
       .get()
   ) {
     const completed = database
-      .prepare('select name from knex_migrations')
+      .prepare(
+        readSqliteStatement(
+          'migrationsMigrateChiefDatabaseSelectKnexMigrations',
+        ),
+      )
       .pluck()
       .all() as string[];
     if (completed.some((id) => !applied.has(id))) {
@@ -116,7 +126,9 @@ export async function migrateChiefDatabase(
             database.exec(migration.sql);
             database
               .prepare(
-                'insert into schema_migrations (id, checksum, applied_at) values (?, ?, ?)',
+                readSqliteStatement(
+                  'migrationsMigrateChiefDatabaseInsertSchemaMigrations',
+                ),
               )
               .run(migration.id, migration.checksum, Date.now());
           }

@@ -1,5 +1,7 @@
-import * as queries from '../database/queries.js';
 import { createHash, randomUUID } from 'node:crypto';
+
+import { readSqliteStatement } from '../database/sqlite-statements.js';
+import * as queries from '../../gen/sql/application.js';
 
 import type Database from 'better-sqlite3';
 
@@ -142,14 +144,9 @@ export class ContextDeletionStore {
       (limit, offset) =>
         this.#database
           .prepare(
-            `select c.guild_id || '/' || c.channel_id || '/' ||
-                  c.discord_message_id as scopeId, c.content as text
-         from conversation_event_fts f
-         join conversation_events c on c.id = f.rowid
-         where conversation_event_fts match ?
-           and c.guild_id = ? and c.channel_id = ?
-           and c.content_state = 'available'
-         order by bm25(conversation_event_fts), c.id desc limit ? offset ?`,
+            readSqliteStatement(
+              'contextDeletionStoreDiscoverSelectConversationEventFts',
+            ),
           )
           .all(lexicalQuery, this.#guildId, this.#channelId, limit, offset) as {
           readonly scopeId: string;
@@ -161,13 +158,9 @@ export class ContextDeletionStore {
       (limit, offset) =>
         this.#database
           .prepare(
-            `select distinct d.document_key as documentKey, d.summary as text
-         from context_document_fts f
-         join context_documents d on d.id = f.rowid
-         where context_document_fts match ? and d.state = 'active'
-           and d.content_state = 'available' and d.is_internal = 0
-         order by bm25(context_document_fts), d.updated_at desc
-         limit ? offset ?`,
+            readSqliteStatement(
+              'contextDeletionStoreDiscoverSelectContextDocumentFts',
+            ),
           )
           .all(lexicalQuery, limit, offset) as {
           readonly documentKey: string;
@@ -179,10 +172,7 @@ export class ContextDeletionStore {
       (limit, offset) =>
         this.#database
           .prepare(
-            `select m.id, m.canonical_text as text
-         from memory_fts f join memories m on m.id = f.rowid
-         where memory_fts match ? and m.state = 'active'
-         order by bm25(memory_fts), m.updated_at desc limit ? offset ?`,
+            readSqliteStatement('contextDeletionStoreDiscoverSelectMemoryFts'),
           )
           .all(lexicalQuery, limit, offset) as {
           readonly id: number;
@@ -266,10 +256,10 @@ export class ContextDeletionStore {
     const placeholders = candidates.sourceScopeIds.map(() => '?').join(', ');
     const authors = this.#database
       .prepare(
-        `select distinct speaker_id
-         from conversation_events
-         where guild_id || '/' || channel_id || '/' || discord_message_id
-                 in (${placeholders})`,
+        readSqliteStatement(
+          'contextDeletionStoreRequesterCanDeleteSelectConversationEvents',
+          [placeholders],
+        ),
       )
       .pluck()
       .all(...candidates.sourceScopeIds) as (string | null)[];
@@ -686,19 +676,22 @@ export class ContextDeletionStore {
       }
       for (const source of sources) {
         this.#database
-          .prepare('delete from conversation_event_fts where rowid = ?')
+          .prepare(readSqliteStatement('deleteConversationEventFts'))
           .run(source.id);
       }
       if (sources.length > 0) {
         const placeholders = sources.map(() => '?').join(', ');
         this.#database
           .prepare(
-            `update conversation_events
-             set content = '', attachment_metadata_json = '[]', deleted_at = ?,
-                 content_state = 'scrubbed',
-                 content_state_reason = ?
-             where id in (${placeholders})
-               ${reason === 'discord-deleted' ? "and content_state = 'available'" : ''}`,
+            readSqliteStatement(
+              'contextDeletionStoreReplayForgetJournalUpdateConversationEvents',
+              [
+                placeholders,
+                reason === 'discord-deleted'
+                  ? readSqliteStatement('availableContentFilter')
+                  : '',
+              ],
+            ),
           )
           .run(entry.occurredAt, reason, ...sources.map(({ id }) => id));
       }
@@ -883,18 +876,22 @@ export class ContextDeletionStore {
 
     for (const source of sources) {
       this.#database
-        .prepare('delete from conversation_event_fts where rowid = ?')
+        .prepare(readSqliteStatement('deleteConversationEventFts'))
         .run(source.id);
     }
     if (sources.length > 0) {
       const placeholders = sources.map(() => '?').join(', ');
       this.#database
         .prepare(
-          `update conversation_events
-           set content = '', attachment_metadata_json = '[]', deleted_at = ?,
-               content_state = 'scrubbed', content_state_reason = ?
-           where id in (${placeholders})
-             ${input.reason === 'discord-deleted' ? "and content_state = 'available'" : ''}`,
+          readSqliteStatement(
+            'contextDeletionStoreMutateSuppressionUpdateConversationEvents',
+            [
+              placeholders,
+              input.reason === 'discord-deleted'
+                ? readSqliteStatement('availableContentFilter')
+                : '',
+            ],
+          ),
         )
         .run(input.now, input.reason, ...sources.map(({ id }) => id));
     }
@@ -955,18 +952,15 @@ export class ContextDeletionStore {
     const snowflakePredicate =
       snowflakes.length === 0
         ? ''
-        : `or discord_message_id in
-             (${snowflakes.map(() => '?').join(', ')})`;
+        : readSqliteStatement('conversationSnowflakeFilter', [
+            snowflakes.map(() => '?').join(', '),
+          ]);
     return this.#database
       .prepare(
-        `select id, occurred_at as occurredAt,
-                guild_id || '/' || channel_id || '/' || discord_message_id
-                  as scopeId
-         from conversation_events
-         where guild_id || '/' || channel_id || '/' || discord_message_id
-                 in (${placeholders})
-            ${snowflakePredicate}
-         order by id`,
+        readSqliteStatement(
+          'contextDeletionStoreSourceRowsSelectConversationEvents',
+          [placeholders, snowflakePredicate],
+        ),
       )
       .all(...uniqueScopeIds, ...snowflakes) as SourceRow[];
   }
@@ -981,8 +975,10 @@ export class ContextDeletionStore {
       roots.push(
         ...(this.#database
           .prepare(
-            `select distinct document_id from context_document_events
-             where event_id in (${placeholders})`,
+            readSqliteStatement(
+              'contextDeletionStoreAffectedDocumentsSelectContextDocumentEvents',
+              [placeholders],
+            ),
           )
           .pluck()
           .all(...eventIds) as number[]),
@@ -993,8 +989,10 @@ export class ContextDeletionStore {
       roots.push(
         ...(this.#database
           .prepare(
-            `select id from context_documents
-             where document_key in (${placeholders})`,
+            readSqliteStatement(
+              'contextDeletionStoreAffectedDocumentsSelectContextDocuments',
+              [placeholders],
+            ),
           )
           .pluck()
           .all(...documentKeys) as number[]),
@@ -1005,27 +1003,10 @@ export class ContextDeletionStore {
     const values = uniqueRoots.map(() => '(?)').join(', ');
     return this.#database
       .prepare(
-        `with recursive roots(id) as (values ${values}), affected(id) as (
-           select id from roots
-           union
-           select sibling.id from context_documents current
-           join context_documents sibling
-             on sibling.document_key = current.document_key
-           join affected a on current.id = a.id
-           union
-           select p.document_id from context_document_parents p
-           join affected a on p.parent_document_id = a.id
-         )
-         select d.id, d.document_key as documentKey, d.state, d.completeness,
-                d.content_state as contentState, d.is_internal as isInternal,
-                d.tier, d.period_start as periodStart,
-                d.period_end as periodEnd, d.timezone as timeZone,
-                d.topic_key as topicKey, d.topic_label as topicLabel,
-                (select j.source_revision_checksum from context_jobs j
-                 where j.job_key = d.document_key || ':' || d.completeness
-                 limit 1) as sourceRevisionChecksum
-         from context_documents d join affected a on a.id = d.id
-         order by d.id`,
+        readSqliteStatement(
+          'contextDeletionStoreAffectedDocumentsSelectStatement',
+          [values],
+        ),
       )
       .all(...uniqueRoots) as DocumentRow[];
   }
@@ -1037,20 +1018,9 @@ export class ContextDeletionStore {
   ): boolean {
     const lineage = this.#database
       .prepare(
-        `with recursive lineage(id) as (
-           select id from context_documents
-           where document_key = ? and state = 'active'
-           union
-           select p.parent_document_id
-           from context_document_parents p join lineage l
-             on p.document_id = l.id
-         )
-         select d.id, d.state, d.content_state as contentState,
-                e.event_id as eventId,
-                c.content_state as eventContentState
-         from lineage l join context_documents d on d.id = l.id
-         left join context_document_events e on e.document_id = l.id
-         left join conversation_events c on c.id = e.event_id`,
+        readSqliteStatement(
+          'contextDeletionStoreDocumentHasSurvivingLineageSelectContextDocuments',
+        ),
       )
       .all(documentKey) as {
       readonly contentState: string;
@@ -1084,10 +1054,10 @@ export class ContextDeletionStore {
         continue;
       }
       this.#database
-        .prepare('delete from context_document_fts where rowid = ?')
+        .prepare(readSqliteStatement('deleteContextDocumentFts'))
         .run(document.id);
       this.#database
-        .prepare('delete from context_document_vectors where document_id = ?')
+        .prepare(readSqliteStatement('deleteContextDocumentVector'))
         .run(BigInt(document.id));
     }
     if (documents.length === 0) return;
@@ -1109,29 +1079,31 @@ export class ContextDeletionStore {
     ];
     this.#database
       .prepare(
-        `update context_documents
-         set state = 'suppressed', content_state = 'scrubbed',
-             content_state_reason = ?, summary = '',
-             topic_label = null, updated_at = ?
-         where id in (${placeholders})`,
+        readSqliteStatement(
+          'contextDeletionStoreScrubDocumentsUpdateContextDocuments',
+          [placeholders],
+        ),
       )
       .run(reason, now, ...ids);
     const jobPredicates = [
       topicKeys.length === 0
         ? null
-        : `topic_key in (${topicKeys.map(() => '?').join(', ')})`,
+        : readSqliteStatement('contextJobTopicKeyFilter', [
+            topicKeys.map(() => '?').join(', '),
+          ]),
       topicLabels.length === 0
         ? null
-        : `topic_label in (${topicLabels.map(() => '?').join(', ')})`,
-      `exists (
-         select 1 from json_each(context_jobs.source_document_ids_json)
-         where cast(json_each.value as integer) in (${placeholders})
-       )`,
+        : readSqliteStatement('contextJobTopicLabelFilter', [
+            topicLabels.map(() => '?').join(', '),
+          ]),
+      readSqliteStatement('contextJobSourceDocumentFilter', [placeholders]),
     ].filter((predicate): predicate is string => predicate !== null);
     this.#database
       .prepare(
-        `update context_jobs set topic_label = null
-         where ${jobPredicates.join(' or ')}`,
+        readSqliteStatement(
+          'contextDeletionStoreScrubDocumentsUpdateContextJobs',
+          [jobPredicates.join(' or ')],
+        ),
       )
       .run(...topicKeys, ...topicLabels, ...ids);
   }
@@ -1255,9 +1227,10 @@ export class ContextDeletionStore {
     const placeholders = documentIds.map(() => '?').join(', ');
     return this.#database
       .prepare(
-        `select id from context_documents
-         where id in (${placeholders}) and state = 'active'
-           and content_state = 'available' order by id`,
+        readSqliteStatement(
+          'contextDeletionStoreActiveDocumentIdsSelectContextDocuments',
+          [placeholders],
+        ),
       )
       .pluck()
       .all(...documentIds) as number[];
@@ -1268,8 +1241,7 @@ export class ContextDeletionStore {
     const placeholders = documentIds.map(() => '?').join(', ');
     return this.#database
       .prepare(
-        `select id, revision from context_documents
-         where id in (${placeholders}) order by id`,
+        readSqliteStatement('selectContextDocumentRevisions', [placeholders]),
       )
       .all(...documentIds);
   }
@@ -1279,22 +1251,10 @@ export class ContextDeletionStore {
     const placeholders = memoryIds.map(() => '?').join(', ');
     return this.#database
       .prepare(
-        `select coalesce(
-           nullif(s.source_scope_id, ''),
-           case when s.medium = 'text'
-             and length(s.platform_source_id) between 17 and 20
-             and s.platform_source_id not glob '*[^0-9]*'
-           then s.platform_source_id end
-         )
-         from memories m join source_events s on s.id = m.source_event_id
-         where m.id in (${placeholders}) and coalesce(
-           nullif(s.source_scope_id, ''),
-           case when s.medium = 'text'
-             and length(s.platform_source_id) between 17 and 20
-             and s.platform_source_id not glob '*[^0-9]*'
-           then s.platform_source_id end
-         ) is not null
-         order by m.id`,
+        readSqliteStatement(
+          'contextDeletionStoreMemorySourceScopesSelectMemories',
+          [placeholders],
+        ),
       )
       .pluck()
       .all(...memoryIds) as string[];
@@ -1305,29 +1265,10 @@ export class ContextDeletionStore {
     const placeholders = memoryIds.map(() => '?').join(', ');
     return this.#database
       .prepare(
-        `with recursive affected(id) as (
-           select id from memories where id in (${placeholders})
-           union
-           select m.id from memories m join affected a
-             on m.superseded_by = a.id
-         )
-         select coalesce(
-           nullif(s.source_scope_id, ''),
-           case when s.medium = 'text'
-             and length(s.platform_source_id) between 17 and 20
-             and s.platform_source_id not glob '*[^0-9]*'
-           then s.platform_source_id end
-         )
-         from affected a join memories m on m.id = a.id
-         join source_events s on s.id = m.source_event_id
-         where coalesce(
-           nullif(s.source_scope_id, ''),
-           case when s.medium = 'text'
-             and length(s.platform_source_id) between 17 and 20
-             and s.platform_source_id not glob '*[^0-9]*'
-           then s.platform_source_id end
-         ) is not null
-         order by m.id`,
+        readSqliteStatement(
+          'contextDeletionStoreAffectedMemorySourceScopesSelectMemories',
+          [placeholders],
+        ),
       )
       .pluck()
       .all(...memoryIds) as string[];
@@ -1343,15 +1284,15 @@ export class ContextDeletionStore {
     const snowflakePredicate =
       snowflakes.length === 0
         ? ''
-        : `or (s.medium = 'text' and s.platform_source_id in
-             (${snowflakes.map(() => '?').join(', ')}))`;
+        : readSqliteStatement('memorySourceSnowflakeFilter', [
+            snowflakes.map(() => '?').join(', '),
+          ]);
     return this.#database
       .prepare(
-        `select m.id from memories m join source_events s
-           on s.id = m.source_event_id
-         where s.source_scope_id in (${placeholders})
-            ${snowflakePredicate}
-         order by m.id`,
+        readSqliteStatement(
+          'contextDeletionStoreSourceDerivedMemoryIdsSelectMemories',
+          [placeholders, snowflakePredicate],
+        ),
       )
       .pluck()
       .all(...uniqueScopeIds, ...snowflakes) as number[];
@@ -1362,19 +1303,10 @@ export class ContextDeletionStore {
     const placeholders = documentKeys.map(() => '?').join(', ');
     return this.#database
       .prepare(
-        `with recursive lineage(id) as (
-           select id from context_documents
-           where document_key in (${placeholders}) and state = 'active'
-           union
-           select p.parent_document_id
-           from context_document_parents p join lineage l
-             on p.document_id = l.id
-         )
-         select distinct c.guild_id || '/' || c.channel_id || '/' ||
-                c.discord_message_id
-         from lineage l join context_document_events e on e.document_id = l.id
-         join conversation_events c on c.id = e.event_id
-         order by c.id`,
+        readSqliteStatement(
+          'contextDeletionStoreDocumentSourceScopesSelectContextDocuments',
+          [placeholders],
+        ),
       )
       .pluck()
       .all(...documentKeys) as string[];
