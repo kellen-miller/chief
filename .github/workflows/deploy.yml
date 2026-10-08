@@ -87,14 +87,10 @@ jobs:
         timeout-minutes: 10
         run: |
           bundle="chief-deploy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          tar -czf "/tmp/$bundle.tar.gz" \
-            scripts/configure-google-cloud-apt.sh scripts/install-node.sh \
-            src/ops gen/sql/monitoring.ts
+          source_url="https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}"
+          curl --fail --silent --show-error --location --retry 3 --max-time 60 \
+            "$source_url" --output "/tmp/$bundle.tar.gz"
           bundle_sha="$(sha256sum "/tmp/$bundle.tar.gz" | cut -d ' ' -f 1)"
-          gcloud compute scp "/tmp/$bundle.tar.gz" "chief:/tmp/" \
-            --project="${{ vars.GCP_PROJECT_ID }}" \
-            --zone="${{ vars.GCP_ZONE }}" \
-            --tunnel-through-iap --scp-flag=-O --quiet
           gcloud compute ssh chief \
             --project="${{ vars.GCP_PROJECT_ID }}" \
             --zone="${{ vars.GCP_ZONE }}" \
@@ -108,9 +104,11 @@ jobs:
               sudo journalctl -u google-startup-scripts.service --no-pager --lines=100
               exit 1
             fi
+            curl --fail --silent --show-error --location --retry 3 --max-time 60 \
+              '$source_url' --output /tmp/$bundle.tar.gz
             echo '$bundle_sha  /tmp/$bundle.tar.gz' | sha256sum --check --status
             mkdir -m 0700 /tmp/$bundle
-            tar -xzf /tmp/$bundle.tar.gz -C /tmp/$bundle
+            tar -xzf /tmp/$bundle.tar.gz --strip-components=1 -C /tmp/$bundle
             sudo install -m 0750 /tmp/$bundle/scripts/configure-google-cloud-apt.sh /opt/chief/configure-google-cloud-apt.sh
             sudo /opt/chief/configure-google-cloud-apt.sh
             sudo install -m 0750 /tmp/$bundle/scripts/install-node.sh /opt/chief/install-node.sh

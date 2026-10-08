@@ -139,7 +139,10 @@ describe('repository policy', () => {
     );
     expect(app).not.toContain('metadata_startup_script');
     expect(deploy).toContain('/opt/chief/src/ops/cli.ts');
-    expect(deploy).toContain('src/ops gen/sql/monitoring.ts');
+    expect(deploy).toContain(
+      'https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${GITHUB_SHA}',
+    );
+    expect(deploy).not.toContain('gcloud compute scp');
     const bundleVerification = deploy.indexOf('sha256sum --check --status');
     expect(bundleVerification).toBeGreaterThanOrEqual(0);
     expect(bundleVerification).toBeLessThan(deploy.indexOf('tar -xzf'));
