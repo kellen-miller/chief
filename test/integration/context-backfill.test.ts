@@ -1749,11 +1749,7 @@ function page(
   };
 }
 
-function fakeHistory(
-  pages: readonly DiscordHistoryPage[],
-): DiscordHistorySource & {
-  readonly fetchPage: ReturnType<typeof vi.fn>;
-} {
+function fakeHistory(pages: readonly DiscordHistoryPage[]) {
   let index = 0;
   const fetchPage = vi.fn(() => {
     const next = pages[index];
