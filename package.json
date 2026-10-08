@@ -30,7 +30,7 @@
     "@google-cloud/storage": "7.21.0",
     "@js-temporal/polyfill": "0.5.1",
     "@openai/agents": "0.13.2",
-    "better-sqlite3": "12.11.1",
+    "better-sqlite3": "13.0.3",
     "discord.js": "14.26.5",
     "knex": "3.3.0",
     "openai": "6.46.0",

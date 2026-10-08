@@ -1,9 +1,5 @@
 # Native dependency patches
 
-`prebuild-install@7.1.3` uses the deprecated top-level `fs.R_OK` and `fs.W_OK`
-aliases. Use `fs.constants` so SQLite installation works without deprecated
-Node APIs. Remove when the dependency ships this fix.
-
 `@discordjs/opus@0.10.0` accidentally concatenates two preprocessor definitions
 in `binding.gyp`. Split `POSIX` and `__STDC_FORMAT_MACROS` into separate entries.
 Its bundled Opus also flattens two coefficient rows through a pointer to the
