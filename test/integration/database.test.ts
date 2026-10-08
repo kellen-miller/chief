@@ -1,9 +1,13 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
+
+import { repairLegacyData } from '../../scripts/repair-legacy-data.js';
 
 import { ChannelContextService } from '../../src/context/channel-context-service.js';
 import { ContextBackfillService } from '../../src/context/context-backfill.js';
@@ -27,6 +31,25 @@ afterEach(async () => {
       .map((directory) => rm(directory, { force: true, recursive: true })),
   );
 });
+
+async function upgradeLegacyDatabase(
+  database: Database.Database,
+  throughMigrationId?: string,
+): Promise<void> {
+  const hasHistory = database
+    .prepare("select 1 from sqlite_master where name = 'schema_migrations'")
+    .get();
+  const previouslyApplied = new Set(
+    hasHistory
+      ? (database
+          .prepare('select id from schema_migrations')
+          .pluck()
+          .all() as string[])
+      : [],
+  );
+  await migrateChiefDatabase(database, throughMigrationId);
+  repairLegacyData(database, previouslyApplied);
+}
 
 describe('Chief database', () => {
   it('takes a pre-migration backup without changing the source schema', async () => {
@@ -210,10 +233,71 @@ describe('Chief database', () => {
     database.close();
   });
 
+  it('keeps legacy repairs out of migrations and runs them explicitly from a backup', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'chief-manual-repair-'));
+    directories.push(directory);
+    const databasePath = join(directory, 'chief.db');
+    const beforePath = join(directory, 'before.db');
+    const afterPath = join(directory, 'after.db');
+    const database = openChiefDatabase(databasePath);
+    await migrateChiefDatabase(database, '0006_context_backfill');
+    const runId = insertMigrationBackfillRun(database, {
+      now: 1_000,
+      runKey: 'manual-repair',
+    });
+    await database.backup(beforePath);
+    const beforeBytes = await readFile(beforePath);
+
+    await migrateChiefDatabase(database);
+    expect(
+      database
+        .prepare('select status from context_backfills where id = ?')
+        .pluck()
+        .get(runId),
+    ).toBe('active');
+    database.close();
+    const args = [
+      '--import',
+      'tsx',
+      'scripts/repair-legacy-data.ts',
+      '--database',
+      databasePath,
+      '--before',
+      beforePath,
+    ];
+    const output = execFileSync(process.execPath, args, {
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    expect(output).toContain('0008_context_backfill_lifecycle');
+    expect(output).toContain('0012_context_accounting_origin');
+    expect(await readFile(beforePath)).toEqual(beforeBytes);
+    const repaired = openChiefDatabase(databasePath);
+    try {
+      expect(
+        repaired
+          .prepare('select status from context_backfills where id = ?')
+          .pluck()
+          .get(runId),
+      ).toBe('paused');
+      await repaired.backup(afterPath);
+    } finally {
+      repaired.close();
+    }
+
+    args[args.length - 1] = afterPath;
+    expect(
+      execFileSync(process.execPath, args, {
+        encoding: 'utf8',
+        timeout: 20_000,
+      }),
+    ).toContain('No pending legacy data repairs.');
+  });
+
   it('guards populated 0006 backfill work during accounting upgrade', async () => {
     const database = openChiefDatabase(':memory:');
     const now = Date.UTC(2026, 6, 14, 12);
-    await migrateChiefDatabase(database, '0006_context_backfill');
+    await upgradeLegacyDatabase(database, '0006_context_backfill');
     const runId = Number(
       database
         .prepare(
@@ -254,7 +338,7 @@ describe('Chief database', () => {
       )
       .run(testDigest([{ id: hourlyDocumentId, revision: 1 }]), now - 1);
 
-    await migrateChiefDatabase(database, '0007_context_backfill_accounting');
+    await upgradeLegacyDatabase(database, '0007_context_backfill_accounting');
     expect(
       database
         .prepare('select status from context_backfills where id = ?')
@@ -299,8 +383,8 @@ describe('Chief database', () => {
       )
       .run(now - 1);
 
-    await migrateChiefDatabase(database, '0008_context_backfill_lifecycle');
-    await migrateChiefDatabase(database, '0011_usage_reservation_origin');
+    await upgradeLegacyDatabase(database, '0008_context_backfill_lifecycle');
+    await upgradeLegacyDatabase(database, '0011_usage_reservation_origin');
 
     expect(
       database
@@ -427,7 +511,7 @@ describe('Chief database', () => {
   it('reopens a run falsely completed between 0007 and 0008', async () => {
     const database = openChiefDatabase(':memory:');
     const now = Date.UTC(2026, 6, 14, 12);
-    await migrateChiefDatabase(database, '0006_context_backfill');
+    await upgradeLegacyDatabase(database, '0006_context_backfill');
     const runId = Number(
       database
         .prepare(
@@ -467,7 +551,7 @@ describe('Chief database', () => {
                  'deployment-interval-reservation', 'leased', ?)`,
       )
       .run(testDigest([{ id: hourlyDocumentId, revision: 1 }]), now - 1);
-    await migrateChiefDatabase(database, '0007_context_backfill_accounting');
+    await upgradeLegacyDatabase(database, '0007_context_backfill_accounting');
     database
       .prepare(
         `update context_backfills
@@ -475,9 +559,9 @@ describe('Chief database', () => {
          where id = ?`,
       )
       .run(now + 1, now + 1, runId);
-    await migrateChiefDatabase(database, '0008_context_backfill_lifecycle');
+    await upgradeLegacyDatabase(database, '0008_context_backfill_lifecycle');
 
-    await migrateChiefDatabase(database, '0011_usage_reservation_origin');
+    await upgradeLegacyDatabase(database, '0011_usage_reservation_origin');
 
     expect(
       database
@@ -577,7 +661,7 @@ describe('Chief database', () => {
   it('preserves exact post-0007 backfill ownership and run drain', async () => {
     const database = openChiefDatabase(':memory:');
     const now = 1_000;
-    await migrateChiefDatabase(database, '0006_context_backfill');
+    await upgradeLegacyDatabase(database, '0006_context_backfill');
     const runId = insertMigrationBackfillRun(database, {
       maximumUsageUsd: 0.02,
       now,
@@ -589,7 +673,7 @@ describe('Chief database', () => {
       runId,
       segmentDocumentId,
     );
-    await migrateChiefDatabase(database, '0007_context_backfill_accounting');
+    await upgradeLegacyDatabase(database, '0007_context_backfill_accounting');
     const accountingAppliedAt = Number(
       database
         .prepare('select applied_at from schema_migrations where id = ?')
@@ -619,9 +703,9 @@ describe('Chief database', () => {
       )
       .run(testDigest([{ id: sourceDocumentId, revision: 1 }]), now + 1, runId);
 
-    await migrateChiefDatabase(database, '0008_context_backfill_lifecycle');
-    await migrateChiefDatabase(database, '0009_context_backfill_targeting');
-    await migrateChiefDatabase(database, '0011_usage_reservation_origin');
+    await upgradeLegacyDatabase(database, '0008_context_backfill_lifecycle');
+    await upgradeLegacyDatabase(database, '0009_context_backfill_targeting');
+    await upgradeLegacyDatabase(database, '0011_usage_reservation_origin');
 
     expect(
       database
@@ -712,7 +796,7 @@ describe('Chief database', () => {
   it('preserves legacy id-ordered ownership with mixed hourly inputs', async () => {
     const database = openChiefDatabase(':memory:');
     const now = 1_000;
-    await migrateChiefDatabase(database, '0009_context_backfill_targeting');
+    await upgradeLegacyDatabase(database, '0009_context_backfill_targeting');
     const runId = insertMigrationBackfillRun(database, {
       now,
       runKey: 'id-ordered-inputs',
@@ -762,7 +846,7 @@ describe('Chief database', () => {
         runId,
       );
 
-    await migrateChiefDatabase(database);
+    await upgradeLegacyDatabase(database);
 
     expect(
       database
@@ -788,7 +872,7 @@ describe('Chief database', () => {
   it('fails closed for an ambiguous detached reservation', async () => {
     const database = openChiefDatabase(':memory:');
     const now = 1_000;
-    await migrateChiefDatabase(database, '0009_context_backfill_targeting');
+    await upgradeLegacyDatabase(database, '0009_context_backfill_targeting');
     const runId = insertMigrationBackfillRun(database, {
       now,
       runKey: 'detached-live-reservation',
@@ -822,7 +906,7 @@ describe('Chief database', () => {
       )
       .run(testDigest([]), now - 1);
 
-    await migrateChiefDatabase(database);
+    await upgradeLegacyDatabase(database);
 
     expect(
       database
@@ -867,7 +951,7 @@ describe('Chief database', () => {
   it('returns an originally live stolen reservation to live accounting', async () => {
     const database = openChiefDatabase(':memory:');
     const now = 1_000;
-    await migrateChiefDatabase(database, '0011_usage_reservation_origin');
+    await upgradeLegacyDatabase(database, '0011_usage_reservation_origin');
     const runId = insertMigrationBackfillRun(database, {
       now,
       runKey: 'stolen-live-origin',
@@ -907,7 +991,7 @@ describe('Chief database', () => {
       .prepare(`update usage_ledger set backfill_run_id = ? where id = ?`)
       .run(runId, reservation.id);
 
-    await migrateChiefDatabase(database);
+    await upgradeLegacyDatabase(database);
 
     expect(
       database
@@ -960,7 +1044,7 @@ describe('Chief database', () => {
   it('retains an originally backfill detached reservation owner', async () => {
     const database = openChiefDatabase(':memory:');
     const now = 1_000;
-    await migrateChiefDatabase(database, '0011_usage_reservation_origin');
+    await upgradeLegacyDatabase(database, '0011_usage_reservation_origin');
     const runId = insertMigrationBackfillRun(database, {
       now,
       runKey: 'detached-backfill-origin',
@@ -992,7 +1076,7 @@ describe('Chief database', () => {
       )
       .run(testDigest([]), reservation.id, now - 1);
 
-    await migrateChiefDatabase(database);
+    await upgradeLegacyDatabase(database);
 
     expect(
       database
@@ -1055,7 +1139,7 @@ describe('Chief database', () => {
   it('fails closed when reservation origin is truly ambiguous', async () => {
     const database = openChiefDatabase(':memory:');
     const now = 1_000;
-    await migrateChiefDatabase(database, '0010_context_backfill_ownership');
+    await upgradeLegacyDatabase(database, '0010_context_backfill_ownership');
     const runId = insertMigrationBackfillRun(database, {
       now,
       runKey: 'ambiguous-accounting',
@@ -1083,7 +1167,7 @@ describe('Chief database', () => {
       )
       .run(testDigest([]), now - 1, runId);
 
-    await migrateChiefDatabase(database);
+    await upgradeLegacyDatabase(database);
 
     expect(
       database
@@ -1209,7 +1293,7 @@ describe('Chief database', () => {
   it('does not reopen an intentionally replaced exact owner', async () => {
     const database = openChiefDatabase(':memory:');
     const now = 1_000;
-    await migrateChiefDatabase(database, '0009_context_backfill_targeting');
+    await upgradeLegacyDatabase(database, '0009_context_backfill_targeting');
     const runId = insertMigrationBackfillRun(database, {
       now,
       runKey: 'intentional-replacement',
@@ -1237,7 +1321,7 @@ describe('Chief database', () => {
       )
       .run(testDigest([{ id: sourceDocumentId, revision: 1 }]), runId);
 
-    await migrateChiefDatabase(database);
+    await upgradeLegacyDatabase(database);
 
     expect(
       database
@@ -1262,7 +1346,7 @@ describe('Chief database', () => {
   it('recovers a pre-0007 recent-only hourly manifest job', async () => {
     const database = openChiefDatabase(':memory:');
     const now = 1_000;
-    await migrateChiefDatabase(database, '0006_context_backfill');
+    await upgradeLegacyDatabase(database, '0006_context_backfill');
     const runId = insertMigrationBackfillRun(database, {
       now,
       runKey: 'recent-only',
@@ -1283,10 +1367,10 @@ describe('Chief database', () => {
       )
       .run(recent.checksum);
 
-    await migrateChiefDatabase(database, '0007_context_backfill_accounting');
-    await migrateChiefDatabase(database, '0008_context_backfill_lifecycle');
-    await migrateChiefDatabase(database, '0009_context_backfill_targeting');
-    await migrateChiefDatabase(database);
+    await upgradeLegacyDatabase(database, '0007_context_backfill_accounting');
+    await upgradeLegacyDatabase(database, '0008_context_backfill_lifecycle');
+    await upgradeLegacyDatabase(database, '0009_context_backfill_targeting');
+    await upgradeLegacyDatabase(database);
 
     expect(
       database
@@ -1316,14 +1400,14 @@ describe('Chief database', () => {
   it('detaches an unreserved live daily job sharing a legacy period', async () => {
     const database = openChiefDatabase(':memory:');
     const now = 1_000;
-    await migrateChiefDatabase(database, '0006_context_backfill');
+    await upgradeLegacyDatabase(database, '0006_context_backfill');
     const runId = insertMigrationBackfillRun(database, {
       now,
       runKey: 'shared-period-live',
     });
     insertLegacyBackfillSegment(database, runId);
     const liveDocumentId = insertPublicBackfillDocument(database, runId, null);
-    await migrateChiefDatabase(database, '0007_context_backfill_accounting');
+    await upgradeLegacyDatabase(database, '0007_context_backfill_accounting');
     database
       .prepare(
         `insert into context_jobs
@@ -1335,9 +1419,9 @@ describe('Chief database', () => {
       )
       .run(testDigest([{ id: liveDocumentId, revision: 1 }]));
 
-    await migrateChiefDatabase(database, '0008_context_backfill_lifecycle');
-    await migrateChiefDatabase(database, '0009_context_backfill_targeting');
-    await migrateChiefDatabase(database);
+    await upgradeLegacyDatabase(database, '0008_context_backfill_lifecycle');
+    await upgradeLegacyDatabase(database, '0009_context_backfill_targeting');
+    await upgradeLegacyDatabase(database);
 
     expect(
       database
@@ -1369,13 +1453,13 @@ describe('Chief database', () => {
   it('freezes ambiguous stolen work after a pause reason change', async () => {
     const database = openChiefDatabase(':memory:');
     const now = 1_000;
-    await migrateChiefDatabase(database, '0006_context_backfill');
+    await upgradeLegacyDatabase(database, '0006_context_backfill');
     const runId = insertMigrationBackfillRun(database, {
       now,
       runKey: 'changed-pause-reason',
     });
     insertLegacyBackfillPage(database, runId);
-    await migrateChiefDatabase(database, '0007_context_backfill_accounting');
+    await upgradeLegacyDatabase(database, '0007_context_backfill_accounting');
     const accountingAppliedAt = Number(
       database
         .prepare('select applied_at from schema_migrations where id = ?')
@@ -1410,14 +1494,14 @@ describe('Chief database', () => {
       )
       .run(wrongScopeSource.checksum, now - 1);
 
-    await migrateChiefDatabase(database, '0008_context_backfill_lifecycle');
+    await upgradeLegacyDatabase(database, '0008_context_backfill_lifecycle');
     database
       .prepare(
         `update context_backfills set pause_reason = 'run-budget' where id = ?`,
       )
       .run(runId);
-    await migrateChiefDatabase(database, '0009_context_backfill_targeting');
-    await migrateChiefDatabase(database);
+    await upgradeLegacyDatabase(database, '0009_context_backfill_targeting');
+    await upgradeLegacyDatabase(database);
 
     expect(
       database

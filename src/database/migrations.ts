@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 
 import type Database from 'better-sqlite3';
 import knex, { type Knex } from 'knex';
@@ -108,23 +108,12 @@ export async function migrateChiefDatabase(
   const source: Knex.MigrationSource<Migration> = {
     getMigrations: () => Promise.resolve([...migrations]),
     getMigrationName: ({ id }) => id,
-    getMigration: async (migration) => {
-      const extension = import.meta.url.endsWith('.ts') ? '.ts' : '.js';
-      const repairPath = new URL(
-        `./migrations/${migration.id}${extension}`,
-        import.meta.url,
-      );
-      const repair = existsSync(repairPath)
-        ? ((await import(repairPath.href)) as {
-            up: (database: Database.Database) => void;
-          })
-        : undefined;
-      return {
+    getMigration: (migration) =>
+      Promise.resolve({
         up: () => {
           // Adopt already-applied legacy migrations without replaying them.
           if (!applied.has(migration.id)) {
             database.exec(migration.sql);
-            repair?.up(database);
             database
               .prepare(
                 'insert into schema_migrations (id, checksum, applied_at) values (?, ?, ?)',
@@ -136,8 +125,7 @@ export async function migrateChiefDatabase(
         },
         down: () =>
           Promise.reject(new Error('restore a backup to downgrade Chief')),
-      };
-    },
+      }),
   };
   const migrator = knex({
     client: 'better-sqlite3',

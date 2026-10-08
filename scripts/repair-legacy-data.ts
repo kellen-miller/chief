@@ -1,10 +1,16 @@
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import type Database from 'better-sqlite3';
+import Database from 'better-sqlite3';
 
-export function guardLegacyBackfillAccounting(
-  database: Database.Database,
-): void {
+import {
+  openChiefDatabase,
+  verifyRecordedMigrationSet,
+} from '../src/memory/database.js';
+
+function guardLegacyBackfillAccounting(database: Database.Database): void {
   const unfinishedRunIds = database
     .prepare(
       `select id from context_backfills
@@ -64,9 +70,7 @@ interface LegacyContextJobRow {
   readonly usageReservationId: string | null;
 }
 
-export function targetLegacyBackfillAccounting(
-  database: Database.Database,
-): void {
+function targetLegacyBackfillAccounting(database: Database.Database): void {
   const accountingAppliedAt = database
     .prepare('select applied_at from schema_migrations where id = ?')
     .pluck()
@@ -256,7 +260,7 @@ interface ReservationOriginContextJobRow extends OwnershipContextJobRow {
   readonly reservationOrigin: 'ambiguous' | 'backfill' | 'live' | null;
 }
 
-export function repairBackfillOwnership(database: Database.Database): void {
+function repairBackfillOwnership(database: Database.Database): void {
   const jobs = database
     .prepare(
       `select id, tier, period_start as periodStart, period_end as periodEnd,
@@ -311,9 +315,7 @@ export function repairBackfillOwnership(database: Database.Database): void {
   for (const runId of recoveredRunIds) recover.run(now, runId);
 }
 
-export function repairReservationOriginOwnership(
-  database: Database.Database,
-): void {
+function repairReservationOriginOwnership(database: Database.Database): void {
   const jobs = database
     .prepare(
       `select j.id, j.tier, j.period_start as periodStart,
@@ -552,9 +554,7 @@ function migrationDigest(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-export function backfillContextForgetJournals(
-  database: Database.Database,
-): void {
+function backfillContextForgetJournals(database: Database.Database): void {
   const rows = database
     .prepare(
       `select journal_key as journalKey, occurred_at as occurredAt,
@@ -607,26 +607,96 @@ export function backfillContextForgetJournals(
   }
 }
 
-export function assertContentlessDeleteSupport(
+export function repairLegacyData(
   database: Database.Database,
-): void {
-  const table = '__chief_contentless_delete_test';
-  try {
-    database.exec(
-      `create virtual table temp.${table} using fts5(
-         content, content='', contentless_delete=1
-       );
-       insert into ${table} (rowid, content) values (1, 'test');
-       delete from ${table} where rowid = 1;`,
-    );
-    const remaining = database
-      .prepare(`select count(*) from ${table}`)
+  previouslyApplied: ReadonlySet<string>,
+): string[] {
+  if (!verifyRecordedMigrationSet(database)) {
+    throw new Error('legacy repair requires a migrated database');
+  }
+
+  const applied = new Set(
+    database
+      .prepare('select id from schema_migrations')
       .pluck()
-      .get();
-    if (remaining !== 0) {
-      throw new Error('SQLite FTS5 contentless delete is unavailable');
+      .all() as string[],
+  );
+  if ([...previouslyApplied].some((id) => !applied.has(id))) {
+    throw new Error('pre-update backup is newer than the target database');
+  }
+
+  const repairs: readonly [string, (database: Database.Database) => void][] = [
+    ['0005_context_forgetting', backfillContextForgetJournals],
+    ['0008_context_backfill_lifecycle', guardLegacyBackfillAccounting],
+    ['0009_context_backfill_targeting', targetLegacyBackfillAccounting],
+    ['0010_context_backfill_ownership', repairBackfillOwnership],
+    ['0012_context_accounting_origin', repairReservationOriginOwnership],
+  ];
+  return database.transaction(() => {
+    const completed: string[] = [];
+    for (const [id, repair] of repairs) {
+      if (!previouslyApplied.has(id) && applied.has(id)) {
+        repair(database);
+        completed.push(id);
+      }
     }
+
+    return completed;
+  })();
+}
+
+function main(): void {
+  const args = process.argv.slice(2);
+  const [databaseFlag, databasePath, beforeFlag, beforePath] = args;
+  if (
+    args.length !== 4 ||
+    databaseFlag !== '--database' ||
+    !databasePath ||
+    beforeFlag !== '--before' ||
+    !beforePath
+  ) {
+    throw new Error(
+      'usage: repair-legacy-data.ts --database UPDATED.db --before PRE-UPDATE.db',
+    );
+  }
+
+  if (resolve(databasePath) === resolve(beforePath))
+    throw new Error('pre-update backup must be a separate file');
+  if (!existsSync(databasePath) || !existsSync(beforePath))
+    throw new Error('database and pre-update backup must exist');
+  const before = new Database(beforePath, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  let previouslyApplied: Set<string>;
+  try {
+    if (!verifyRecordedMigrationSet(before))
+      throw new Error('invalid pre-update migration history');
+    previouslyApplied = new Set(
+      before
+        .prepare('select id from schema_migrations')
+        .pluck()
+        .all() as string[],
+    );
   } finally {
-    database.exec(`drop table if exists temp.${table}`);
+    before.close();
+  }
+
+  const database = openChiefDatabase(databasePath);
+  try {
+    const repaired = repairLegacyData(database, previouslyApplied);
+    process.stdout.write(
+      repaired.length
+        ? `Repaired: ${repaired.join(', ')}\n`
+        : 'No pending legacy data repairs.\n',
+    );
+  } finally {
+    database.close();
   }
 }
+
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+)
+  main();

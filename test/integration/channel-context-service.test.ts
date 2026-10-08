@@ -1,3 +1,4 @@
+import { repairLegacyData } from '../../scripts/repair-legacy-data.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -1359,7 +1360,14 @@ describe('ChannelContextService', () => {
         legacyChecksum,
       );
 
+    const previouslyApplied = new Set(
+      database
+        .prepare('select id from schema_migrations')
+        .pluck()
+        .all() as string[],
+    );
     await migrateChiefDatabase(database);
+    repairLegacyData(database, previouslyApplied);
     let captured: ContextForgetJournalEntry | undefined;
     const upgraded = new ChannelContextService({
       channelId,
@@ -1457,7 +1465,14 @@ describe('ChannelContextService', () => {
         legacyChecksum,
       );
 
+    const previouslyApplied = new Set(
+      database
+        .prepare('select id from schema_migrations')
+        .pluck()
+        .all() as string[],
+    );
     await migrateChiefDatabase(database);
+    repairLegacyData(database, previouslyApplied);
     let captured: ContextForgetJournalEntry | undefined;
     const upgraded = new ChannelContextService({
       channelId,

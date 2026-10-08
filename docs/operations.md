@@ -258,6 +258,32 @@ removes competing Google package definitions by repository URL while preserving
 ordinary deployments run it before changing the Chief process, so a repair
 failure leaves the existing application available and fails the deployment.
 
+## One-time legacy data repairs
+
+Five historical upgrades (0005, 0008, 0009, 0010, and 0012) repaired old journal
+payloads and backfill accounting. These are one-time operations, not startup
+work. The local `scripts/repair-legacy-data.ts` script is excluded from the
+application build and container. It compares a pre-update backup with the
+upgraded database and applies only repairs absent from the backup's history,
+in order, in one transaction. A backup already at 0012 or later needs no repair.
+
+When upgrading a database older than 0012, keep Chief stopped throughout the
+update and repair. Retain an untouched pre-update backup; run these commands
+locally on a working copy of the database using the updated checkout:
+
+```bash
+pnpm chief -- migrate --database ./chief.db
+pnpm exec tsx scripts/repair-legacy-data.ts --database ./chief.db --before ./chief-before.db
+pnpm chief -- verify-restore --backup ./chief.db --require-migration 0003_channel_context
+```
+
+Install the repaired database using the restore procedure before restarting
+Chief with the updated image. Do not use the ordinary automatic deployment
+path for these older databases: it starts Chief immediately after schema
+migration. Run the repair once for each upgrade, with its matching pre-update
+backup. The script does not alter that backup. On failure its data changes roll
+back; keep Chief stopped until repair and verification succeed.
+
 ## Routine changes
 
 - Rotate Discord/OpenAI secrets by adding a new Secret Manager version, then restart `chief.service`.

@@ -93,9 +93,9 @@ scalar `pluck()` types. CI checks regeneration for drift.
 Versioned `sql/migrations/*.sql` files own the schema. Knex runs them on Chief's
 existing `better-sqlite3` connection, preserving sqlite-vec and connection
 settings. Knex's migration source discovers SQL files in filename order, with no
-handwritten catalog. Matching modules in `src/database/migrations/` apply
-historical data repairs after their SQL; `src/database/migration-data.ts` owns
-the repair logic. Old checksum values live in migration headers for backup
+handwritten catalog. Historical data repairs live only in the manual
+`scripts/repair-legacy-data.ts` script; application startup and schema migration
+never execute them. Old checksum values live in migration headers for backup
 compatibility. New SQL files use content checksums and need no registration.
 Knex and sqlc consume the same migration files; no separate schema snapshot is
 maintained. Knex owns ordering, transactions, locking, and its
