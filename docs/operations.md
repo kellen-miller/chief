@@ -169,7 +169,7 @@ reviewed and an explicit maximum spend is approved.
 The nightly timer creates an online SQLite backup mode 0600, verifies Knex migration
 history, `integrity_check`, sqlite-vec, and context FTS/vector consistency,
 then uploads it below `backups/`. Legacy root `.db` objects and new backup
-objects become deletion-eligible at age 30. Content-free `forget-journal/`
+objects become deletion-eligible at age 30. Content-free `forget-journal/v1/`
 objects and their noncurrent versions remain for at least 60 days. GCS lifecycle
 enforcement is asynchronous.
 
@@ -177,7 +177,7 @@ enforcement is asynchronous.
 systemctl status chief-backup.timer
 journalctl -u chief-backup.service --since yesterday
 gcloud storage ls "gs://$CHIEF_BACKUP_BUCKET/backups/"
-gcloud storage ls "gs://$CHIEF_BACKUP_BUCKET/forget-journal/"
+gcloud storage ls "gs://$CHIEF_BACKUP_BUCKET/forget-journal/v1/"
 ```
 
 Inspect a downloaded current backup without migrating it:
@@ -191,6 +191,9 @@ sqlite-vec. Explicit `chief-v1` mode additionally verifies exact active public
 document IDs in FTS and vectors, exact FTS token positions, tier queries,
 tombstone checksums, and backfill progress. Older databases and backups require
 their old image; the new baseline does not adopt or upgrade them.
+
+Forget journals use `forget-journal/v1/`; startup excludes journals from the
+previous database to prevent collisions with reused numeric row IDs.
 
 For a restore, stop Chief, download the selected object, and use the repository
 script. The script verifies with the retained recovery image, atomically swaps
@@ -256,33 +259,6 @@ removes competing Google package definitions by repository URL while preserving
 `google_osconfig_managed.*`. Startup runs it before package installation and
 ordinary deployments run it before changing the Chief process, so a repair
 failure leaves the existing application available and fails the deployment.
-
-## Database cutover
-
-The new baseline intentionally starts a fresh database. Before merging/deploying,
-copy the reviewed script from this checkout to the VM and execute it over SSH:
-
-```bash
-sudo /opt/chief/node/bin/node /tmp/cutover-database.ts /var/lib/chief
-```
-
-The script stops Chief, health checks, monitoring, and backups, then moves
-`chief.db` and its WAL/SHM files plus deployment/monitoring state into a private
-`pre-cutover-*` directory. Chief remains stopped. The script never rewrites the
-old database; no legacy migration or data repair runs. Expect downtime until
-the new image deploys and creates the five baseline migrations.
-
-After successful deployment and health verification:
-
-```bash
-sudo systemctl start chief-health.timer chief-backup.timer chief-monitoring.timer
-```
-
-New forget journals use `forget-journal/v1/`; pre-cutover journals are excluded
-from replay to avoid collisions with new numeric row IDs. Existing bucket
-retention rules still cover both prefixes. Old backups remain paired with their
-old image. Manual rollback requires restoring both the archived database files
-and `deploy.env`; do not restore an old database into the new image.
 
 ## Routine changes
 
