@@ -62,7 +62,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
     },
   });
   const database = openChiefDatabase(join(config.dataDirectory, 'chief.db'));
-  migrateChiefDatabase(database);
+  await migrateChiefDatabase(database);
   const memory = new SqliteMemoryStore(database);
   const conversation = new ConversationStore(database);
   const queue = new PaidWorkQueue();

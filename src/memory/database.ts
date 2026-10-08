@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import Database from 'better-sqlite3';
+import knex, { type Knex } from 'knex';
 import * as sqliteVec from 'sqlite-vec';
 
 import { alertHistorySchema } from '../ops/alert-history.js';
@@ -760,10 +761,10 @@ export function openChiefDatabase(path: string): Database.Database {
   return database;
 }
 
-export function migrateChiefDatabase(
+export async function migrateChiefDatabase(
   database: Database.Database,
   throughMigrationId?: string,
-): void {
+): Promise<void> {
   if (
     throughMigrationId !== undefined &&
     !MIGRATIONS.some(({ id }) => id === throughMigrationId)
@@ -773,27 +774,88 @@ export function migrateChiefDatabase(
   database.exec(
     'create table if not exists schema_migrations (id text primary key, checksum text not null, applied_at integer not null)',
   );
-  for (const migration of MIGRATIONS) {
-    const applied = database
-      .prepare('select checksum from schema_migrations where id = ?')
-      .get(migration.id) as { checksum: string } | undefined;
-    if (applied !== undefined) {
-      if (applied.checksum !== migration.checksum) {
-        throw new Error(`migration checksum mismatch for ${migration.id}`);
-      }
-    } else {
-      database.transaction(() => {
-        database.exec(migration.sql);
-        migration.migrate?.(database);
-        migration.validate?.(database);
-        database
-          .prepare(
-            'insert into schema_migrations (id, checksum, applied_at) values (?, ?, ?)',
-          )
-          .run(migration.id, migration.checksum, Date.now());
-      })();
+
+  const applied = new Map(
+    (
+      database.prepare('select id, checksum from schema_migrations').all() as {
+        id: string;
+        checksum: string;
+      }[]
+    ).map(({ id, checksum }) => [id, checksum]),
+  );
+  for (const { id, checksum } of MIGRATIONS) {
+    if (applied.has(id) && applied.get(id) !== checksum) {
+      throw new Error(`migration checksum mismatch for ${id}`);
     }
-    if (migration.id === throughMigrationId) break;
+  }
+
+  if (applied.size && !verifyRecordedMigrationSet(database)) {
+    throw new Error('invalid recorded migration history');
+  }
+
+  if (
+    database
+      .prepare("select 1 from sqlite_master where name = 'knex_migrations'")
+      .get()
+  ) {
+    const completed = database
+      .prepare('select name from knex_migrations')
+      .pluck()
+      .all() as string[];
+    if (completed.some((id) => !applied.has(id))) {
+      throw new Error(
+        'Knex migration history disagrees with recorded checksums',
+      );
+    }
+  }
+
+  // Borrow the caller's connection, including its loaded extensions and any
+  // in-memory database. Knex owns migration transactions; the caller owns close.
+  const pool = new knex.KnexPool<Database.Database>({
+    min: 0,
+    max: 1,
+    create: () => database,
+    destroy: () => undefined,
+  });
+  const source: Knex.MigrationSource<Migration> = {
+    getMigrations: () => Promise.resolve([...MIGRATIONS]),
+    getMigrationName: ({ id }) => id,
+    getMigration: (migration) =>
+      Promise.resolve({
+        up: () => {
+          // Knex records already-applied legacy migrations without replaying them.
+          if (!applied.has(migration.id)) {
+            database.exec(migration.sql);
+            migration.migrate?.(database);
+            migration.validate?.(database);
+            database
+              .prepare(
+                'insert into schema_migrations (id, checksum, applied_at) values (?, ?, ?)',
+              )
+              .run(migration.id, migration.checksum, Date.now());
+          }
+
+          return Promise.resolve();
+        },
+        down: () =>
+          Promise.reject(new Error('restore a backup to downgrade Chief')),
+      }),
+  };
+  const migrator = knex({
+    client: 'better-sqlite3',
+    useNullAsDefault: true,
+    connectionPool: pool,
+    migrations: { migrationSource: source, tableName: 'knex_migrations' },
+  });
+  try {
+    if (throughMigrationId === undefined) {
+      await migrator.migrate.latest();
+    } else {
+      await migrator.migrate.to({ name: throughMigrationId });
+    }
+  } finally {
+    await migrator.destroy();
+    await pool.destroy();
   }
 }
 

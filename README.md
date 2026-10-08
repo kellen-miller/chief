@@ -90,6 +90,15 @@ pinned to a WASM release and SHA256 in `sqlc.yaml`. The fork supports synchronou
 prepared statements, named/positional bindings, SQLite types, alias casing, and
 scalar `pluck()` types. CI checks regeneration for drift.
 
+Knex runs migrations on Chief's existing `better-sqlite3` connection, preserving
+sqlite-vec and connection settings. A Knex migration source retains the existing
+SQL and TypeScript data migrations. Knex owns ordering, transactions, locking,
+and its `knex_migrations` ledger. Startup awaits migrations before serving work.
+Existing `schema_migrations` IDs and checksums are retained for backup validation;
+Knex adopts applied migrations without replaying them. Downgrades restore a
+matching backup. Run migrations with
+`pnpm chief -- migrate --database /path/to/chief.db`.
+
 Transactions, domain validation/mapping, migration checksums, FTS5/sqlite-vec,
 dynamic SQL, and queries using SQLite syntax unsupported by sqlc remain in their
 owning TypeScript modules. sqlc does not execute migrations or replace recovery

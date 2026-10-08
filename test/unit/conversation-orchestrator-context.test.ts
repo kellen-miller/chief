@@ -16,7 +16,7 @@ import { UsageBudget } from '../../src/usage/usage-budget.js';
 describe('ConversationOrchestrator prepared context', () => {
   it('answers from readable context when live indexing fails', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     conversation.record({
       content: 'The launch date is Friday.',
@@ -114,7 +114,7 @@ describe('ConversationOrchestrator prepared context', () => {
 
   it('keeps lost-thread behavior when recent history cannot be read', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
     const answerText = vi.fn<ChiefAgent['answerText']>();
@@ -185,7 +185,7 @@ describe('ConversationOrchestrator prepared context', () => {
 
   it('does not assemble context for observation or greeting turns', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
     const assemble = vi.fn();
@@ -246,7 +246,7 @@ describe('ConversationOrchestrator prepared context', () => {
 
   it('uses the assembler once and emits only bounded context metrics', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
     const answerText = vi.fn<ChiefAgent['answerText']>(() =>

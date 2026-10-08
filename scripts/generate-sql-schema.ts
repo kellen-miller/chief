@@ -13,7 +13,7 @@ const directory = mkdtempSync(join(tmpdir(), 'chief-sqlc-schema-'));
 try {
   const database = openChiefDatabase(join(directory, 'schema.db'));
   try {
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const rows = database
       .prepare<[], { sql: string }>(
         `select sql from sqlite_master

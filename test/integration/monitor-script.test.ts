@@ -348,7 +348,7 @@ describe('host-side Discord monitoring', () => {
     const bin = join(root, 'bin');
     mkdirSync(bin);
     const applicationDatabase = openChiefDatabase(join(root, 'chief.db'));
-    migrateChiefDatabase(applicationDatabase, '0013_legacy_source_scope');
+    await migrateChiefDatabase(applicationDatabase, '0013_legacy_source_scope');
     applicationDatabase.exec(alertHistorySchema);
     applicationDatabase.close();
     const database = new DatabaseSync(join(root, 'chief.db'));
@@ -471,7 +471,7 @@ describe('host-side Discord monitoring', () => {
     ).toEqual({ count: 3 });
     database.close();
     const upgraded = openChiefDatabase(join(root, 'chief.db'));
-    migrateChiefDatabase(upgraded);
+    await migrateChiefDatabase(upgraded);
     expect(
       upgraded.prepare('select count(*) from monitoring_alerts').pluck().get(),
     ).toBe(3);

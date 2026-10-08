@@ -17,7 +17,7 @@ const guildId = '32345678901234567';
 const channelId = '22345678901234567';
 const messageId = '52345678901234567';
 
-function createHarness(
+async function createHarness(
   options: {
     readonly uploadForgetJournal?: (
       entry: import('../../src/context/context-deletion-store.js').ContextForgetJournalEntry,
@@ -25,7 +25,7 @@ function createHarness(
   } = {},
 ) {
   const database = openChiefDatabase(':memory:');
-  migrateChiefDatabase(database);
+  await migrateChiefDatabase(database);
   const memory = new SqliteMemoryStore(database);
   const context = new ChannelContextService({
     channelId,
@@ -70,8 +70,8 @@ function source(
 }
 
 describe('Discord source lifecycle', () => {
-  it('makes the canonical source and extraction snapshot available together', () => {
-    const { context, database } = createHarness();
+  it('makes the canonical source and extraction snapshot available together', async () => {
+    const { context, database } = await createHarness();
 
     expect(context.apply(source())).toMatchObject({
       status: 'applied',
@@ -97,8 +97,8 @@ describe('Discord source lifecycle', () => {
     database.close();
   });
 
-  it('atomically replaces an edited snapshot and its derived memory', () => {
-    const { context, database, memory } = createHarness();
+  it('atomically replaces an edited snapshot and its derived memory', async () => {
+    const { context, database, memory } = await createHarness();
     context.apply(source());
     const sourceEventId = database
       .prepare('select id from source_events where platform_source_id = ?')
@@ -152,8 +152,8 @@ describe('Discord source lifecycle', () => {
     database.close();
   });
 
-  it('rejects stale extraction after the source revision changes', () => {
-    const { context, database, memory } = createHarness();
+  it('rejects stale extraction after the source revision changes', async () => {
+    const { context, database, memory } = await createHarness();
     context.apply(source());
     const job = memory.leaseNextJob(1_000, 60_000);
     if (job === null) throw new Error('expected an extraction job');
@@ -195,8 +195,8 @@ describe('Discord source lifecycle', () => {
     database.close();
   });
 
-  it('scrubs canonical, extraction, memory, and descendants on delete', () => {
-    const { context, database, memory } = createHarness();
+  it('scrubs canonical, extraction, memory, and descendants on delete', async () => {
+    const { context, database, memory } = await createHarness();
     context.apply(source());
     const sourceEventId = database
       .prepare('select id from source_events')
@@ -260,7 +260,7 @@ describe('Discord source lifecycle', () => {
           releaseUpload = resolve;
         }),
     );
-    const { context, database } = createHarness({ uploadForgetJournal });
+    const { context, database } = await createHarness({ uploadForgetJournal });
     context.apply(source());
 
     let settled = false;
@@ -303,7 +303,7 @@ describe('Discord source lifecycle', () => {
     if (uploaded === undefined) throw new Error('expected an uploaded journal');
     database.close();
 
-    const restored = createHarness();
+    const restored = await createHarness();
     restored.context.apply(source());
     restored.context.replayForgetJournal(uploaded, 2_000);
     expect(
@@ -316,7 +316,7 @@ describe('Discord source lifecycle', () => {
   });
 
   it('rejects an authoritative delete when journal upload fails', async () => {
-    const { context, database } = createHarness({
+    const { context, database } = await createHarness({
       uploadForgetJournal: () => Promise.reject(new Error('GCS unavailable')),
     });
     context.apply(source());
@@ -344,8 +344,8 @@ describe('Discord source lifecycle', () => {
     database.close();
   });
 
-  it('revokes durable memory on Discord delete after raw retention', () => {
-    const { context, database, memory } = createHarness();
+  it('revokes durable memory on Discord delete after raw retention', async () => {
+    const { context, database, memory } = await createHarness();
     const applied = context.apply(source());
     if (applied.status !== 'applied' || applied.memorySourceEventId === null) {
       throw new Error('expected a memory source');
@@ -386,7 +386,7 @@ describe('Discord source lifecycle', () => {
   });
 
   it('infers an offline delete from retained source identity', async () => {
-    const { context, database, memory } = createHarness();
+    const { context, database, memory } = await createHarness();
     const retainedMessageId = '201';
     const survivorMessageId = '200';
     const applied = context.apply(source({ messageId: retainedMessageId }));
@@ -499,8 +499,8 @@ describe('Discord source lifecycle', () => {
     database.close();
   });
 
-  it('keeps the newest Discord revision under duplicates and reordering', () => {
-    const { context, database } = createHarness();
+  it('keeps the newest Discord revision under duplicates and reordering', async () => {
+    const { context, database } = await createHarness();
     context.apply(source());
     context.apply(
       source({

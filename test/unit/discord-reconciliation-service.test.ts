@@ -255,7 +255,7 @@ describe('Discord history pagination', () => {
 describe('DiscordReconciliationService', () => {
   it('applies an offline create and edit then infers a covered deletion', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     seedAvailable(database, deletedId, 'Deleted while offline.');
     seedAvailable(database, editedId, 'Old wording.');
     const applyTextSource = vi.fn();
@@ -358,7 +358,7 @@ describe('DiscordReconciliationService', () => {
     { complete: false, rateLimited: true, status: 'rate-limited' },
   ])('never infers deletion from a $status pass', async (page) => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     seedAvailable(database, deletedId, 'Must remain available.');
     const deleteTextSource = vi.fn();
     const service = new DiscordReconciliationService({
@@ -397,7 +397,7 @@ describe('DiscordReconciliationService', () => {
 
   it('resumes a content-free cursor and accumulates page coverage', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const fetchPage = vi.fn(
       ({ cursor, mode }: { cursor: string | null; mode: string }) => {
         if (mode === 'retained') {
@@ -462,7 +462,7 @@ describe('DiscordReconciliationService', () => {
 
   it('resumes an interrupted retained pass before restarting incremental', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     let retainedAttempts = 0;
     const fetchPage = vi.fn(
       ({ mode }: { cursor: string | null; mode: string }) => {
@@ -516,7 +516,7 @@ describe('DiscordReconciliationService', () => {
 
   it('runs identity-only full scans weekly and skips a fresh repeat', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     seedAvailable(database, deletedId, 'Deleted before weekly scan.');
     const applyTextSource = vi.fn();
     const deleteTextSource = vi.fn();
@@ -572,7 +572,7 @@ describe('DiscordReconciliationService', () => {
 
   it('infers an omitted identity newer than every full-scan survivor', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     seedAvailable(database, '201', 'Deleted before weekly scan.');
     const deleteTextSource = vi.fn();
     const fetchPage = vi.fn((input: DiscordHistoryFetchInput) =>
@@ -617,7 +617,7 @@ describe('DiscordReconciliationService', () => {
 
   it('preserves a full-scan cursor while gap reconciliation runs', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     let fullAttempts = 0;
     let now = 1_720_000_000_000;
     const fetchPage = vi.fn(
@@ -681,7 +681,7 @@ describe('DiscordReconciliationService', () => {
 
   it('returns failed for a history fetch error without deletion', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     seedAvailable(database, deletedId, 'Must survive a failed pass.');
     const deleteTextSource = vi.fn();
     const service = new DiscordReconciliationService({

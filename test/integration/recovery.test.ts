@@ -42,9 +42,9 @@ afterEach(async () => {
 });
 
 describe('database recovery', () => {
-  it('validates recorded migrations by default and requires context explicitly', () => {
+  it('validates recorded migrations by default and requires context explicitly', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database, '0002_conversation_events');
+    await migrateChiefDatabase(database, '0002_conversation_events');
 
     expect(restorableDatabaseCapability(database)).toBe(
       '0002_conversation_events',
@@ -63,9 +63,9 @@ describe('database recovery', () => {
     database.close();
   });
 
-  it('rejects unsupported explicit restore targets', () => {
+  it('rejects unsupported explicit restore targets', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
 
     expect(verifyRestorableDatabase(database, '0002_conversation_events')).toBe(
       false,
@@ -73,9 +73,9 @@ describe('database recovery', () => {
     database.close();
   });
 
-  it('checks context FTS/vector consistency in explicit context mode', () => {
+  it('checks context FTS/vector consistency in explicit context mode', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
 
     expect(restorableDatabaseCapability(database)).toBe('0003_channel_context');
     expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
@@ -92,9 +92,9 @@ describe('database recovery', () => {
     database.close();
   });
 
-  it('recognizes an exact migration-0003 database capability', () => {
+  it('recognizes an exact migration-0003 database capability', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database, CHANNEL_CONTEXT_MIGRATION_ID);
+    await migrateChiefDatabase(database, CHANNEL_CONTEXT_MIGRATION_ID);
     for (const tier of ['hourly', 'daily', 'weekly', 'long-term'] as const) {
       insertMigration0003Document(database, tier);
     }
@@ -108,9 +108,9 @@ describe('database recovery', () => {
     database.close();
   });
 
-  it('rejects same-count context FTS content corruption', () => {
+  it('rejects same-count context FTS content corruption', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const documentId = insertContextDocument(
       database,
       'restore-lexical-target',
@@ -131,9 +131,9 @@ describe('database recovery', () => {
     database.close();
   });
 
-  it('rejects a same-count vector attached to an orphan document ID', () => {
+  it('rejects a same-count vector attached to an orphan document ID', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const documentId = insertContextDocument(
       database,
       'restore-vector-target',
@@ -154,9 +154,9 @@ describe('database recovery', () => {
     database.close();
   });
 
-  it('checks retained tombstones and backfill progress in context mode', () => {
+  it('checks retained tombstones and backfill progress in context mode', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     database
       .prepare(
         `insert into context_backfills
@@ -187,9 +187,9 @@ describe('database recovery', () => {
     database.close();
   });
 
-  it('replays a verified journal into a migration-0002 snapshot idempotently', () => {
+  it('replays a verified journal into a migration-0002 snapshot idempotently', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database, '0002_conversation_events');
+    await migrateChiefDatabase(database, '0002_conversation_events');
     database
       .prepare(
         `insert into conversation_events
@@ -262,7 +262,7 @@ describe('database recovery', () => {
     const guildId = '32345678901234567';
     const channelId = '22345678901234567';
     const current = openChiefDatabase(':memory:');
-    migrateChiefDatabase(current, '0002_conversation_events');
+    await migrateChiefDatabase(current, '0002_conversation_events');
     const currentFixture = insertMigration0002Memory(current);
     current
       .prepare(
@@ -273,7 +273,7 @@ describe('database recovery', () => {
                  1, 99999, 'completed')`,
       )
       .run();
-    migrateChiefDatabase(current);
+    await migrateChiefDatabase(current);
     expect(
       current
         .prepare('select source_scope_id from source_events where id = ?')
@@ -320,10 +320,10 @@ describe('database recovery', () => {
     expectMemoryRecoveryScrubbed(current);
 
     const restored = openChiefDatabase(':memory:');
-    migrateChiefDatabase(restored, '0002_conversation_events');
+    await migrateChiefDatabase(restored, '0002_conversation_events');
     const restoredFixture = insertMigration0002Memory(restored);
     expect(restoredFixture).toEqual(currentFixture);
-    migrateChiefDatabase(restored);
+    await migrateChiefDatabase(restored);
 
     replayForgetJournals(restored, [entry], 10);
 
@@ -426,12 +426,12 @@ describe('database recovery', () => {
     current.close();
   });
 
-  it('does not alias source tombstones by position or suffix', () => {
+  it('does not alias source tombstones by position or suffix', async () => {
     const guildId = '32345678901234567';
     const channelId = '22345678901234567';
     const messageId = '52345678901234567';
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     insertSourceTombstone(
       database,
       `${messageId}/${channelId}/62345678901234567`,
@@ -467,9 +467,9 @@ describe('database recovery', () => {
     database.close();
   });
 
-  it('replays current context by stable keys, not snapshot-local document IDs', () => {
+  it('replays current context by stable keys, not snapshot-local document IDs', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const eventId = new ConversationStore(database).record({
       attachmentMetadataJson: '[]',
       channelId: 'channel',
@@ -583,7 +583,7 @@ describe('database recovery', () => {
     );
   });
 
-  it('defaults legacy journal reasons and requires a migrated database', () => {
+  it('defaults legacy journal reasons and requires a migrated database', async () => {
     const entry = journal({ omitReason: true });
     const unmigrated = openChiefDatabase(':memory:');
     expect(() => {
@@ -592,7 +592,7 @@ describe('database recovery', () => {
     unmigrated.close();
 
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     replayForgetJournals(database, [entry], 10);
 
     expect(
@@ -612,7 +612,7 @@ describe('database recovery', () => {
     directories.push(directory);
     const source = join(directory, 'chief.db');
     const database = openChiefDatabase(source);
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     new ConversationStore(database);
     database.close();
 

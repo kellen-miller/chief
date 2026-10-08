@@ -25,7 +25,7 @@ import { backup } from '../../src/ops/backup.ts';
 afterEach(() => vi.unstubAllEnvs());
 
 describe('online host backup', () => {
-  it('backs up, verifies and uploads a real migrated database', () => {
+  it('backs up, verifies and uploads a real migrated database', async () => {
     const root = mkdtempSync(join(tmpdir(), 'chief-online-backup-'));
     const runtime = join(root, 'runtime');
     const data = join(root, 'data');
@@ -55,7 +55,7 @@ describe('online host backup', () => {
       symlinkSync(resolve('node_modules'), join(runtime, 'node_modules'));
       const database = openChiefDatabase(join(data, 'chief.db'));
       try {
-        migrateChiefDatabase(database);
+        await migrateChiefDatabase(database);
         database
           .prepare(
             `insert into usage_ledger

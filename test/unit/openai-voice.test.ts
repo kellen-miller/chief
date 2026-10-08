@@ -559,7 +559,7 @@ describe('Realtime provider boundaries', () => {
 
   it('returns a committed receipt from the voice memory tool', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const memory = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),

@@ -9,10 +9,10 @@ import {
 // Validate sqlc's complete generated catalog against the actual migrated SQLite
 // engine, rather than trusting the compiler's subset of SQLite syntax alone.
 describe('generated SQLite statements', () => {
-  it('prepares every statement against the real migration schema', () => {
+  it('prepares every statement against the real migration schema', async () => {
     const database = openChiefDatabase(':memory:');
     try {
-      migrateChiefDatabase(database);
+      await migrateChiefDatabase(database);
       const statements = Object.entries(queries);
       expect(statements.length).toBeGreaterThan(100);
       for (const [name, prepare] of statements) {

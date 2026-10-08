@@ -47,7 +47,7 @@ async function main(arguments_: readonly string[]): Promise<void> {
     }
     case 'migrate': {
       const database = openChiefDatabase(requireFlag(arguments_, '--database'));
-      migrateChiefDatabase(database);
+      await migrateChiefDatabase(database);
       database.close();
       break;
     }
@@ -104,7 +104,7 @@ async function main(arguments_: readonly string[]): Promise<void> {
         join(config.dataDirectory, 'chief.db'),
       );
       try {
-        migrateChiefDatabase(database);
+        await migrateChiefDatabase(database);
         const history = new DiscordRestHistorySource({
           botUserId: config.discord.applicationId,
           channelId: config.discord.textChannelId,
@@ -143,7 +143,7 @@ async function main(arguments_: readonly string[]): Promise<void> {
 async function smoke(): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), 'chief-smoke-'));
   const database = openChiefDatabase(join(directory, 'chief.db'));
-  migrateChiefDatabase(database);
+  await migrateChiefDatabase(database);
   const codec = new OpusEncoder(48_000, 2);
   const pcm = Buffer.alloc(3_840);
   const decoded = codec.decode(codec.encode(pcm));

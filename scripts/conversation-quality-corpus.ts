@@ -100,7 +100,7 @@ export async function replayConversationQualityCase(
 ): Promise<QualityReplayResult> {
   const database = openChiefDatabase(':memory:');
   try {
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     const eventIds = new Map<string, number>();

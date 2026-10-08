@@ -20,7 +20,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const budget = new UsageBudget({
       ceilingUsd: 10,
       indexingCeilingUsd: 3,
@@ -165,7 +165,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const budget = new UsageBudget({
       ceilingUsd: 10,
       indexingCeilingUsd: 3,
@@ -276,7 +276,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const budget = new UsageBudget({
       ceilingUsd: 10,
       indexingCeilingUsd: 3,
@@ -372,7 +372,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const budget = new UsageBudget({
       ceilingUsd: 10,
       indexingCeilingUsd: 3,
@@ -585,7 +585,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const budget = new UsageBudget({
       ceilingUsd: 10,
       indexingCeilingUsd: 0.05,
@@ -646,7 +646,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       budget: new UsageBudget({
         ceilingUsd: 10,
@@ -717,7 +717,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     let releaseSummary = (): void => undefined;
     const summaryGate = new Promise<void>((resolve) => {
       releaseSummary = resolve;
@@ -816,7 +816,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     let releaseSummary = (): void => undefined;
     const summaryGate = new Promise<void>((resolve) => {
       releaseSummary = resolve;
@@ -948,7 +948,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const budget = new UsageBudget({
       ceilingUsd: 10,
       indexingCeilingUsd: 3,
@@ -1025,7 +1025,7 @@ describe('ChannelContextService rollups', () => {
     let current = occurredAt + 1_000;
     let providerAvailable = false;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const budget = new UsageBudget({
       ceilingUsd: 10,
       indexingCeilingUsd: 3,
@@ -1135,7 +1135,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const ledger = new SqliteUsageLedger(database);
     const firstBudget = new UsageBudget({
       ceilingUsd: 10,
@@ -1260,7 +1260,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       budget: new UsageBudget({
         ceilingUsd: 10,
@@ -1353,7 +1353,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const budget = new UsageBudget({
       ceilingUsd: 10,
       indexingCeilingUsd: 3,
@@ -1475,7 +1475,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       budget: new UsageBudget({
         ceilingUsd: 10,
@@ -1614,7 +1614,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       budget: new UsageBudget({
         ceilingUsd: 10,
@@ -1747,7 +1747,7 @@ describe('ChannelContextService rollups', () => {
     const secondAt = firstAt + 60 * 60 * 1_000;
     let current = firstAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       budget: new UsageBudget({
         ceilingUsd: 10,
@@ -1905,7 +1905,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       budget: new UsageBudget({
         ceilingUsd: 10,
@@ -2035,7 +2035,7 @@ describe('ChannelContextService rollups', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const ledger = new SqliteUsageLedger(database);
     let announceStarted: (() => void) | undefined;
     const started = new Promise<void>((resolve) => {

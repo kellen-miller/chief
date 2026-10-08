@@ -11,9 +11,9 @@ import { UsageBudget } from '../../src/usage/usage-budget.js';
 const vector = new Float32Array(1_536).fill(0.4);
 
 describe('MemoryService automatic extraction', () => {
-  it('exposes only due automatic work to the shared scheduler', () => {
+  it('exposes only due automatic work to the shared scheduler', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const worker = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
@@ -38,7 +38,7 @@ describe('MemoryService automatic extraction', () => {
 
   it('extracts and embeds an accepted durable memory', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     store.observe({
       content: 'Chief, remember that our annual trip is in October.',
@@ -98,7 +98,7 @@ describe('MemoryService automatic extraction', () => {
 
   it('rejects sensitive and low-confidence automatic proposals', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     store.observe({
       content: 'Some passing conversation',
@@ -150,7 +150,7 @@ describe('MemoryService automatic extraction', () => {
 
   it('defers without consuming an attempt when the budget is exhausted', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     store.observe({
       content: 'Remember this later',
@@ -184,7 +184,7 @@ describe('MemoryService automatic extraction', () => {
 
   it('briefly defers temporary interactive-headroom pressure', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     store.observe({
       content: 'Remember this after the interaction',
@@ -227,7 +227,7 @@ describe('MemoryService automatic extraction', () => {
 
   it('reports idle and terminates a repeatedly failing job', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const worker = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
@@ -259,7 +259,7 @@ describe('MemoryService automatic extraction', () => {
 
   it('handles a natural-language forget request without a model call', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     store.applyMemory({
       canonicalText: 'Dinner is at seven',
@@ -300,7 +300,7 @@ describe('MemoryService automatic extraction', () => {
 
   it('applies conflict and supersession actions while skipping no-ops', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const originalId = store.applyMemory({
       canonicalText: 'Dinner is at seven',
@@ -393,7 +393,7 @@ describe('MemoryService automatic extraction', () => {
 
   it('completes a forget request when no memory matches', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     store.observe({
       content: 'Chief, forget that nonexistent plan',

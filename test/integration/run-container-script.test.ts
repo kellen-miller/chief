@@ -117,7 +117,7 @@ describe('container startup recovery preflight', () => {
     const fixture = await createFixture();
     await rm(fixture.database);
     const database = openChiefDatabase(fixture.database);
-    migrateChiefDatabase(database, CHANNEL_CONTEXT_MIGRATION_ID);
+    await migrateChiefDatabase(database, CHANNEL_CONTEXT_MIGRATION_ID);
     database.close();
 
     const result = await runContainer(fixture, undefined, {

@@ -19,7 +19,7 @@ import { UsageBudget } from '../../src/usage/usage-budget.js';
 describe('Realtime context recall', () => {
   it('rejects committed greeting noise without blocking a short topic query', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const memory = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       embed: vi.fn(),
@@ -70,7 +70,7 @@ describe('Realtime context recall', () => {
 
   it('discards stale recall side effects after the next utterance commits', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const memory = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       embed: vi.fn(),
@@ -152,7 +152,7 @@ describe('Realtime context recall', () => {
 
   it('coalesces parallel recall attempts for one utterance', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const memory = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       embed: vi.fn(),
@@ -233,7 +233,7 @@ describe('Realtime context recall', () => {
 
   it('matches the structured text context payload', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const memory = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       embed: vi.fn(),
@@ -349,7 +349,7 @@ describe('Realtime context recall', () => {
 
   it('allows one successful structured recall per committed utterance', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const memory = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       embed: vi.fn(),

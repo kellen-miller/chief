@@ -244,6 +244,10 @@ CREATE TABLE discord_reconciliation_state (
   updated_at integer not null
 );
 
+CREATE TABLE `knex_migrations` (`id` integer not null primary key autoincrement, `name` varchar(255), `batch` integer, `migration_time` datetime);
+
+CREATE TABLE `knex_migrations_lock` (`index` integer not null primary key autoincrement, `is_locked` integer);
+
 CREATE TABLE maintenance_runs (
   id integer primary key,
   kind text not null,

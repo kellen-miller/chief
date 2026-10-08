@@ -18,7 +18,7 @@ const now = Date.parse('2026-07-14T16:00:00Z');
 describe('context retrieval replay', () => {
   it('replays every horizon, provenance mode, conflict, and empty index', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const sourceId = recordEvent(
       conversation,
