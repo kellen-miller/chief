@@ -6,13 +6,7 @@ import type Database from 'better-sqlite3';
 import { z } from 'zod';
 
 import type { ContextForgetJournalEntry } from '../context/context-deletion-store.js';
-import {
-  CHANNEL_CONTEXT_MIGRATION_CHECKSUM,
-  CHANNEL_CONTEXT_MIGRATION_ID,
-  CONTEXT_BACKFILL_MIGRATION_ID,
-  DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID,
-  verifyRecordedMigrationSet,
-} from './database.js';
+import { verifyRecordedMigrationSet } from './database.js';
 
 const journalPayloadSchema = z
   .object({
@@ -42,9 +36,9 @@ export function restorableDatabaseCapability(
   database: Database.Database,
 ): RestorableDatabaseCapability | null {
   if (!verifyRestorableDatabase(database)) return null;
-  if (hasMigration(database, CHANNEL_CONTEXT_MIGRATION_ID)) {
-    return verifyRestorableDatabase(database, CHANNEL_CONTEXT_MIGRATION_ID)
-      ? CHANNEL_CONTEXT_MIGRATION_ID
+  if (hasMigration(database, '0003_channel_context')) {
+    return verifyRestorableDatabase(database, '0003_channel_context')
+      ? '0003_channel_context'
       : null;
   }
   return hasMigration(database, '0002_conversation_events')
@@ -65,27 +59,20 @@ export function verifyRestorableDatabase(
       return false;
     }
     if (requiredMigration === undefined) return true;
-    if (requiredMigration !== CHANNEL_CONTEXT_MIGRATION_ID) return false;
-    const checksum = database
-      .prepare('select checksum from schema_migrations where id = ?')
-      .pluck()
-      .get(requiredMigration);
-    if (checksum !== CHANNEL_CONTEXT_MIGRATION_CHECKSUM) return false;
+    if (requiredMigration !== '0003_channel_context') return false;
+    if (!hasMigration(database, requiredMigration)) return false;
     if ((database.pragma('foreign_key_check') as unknown[]).length !== 0) {
       return false;
     }
     if (
       !verifyContextIndexes(
         database,
-        hasMigration(database, DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID),
+        hasMigration(database, '0004_discord_source_lifecycle'),
       )
     ) {
       return false;
     }
-    const hasBackfillProgress = hasMigration(
-      database,
-      CONTEXT_BACKFILL_MIGRATION_ID,
-    );
+    const hasBackfillProgress = hasMigration(database, '0006_context_backfill');
     if (hasBackfillProgress) {
       const inconsistentBackfillProgress =
         database
@@ -297,7 +284,7 @@ function replayCompatibleJournal(
   entry: ContextForgetJournalEntry,
   now: number,
 ): void {
-  const contextSchema = hasMigration(database, CHANNEL_CONTEXT_MIGRATION_ID);
+  const contextSchema = hasMigration(database, '0003_channel_context');
   const sourceIds = [
     ...new Set(
       entry.payload.sourceScopeIds.flatMap((scopeId) => [

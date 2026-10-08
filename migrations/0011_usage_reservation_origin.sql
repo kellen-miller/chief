@@ -1,3 +1,4 @@
+-- chief-legacy-checksum: chief-0011-v1
 alter table usage_ledger
   add column reservation_origin text not null default 'ambiguous'
     check (reservation_origin in ('live', 'backfill', 'ambiguous'));

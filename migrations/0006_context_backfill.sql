@@ -1,3 +1,4 @@
+-- chief-legacy-checksum: chief-0006-v2
 alter table context_backfills add column oldest_occurred_at integer;
 alter table context_backfills add column newest_occurred_at integer;
 alter table context_backfills

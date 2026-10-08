@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -51,6 +53,9 @@ describe('online host backup', () => {
         ],
         { timeout: 20_000 },
       );
+      cpSync(resolve('migrations'), join(runtime, 'migrations'), {
+        recursive: true,
+      });
       writeFileSync(join(runtime, 'package.json'), '{"type":"module"}');
       symlinkSync(resolve('node_modules'), join(runtime, 'node_modules'));
       const database = openChiefDatabase(join(data, 'chief.db'));
@@ -127,6 +132,55 @@ copyFileSync(source, join(process.env.TEST_UPLOADED, basename(source)));
       } finally {
         restored.close();
       }
+      // A new SQL file is sufficient: no source registry or constants change.
+      const migrationPath = join(
+        runtime,
+        'migrations',
+        '0015_file_discovery.sql',
+      );
+      const sql =
+        'create table file_discovery_test (id integer primary key);\n';
+      writeFileSync(migrationPath, sql);
+      const migrateArgs = [
+        join(runtime, 'dist', 'cli.js'),
+        'migrate',
+        '--database',
+        join(data, 'chief.db'),
+      ];
+      execFileSync(process.execPath, migrateArgs, {
+        cwd: runtime,
+        timeout: 20_000,
+      });
+      const upgraded = openChiefDatabase(join(data, 'chief.db'));
+      try {
+        expect(
+          upgraded
+            .prepare(
+              "select name from sqlite_master where name = 'file_discovery_test'",
+            )
+            .pluck()
+            .get(),
+        ).toBe('file_discovery_test');
+        expect(
+          upgraded
+            .prepare(
+              "select checksum from schema_migrations where id = '0015_file_discovery'",
+            )
+            .pluck()
+            .get(),
+        ).toBe(createHash('sha256').update(sql).digest('hex'));
+      } finally {
+        upgraded.close();
+      }
+
+      writeFileSync(migrationPath, sql + '-- changed\n');
+      expect(() =>
+        execFileSync(process.execPath, migrateArgs, {
+          cwd: runtime,
+          timeout: 20_000,
+          stdio: 'pipe',
+        }),
+      ).toThrow('migration checksum mismatch for 0015_file_discovery');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

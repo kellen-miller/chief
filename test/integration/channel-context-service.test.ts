@@ -16,7 +16,6 @@ import {
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import { discordSourceRevisionChecksum } from '../../src/discord/source-message.js';
 import {
-  DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID,
   migrateChiefDatabase,
   openChiefDatabase,
 } from '../../src/memory/database.js';
@@ -1325,7 +1324,7 @@ describe('ChannelContextService', () => {
   it('upgrades a pending 0004 journal through flush and replay', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    await migrateChiefDatabase(database, DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID);
+    await migrateChiefDatabase(database, '0004_discord_source_lifecycle');
     recordLegacySource(database, occurredAt);
     const scopeId = `${guildId}/${channelId}/${source(occurredAt).messageId}`;
     const tombstoneKey = `source:${scopeId}`;
@@ -1415,7 +1414,7 @@ describe('ChannelContextService', () => {
   it('preserves a pending 0004 local-forget reason through migration', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    await migrateChiefDatabase(database, DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID);
+    await migrateChiefDatabase(database, '0004_discord_source_lifecycle');
     const eventId = recordLegacySource(database, occurredAt);
     const scopeId = `${guildId}/${channelId}/${source(occurredAt).messageId}`;
     const tombstoneKey = `source:${scopeId}`;

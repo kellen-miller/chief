@@ -17,7 +17,6 @@ import type {
 } from '../../src/discord/discord-reconciliation-service.js';
 import { backupChiefDatabase } from '../../src/memory/backup.js';
 import {
-  CHANNEL_CONTEXT_MIGRATION_ID,
   migrateChiefDatabase,
   openChiefDatabase,
 } from '../../src/memory/database.js';
@@ -94,17 +93,15 @@ describe('database recovery', () => {
 
   it('recognizes an exact migration-0003 database capability', async () => {
     const database = openChiefDatabase(':memory:');
-    await migrateChiefDatabase(database, CHANNEL_CONTEXT_MIGRATION_ID);
+    await migrateChiefDatabase(database, '0003_channel_context');
     for (const tier of ['hourly', 'daily', 'weekly', 'long-term'] as const) {
       insertMigration0003Document(database, tier);
     }
 
-    expect(restorableDatabaseCapability(database)).toBe(
-      CHANNEL_CONTEXT_MIGRATION_ID,
+    expect(restorableDatabaseCapability(database)).toBe('0003_channel_context');
+    expect(verifyRestorableDatabase(database, '0003_channel_context')).toBe(
+      true,
     );
-    expect(
-      verifyRestorableDatabase(database, CHANNEL_CONTEXT_MIGRATION_ID),
-    ).toBe(true);
     database.close();
   });
 

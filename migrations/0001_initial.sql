@@ -1,3 +1,4 @@
+-- chief-legacy-checksum: chief-0001-v3
 create table voice_sessions (
   id integer primary key,
   started_at integer not null,

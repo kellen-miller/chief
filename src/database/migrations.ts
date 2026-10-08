@@ -1,143 +1,31 @@
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 
 import type Database from 'better-sqlite3';
 import knex, { type Knex } from 'knex';
 
-import {
-  assertContentlessDeleteSupport,
-  backfillContextForgetJournals,
-  guardLegacyBackfillAccounting,
-  targetLegacyBackfillAccounting,
-  repairBackfillOwnership,
-  repairReservationOriginOwnership,
-} from './migration-data.js';
-
-const MIGRATION_ID = '0001_initial';
-
-const MIGRATION_CHECKSUM = 'chief-0001-v3';
-
-export const CHANNEL_CONTEXT_MIGRATION_ID = '0003_channel_context';
-
-export const CHANNEL_CONTEXT_MIGRATION_CHECKSUM = 'chief-0003-v2';
-
-export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID =
-  '0004_discord_source_lifecycle';
-
-export const DISCORD_SOURCE_LIFECYCLE_MIGRATION_CHECKSUM = 'chief-0004-v7';
-
-export const CONTEXT_FORGETTING_MIGRATION_ID = '0005_context_forgetting';
-
-export const CONTEXT_FORGETTING_MIGRATION_CHECKSUM = 'chief-0005-v4';
-
-export const CONTEXT_BACKFILL_MIGRATION_ID = '0006_context_backfill';
-
-export const CONTEXT_BACKFILL_MIGRATION_CHECKSUM = 'chief-0006-v2';
-
-export const CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_ID =
-  '0007_context_backfill_accounting';
-
-export const CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_CHECKSUM = 'chief-0007-v1';
-
-export const CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_ID =
-  '0008_context_backfill_lifecycle';
-
-export const CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_CHECKSUM = 'chief-0008-v1';
-
-export const CONTEXT_BACKFILL_TARGETING_MIGRATION_ID =
-  '0009_context_backfill_targeting';
-
-export const CONTEXT_BACKFILL_TARGETING_MIGRATION_CHECKSUM = 'chief-0009-v1';
-
-export const CONTEXT_BACKFILL_OWNERSHIP_MIGRATION_ID =
-  '0010_context_backfill_ownership';
-
-export const CONTEXT_BACKFILL_OWNERSHIP_MIGRATION_CHECKSUM = 'chief-0010-v1';
-
-export const USAGE_RESERVATION_ORIGIN_MIGRATION_ID =
-  '0011_usage_reservation_origin';
-
-export const USAGE_RESERVATION_ORIGIN_MIGRATION_CHECKSUM = 'chief-0011-v1';
-
-export const CONTEXT_ACCOUNTING_ORIGIN_MIGRATION_ID =
-  '0012_context_accounting_origin';
-
-export const CONTEXT_ACCOUNTING_ORIGIN_MIGRATION_CHECKSUM = 'chief-0012-v1';
-
-export const LEGACY_SOURCE_SCOPE_MIGRATION_ID = '0013_legacy_source_scope';
-
-export const LEGACY_SOURCE_SCOPE_MIGRATION_CHECKSUM = 'chief-0013-v1';
-
 interface Migration {
   readonly checksum: string;
   readonly id: string;
-  readonly migrate?: (database: Database.Database) => void;
-  readonly validate?: (database: Database.Database) => void;
+  readonly sql: string;
 }
 
-const MIGRATIONS: readonly Migration[] = [
-  {
-    checksum: MIGRATION_CHECKSUM,
-    id: MIGRATION_ID,
-  },
-  {
-    checksum: 'chief-0002-v1',
-    id: '0002_conversation_events',
-  },
-  {
-    checksum: CHANNEL_CONTEXT_MIGRATION_CHECKSUM,
-    id: CHANNEL_CONTEXT_MIGRATION_ID,
-    validate: assertContentlessDeleteSupport,
-  },
-  {
-    checksum: DISCORD_SOURCE_LIFECYCLE_MIGRATION_CHECKSUM,
-    id: DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID,
-  },
-  {
-    checksum: CONTEXT_FORGETTING_MIGRATION_CHECKSUM,
-    id: CONTEXT_FORGETTING_MIGRATION_ID,
-    migrate: backfillContextForgetJournals,
-  },
-  {
-    checksum: CONTEXT_BACKFILL_MIGRATION_CHECKSUM,
-    id: CONTEXT_BACKFILL_MIGRATION_ID,
-  },
-  {
-    checksum: CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_CHECKSUM,
-    id: CONTEXT_BACKFILL_ACCOUNTING_MIGRATION_ID,
-  },
-  {
-    checksum: CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_CHECKSUM,
-    id: CONTEXT_BACKFILL_LIFECYCLE_MIGRATION_ID,
-    migrate: guardLegacyBackfillAccounting,
-  },
-  {
-    checksum: CONTEXT_BACKFILL_TARGETING_MIGRATION_CHECKSUM,
-    id: CONTEXT_BACKFILL_TARGETING_MIGRATION_ID,
-    migrate: targetLegacyBackfillAccounting,
-  },
-  {
-    checksum: CONTEXT_BACKFILL_OWNERSHIP_MIGRATION_CHECKSUM,
-    id: CONTEXT_BACKFILL_OWNERSHIP_MIGRATION_ID,
-    migrate: repairBackfillOwnership,
-  },
-  {
-    checksum: USAGE_RESERVATION_ORIGIN_MIGRATION_CHECKSUM,
-    id: USAGE_RESERVATION_ORIGIN_MIGRATION_ID,
-  },
-  {
-    checksum: CONTEXT_ACCOUNTING_ORIGIN_MIGRATION_CHECKSUM,
-    id: CONTEXT_ACCOUNTING_ORIGIN_MIGRATION_ID,
-    migrate: repairReservationOriginOwnership,
-  },
-  {
-    checksum: LEGACY_SOURCE_SCOPE_MIGRATION_CHECKSUM,
-    id: LEGACY_SOURCE_SCOPE_MIGRATION_ID,
-  },
-  {
-    checksum: 'chief-0014-v1',
-    id: '0014_monitoring_alerts',
-  },
-];
+// SQL filenames define migration order. Only pre-Knex migrations carry legacy
+// checksum headers; new migrations use a checksum of their file contents.
+const migrationsDirectory = new URL('../../migrations/', import.meta.url);
+const migrations: readonly Migration[] = readdirSync(migrationsDirectory)
+  .filter((name) => /^\d+_[a-z0-9_]+\.sql$/u.test(name))
+  .sort()
+  .map((name) => {
+    const sql = readFileSync(new URL(name, migrationsDirectory), 'utf8');
+    return {
+      id: name.slice(0, -4),
+      checksum:
+        /^-- chief-legacy-checksum: (\S+)$/mu.exec(sql)?.[1] ??
+        createHash('sha256').update(sql).digest('hex'),
+      sql,
+    };
+  });
 
 export function verifyRecordedMigrationSet(
   database: Database.Database,
@@ -148,14 +36,14 @@ export function verifyRecordedMigrationSet(
       .all() as { readonly checksum: string; readonly id: string }[];
     if (rows.length === 0) return false;
     const recorded = new Map(rows.map((row) => [row.id, row.checksum]));
-    const appliedIndexes = MIGRATIONS.flatMap((migration, index) =>
+    const appliedIndexes = migrations.flatMap((migration, index) =>
       recorded.has(migration.id) ? [index] : [],
     );
     const lastIndex = Math.max(...appliedIndexes);
     if (recorded.size !== lastIndex + 1) return false;
-    return MIGRATIONS.slice(0, lastIndex + 1).every(
-      (migration) => recorded.get(migration.id) === migration.checksum,
-    );
+    return migrations
+      .slice(0, lastIndex + 1)
+      .every((migration) => recorded.get(migration.id) === migration.checksum);
   } catch {
     return false;
   }
@@ -167,7 +55,7 @@ export async function migrateChiefDatabase(
 ): Promise<void> {
   if (
     throughMigrationId !== undefined &&
-    !MIGRATIONS.some(({ id }) => id === throughMigrationId)
+    !migrations.some(({ id }) => id === throughMigrationId)
   ) {
     throw new Error(`unknown migration target: ${throughMigrationId}`);
   }
@@ -183,7 +71,7 @@ export async function migrateChiefDatabase(
       }[]
     ).map(({ id, checksum }) => [id, checksum]),
   );
-  for (const { id, checksum } of MIGRATIONS) {
+  for (const { id, checksum } of migrations) {
     if (applied.has(id) && applied.get(id) !== checksum) {
       throw new Error(`migration checksum mismatch for ${id}`);
     }
@@ -218,24 +106,25 @@ export async function migrateChiefDatabase(
     destroy: () => undefined,
   });
   const source: Knex.MigrationSource<Migration> = {
-    getMigrations: () => Promise.resolve([...MIGRATIONS]),
+    getMigrations: () => Promise.resolve([...migrations]),
     getMigrationName: ({ id }) => id,
-    getMigration: (migration) =>
-      Promise.resolve({
+    getMigration: async (migration) => {
+      const extension = import.meta.url.endsWith('.ts') ? '.ts' : '.js';
+      const repairPath = new URL(
+        `./migrations/${migration.id}${extension}`,
+        import.meta.url,
+      );
+      const repair = existsSync(repairPath)
+        ? ((await import(repairPath.href)) as {
+            up: (database: Database.Database) => void;
+          })
+        : undefined;
+      return {
         up: () => {
-          // Knex records already-applied legacy migrations without replaying them.
+          // Adopt already-applied legacy migrations without replaying them.
           if (!applied.has(migration.id)) {
-            database.exec(
-              readFileSync(
-                new URL(
-                  `../../migrations/${migration.id}.sql`,
-                  import.meta.url,
-                ),
-                'utf8',
-              ),
-            );
-            migration.migrate?.(database);
-            migration.validate?.(database);
+            database.exec(migration.sql);
+            repair?.up(database);
             database
               .prepare(
                 'insert into schema_migrations (id, checksum, applied_at) values (?, ?, ?)',
@@ -247,7 +136,8 @@ export async function migrateChiefDatabase(
         },
         down: () =>
           Promise.reject(new Error('restore a backup to downgrade Chief')),
-      }),
+      };
+    },
   };
   const migrator = knex({
     client: 'better-sqlite3',

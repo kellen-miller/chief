@@ -1,3 +1,4 @@
+-- chief-legacy-checksum: chief-0005-v4
 alter table context_deletion_requests
   add column source_ids_json text not null default '[]';
 alter table context_deletion_requests

@@ -6,7 +6,7 @@ plugins:
       sha256: 685124bdee17518a6ee95dd9107a6d95c3be2990a465a1f1a1e9a37911240e57
 sql:
   - engine: sqlite
-    schema: sql/schema.sql
+    schema: migrations
     queries: sql/queries.sql
     codegen:
       - plugin: typescript
@@ -25,7 +25,7 @@ sql:
               conversationSearchTextSourceGroupsSelectConversationEvents:
                 '5': number | null
   - engine: sqlite
-    schema: sql/schema.sql
+    schema: migrations
     queries: sql/monitoring.sql
     codegen:
       - plugin: typescript

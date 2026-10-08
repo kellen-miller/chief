@@ -1,3 +1,4 @@
+-- chief-legacy-checksum: chief-0004-v7
 alter table conversation_events
   add column revision_checksum text not null default '';
 alter table conversation_events

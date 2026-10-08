@@ -1,3 +1,4 @@
+-- chief-legacy-checksum: chief-0003-v2
 alter table conversation_events add column recent_until__migration integer;
 alter table conversation_events add column guild_id__migration text;
 alter table conversation_events add column channel_id__migration text;

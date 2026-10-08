@@ -1,3 +1,4 @@
+-- chief-legacy-checksum: chief-0002-v1
 create table conversation_events (
   id integer primary key,
   platform_event_id text not null unique,

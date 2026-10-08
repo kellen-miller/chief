@@ -16,7 +16,6 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
-  CHANNEL_CONTEXT_MIGRATION_ID,
   migrateChiefDatabase,
   openChiefDatabase,
 } from '../../src/memory/database.js';
@@ -117,13 +116,13 @@ describe('container startup recovery preflight', () => {
     const fixture = await createFixture();
     await rm(fixture.database);
     const database = openChiefDatabase(fixture.database);
-    await migrateChiefDatabase(database, CHANNEL_CONTEXT_MIGRATION_ID);
+    await migrateChiefDatabase(database, '0003_channel_context');
     database.close();
 
     const result = await runContainer(fixture, undefined, {
-      database: CHANNEL_CONTEXT_MIGRATION_ID,
+      database: '0003_channel_context',
       realDatabaseCapability: true,
-      target: CHANNEL_CONTEXT_MIGRATION_ID,
+      target: '0003_channel_context',
     });
 
     expect(result.code, result.stderr).toBe(0);
