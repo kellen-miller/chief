@@ -6,7 +6,10 @@ Its bundled Opus also flattens two coefficient rows through a pointer to the
 first row. Backport the pointer signatures from [current Opus](https://github.com/xiph/opus/blob/main/silk/main.h),
 including matching platform declarations. Storage, indexing, and codec behavior
 stay unchanged; GCC can no longer mistake the first row for the entire input.
-Remove when the package updates its build definitions and bundled Opus.
+Remove the macro fix once [upstream PR #212](https://github.com/discordjs/opus/pull/212)
+is released. The coefficient fix already exists on upstream main; remove its
+backport once [issue #211](https://github.com/discordjs/opus/issues/211) is resolved
+by a release containing the updated bundled Opus.
 
 pnpm applies these version-specific patches during installation. Docker copies
 this directory before installing dependencies. Keep compiler warnings enabled.
