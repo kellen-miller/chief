@@ -1,5 +1,6 @@
-import * as queries from '../database/queries.js';
 import type Database from 'better-sqlite3';
+
+import * as queries from '../../gen/sql/application.js';
 
 import type { UsageLedger, UsageLedgerEntry } from './usage-budget.js';
 

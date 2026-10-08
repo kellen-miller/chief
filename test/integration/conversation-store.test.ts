@@ -26,7 +26,7 @@ describe('ConversationStore', () => {
     directories.push(directory);
     const path = join(directory, 'chief.db');
     const database = openChiefDatabase(path);
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new ConversationStore(database);
 
     store.record({
@@ -54,7 +54,7 @@ describe('ConversationStore', () => {
     database.close();
 
     const reopened = openChiefDatabase(path);
-    migrateChiefDatabase(reopened);
+    await migrateChiefDatabase(reopened);
     const recent = new ConversationStore(reopened).recent({ now: 40 });
 
     expect(
@@ -65,30 +65,22 @@ describe('ConversationStore', () => {
     ]);
     expect(
       reopened
-        .prepare('select id from schema_migrations order by id')
+        .prepare('select name from knex_migrations order by id')
         .pluck()
         .all(),
     ).toEqual([
-      '0001_initial',
-      '0002_conversation_events',
-      '0003_channel_context',
-      '0004_discord_source_lifecycle',
-      '0005_context_forgetting',
-      '0006_context_backfill',
-      '0007_context_backfill_accounting',
-      '0008_context_backfill_lifecycle',
-      '0009_context_backfill_targeting',
-      '0010_context_backfill_ownership',
-      '0011_usage_reservation_origin',
-      '0012_context_accounting_origin',
-      '0013_legacy_source_scope',
+      '0001_memory.sql',
+      '0002_conversation.sql',
+      '0003_context.sql',
+      '0004_usage.sql',
+      '0005_monitoring.sql',
     ]);
     reopened.close();
   });
 
-  it('bounds context by as-of event and newest thirty messages', () => {
+  it('bounds context by as-of event and newest thirty messages', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new ConversationStore(database);
     const ids = Array.from({ length: 32 }, (_, index) =>
       store.record({
@@ -114,9 +106,9 @@ describe('ConversationStore', () => {
     database.close();
   });
 
-  it('includes a prior turn reply written after the current human boundary', () => {
+  it('includes a prior turn reply written after the current human boundary', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new ConversationStore(database);
     store.record({
       content: 'First question',
@@ -172,9 +164,9 @@ describe('ConversationStore', () => {
     database.close();
   });
 
-  it('stores reply chunks independently and assembles one Chief response', () => {
+  it('stores reply chunks independently and assembles one Chief response', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new ConversationStore(database);
     store.record({
       content: 'Give me the briefing.',
@@ -225,9 +217,9 @@ describe('ConversationStore', () => {
     database.close();
   });
 
-  it('truncates a newest oversize event within the token budget', () => {
+  it('truncates a newest oversize event within the token budget', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new ConversationStore(database);
     store.record({
       content: 'x'.repeat(100),
@@ -248,9 +240,9 @@ describe('ConversationStore', () => {
     database.close();
   });
 
-  it('truncates an older event to fill the remaining token budget', () => {
+  it('truncates an older event to fill the remaining token budget', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new ConversationStore(database);
     for (const [index, content] of [
       'o'.repeat(12_000),
@@ -280,9 +272,9 @@ describe('ConversationStore', () => {
     database.close();
   });
 
-  it('limits source search after grouping Chief response chunks', () => {
+  it('limits source search after grouping Chief response chunks', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new ConversationStore(database);
     for (let index = 0; index < 25; index += 1) {
       const eventId = store.record({
@@ -347,9 +339,9 @@ describe('ConversationStore', () => {
     database.close();
   });
 
-  it('caps raw source matches while grouping responses', () => {
+  it('caps raw source matches while grouping responses', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new ConversationStore(database);
     for (let index = 0; index < 97; index += 1) {
       const eventId = store.record({
@@ -409,9 +401,9 @@ describe('ConversationStore', () => {
     database.close();
   });
 
-  it('expires each reply row from recent context independently', () => {
+  it('expires each reply row from recent context independently', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new ConversationStore(database);
     store.record({
       content: 'Question near the boundary',
@@ -455,9 +447,9 @@ describe('ConversationStore', () => {
     database.close();
   });
 
-  it('scrubs expired text content and deletes expired voice rows', () => {
+  it('scrubs expired text content and deletes expired voice rows', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new ConversationStore(database);
     const textId = store.record({
       attachmentMetadataJson: '[{"name":"agenda.txt"}]',
@@ -528,9 +520,9 @@ describe('ConversationStore', () => {
     database.close();
   });
 
-  it('does not backfill raw memory sources into conversation', () => {
+  it('does not backfill raw memory sources into conversation', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     database
       .prepare(
         `insert into source_events
@@ -546,9 +538,9 @@ describe('ConversationStore', () => {
     database.close();
   });
 
-  it('returns no context when either caller bound is zero', () => {
+  it('returns no context when either caller bound is zero', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new ConversationStore(database);
 
     expect(store.recent({ maxMessages: 0, now: 1 })).toEqual({

@@ -25,7 +25,7 @@ afterEach(() => {
 describe('ContextAssembler', () => {
   it('classifies a recent-history read failure as lost persistence', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     vi.spyOn(conversation, 'recent').mockImplementation(() => {
       throw new Error('database unavailable');
@@ -54,7 +54,7 @@ describe('ContextAssembler', () => {
 
   it('embeds once and queries source, every tier, and durable memory', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     memoryStore.applyMemory({
@@ -173,7 +173,7 @@ describe('ContextAssembler', () => {
 
   it('reserves recent context and truncates oversized relevant history', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     recordEvent(conversation, {
@@ -241,7 +241,7 @@ describe('ContextAssembler', () => {
 
   it('reassembles Chief source chunks by logical response', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     const chunkIds = conversation.recordBatch(
@@ -299,7 +299,7 @@ describe('ContextAssembler', () => {
 
   it('keeps source matches and grouped chunks before the event boundary', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     const firstChunkId = conversation.record({
@@ -386,7 +386,7 @@ describe('ContextAssembler', () => {
 
   it('excludes recent source hits before the FTS result limit', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     for (let index = 0; index < 24; index += 1) {
@@ -442,7 +442,7 @@ describe('ContextAssembler', () => {
 
   it('excludes rollups with lineage at or after the event boundary', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     const olderEventId = recordEvent(conversation, {
@@ -512,7 +512,7 @@ describe('ContextAssembler', () => {
 
   it('prefers newer duplicate evidence within one tier', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     const olderEventId = recordEvent(conversation, {
@@ -589,7 +589,7 @@ describe('ContextAssembler', () => {
 
   it('suppresses rollups whose lineage is already recent', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     const recentEventId = recordEvent(conversation, {
@@ -636,7 +636,7 @@ describe('ContextAssembler', () => {
 
   it('bounds rollup links and labels expired lineage summary-only', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     const lineageIds = [
@@ -714,7 +714,7 @@ describe('ContextAssembler', () => {
 
   it('does not force lexically irrelevant tier results', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     const relevantEventId = recordEvent(conversation, {
@@ -784,7 +784,7 @@ describe('ContextAssembler', () => {
 
   it('requires the distinctive term for lexical-only evidence', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     const weakSourceId = recordEvent(conversation, {
@@ -874,7 +874,7 @@ describe('ContextAssembler', () => {
 
   it('keeps named-term evidence when a generic modifier is absent', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const sourceId = recordEvent(conversation, {
       content: 'Marigold ships Friday.',
@@ -936,7 +936,7 @@ describe('ContextAssembler', () => {
 
   it('caps rollup lexical matches before relevance filtering', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const lineageId = recordEvent(conversation, {
       content: 'Bounded scan lineage.',
@@ -997,7 +997,7 @@ describe('ContextAssembler', () => {
 
   it('does not retrieve rollups from another channel', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     const otherEventId = conversation.record({
@@ -1050,7 +1050,7 @@ describe('ContextAssembler', () => {
 
   it('uses vector retrieval when no lexical terms remain', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     const eventId = recordEvent(conversation, {
@@ -1097,7 +1097,7 @@ describe('ContextAssembler', () => {
 
   it('does not let a busy tier starve another tier vector query', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     for (let index = 0; index < 24; index += 1) {
@@ -1170,7 +1170,7 @@ describe('ContextAssembler', () => {
 
   it('deduplicates shared lineage while preserving disagreement', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     const repeatedId = recordEvent(conversation, {
@@ -1251,7 +1251,7 @@ describe('ContextAssembler', () => {
 
   it('falls back to recent and durable context when history is degraded', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     memoryStore.applyMemory({
@@ -1303,7 +1303,7 @@ describe('ContextAssembler', () => {
 
   it('falls back to recent and lexical memory when embedding fails', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const memoryStore = new SqliteMemoryStore(database);
     memoryStore.applyMemory({

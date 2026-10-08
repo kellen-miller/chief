@@ -25,7 +25,7 @@ const channelId = '22345678901234567';
 describe('ContextBackfillService', () => {
   it('stores only a content-free reverse manifest during dry-run', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const source = fakeHistory([
       page(
         [
@@ -116,7 +116,7 @@ describe('ContextBackfillService', () => {
 
   it('activates only a completed manifest with exact owner confirmation', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ContextBackfillService({
       channelId,
       database,
@@ -151,7 +151,7 @@ describe('ContextBackfillService', () => {
 
   it('resumes an interrupted dry-run from its durable page cursor', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const interrupted = fakeHistory([
       page(
         [normalized('42345678901234567', 'First page', 2_000)],
@@ -211,7 +211,7 @@ describe('ContextBackfillService', () => {
 
   it('atomically derives old history without persisting raw text', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = 40 * 24 * 60 * 60 * 1_000;
     const oldHuman = normalized(
       '32345678901234567',
@@ -357,7 +357,7 @@ describe('ContextBackfillService', () => {
 
   it('pauses safely when the approved run budget cannot admit a segment', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = 40 * 24 * 60 * 60 * 1_000;
     const old = normalized('32345678901234567', 'Old private words', 1_000);
     const budget = new UsageBudget({
@@ -410,7 +410,7 @@ describe('ContextBackfillService', () => {
 
   it('does not commit provider usage above its hard reservation', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = 40 * 24 * 60 * 60 * 1_000;
     const old = normalized('32345678901234567', 'Old private words', 1_000);
     const budget = new UsageBudget({
@@ -473,7 +473,7 @@ describe('ContextBackfillService', () => {
 
   it('runs recent backfill through the channel service background lane', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = Date.UTC(2026, 6, 14, 12);
     const recent = normalized(
       '32345678901234567',
@@ -548,7 +548,7 @@ describe('ContextBackfillService', () => {
 
   it('charges the full recent and expired rollup chain to its run', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = Date.UTC(2026, 6, 14, 12);
     const recent = normalized(
       '42345678901234567',
@@ -696,7 +696,7 @@ describe('ContextBackfillService', () => {
 
   it('pauses before an induced rollup can exceed its run ceiling', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = Date.UTC(2026, 6, 14, 12);
     const expired = normalized(
       '32345678901234567',
@@ -788,7 +788,7 @@ describe('ContextBackfillService', () => {
 
   it('rejects induced rollup usage above its reservation', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = Date.UTC(2026, 6, 14, 12);
     const expired = normalized(
       '32345678901234567',
@@ -880,7 +880,7 @@ describe('ContextBackfillService', () => {
 
   it('starts at the oldest manifest page and honors source tombstones', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = 40 * 24 * 60 * 60 * 1_000;
     const newest = normalized('52345678901234567', 'Newest page words', 3_000);
     const tombstoned = normalized(
@@ -952,7 +952,7 @@ describe('ContextBackfillService', () => {
 
   it('does not replace a newer live revision with fetched history', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = 40 * 24 * 60 * 60 * 1_000;
     const fetched = normalized(
       '32345678901234567',
@@ -1011,7 +1011,7 @@ describe('ContextBackfillService', () => {
 
   it('charges an outstanding reservation before restart resume admission', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = 40 * 24 * 60 * 60 * 1_000;
     const old = normalized('32345678901234567', 'Old words', 1_000);
     const setup = new ContextBackfillService({
@@ -1076,7 +1076,7 @@ describe('ContextBackfillService', () => {
 
   it('reconciles a prior-month reservation before finalizing', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const reservedAt = Date.UTC(2026, 6, 31, 23, 59);
     const setup = new ContextBackfillService({
       channelId,
@@ -1145,7 +1145,7 @@ describe('ContextBackfillService', () => {
 
   it('deduplicates overlapping and out-of-order manifest pages', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = 40 * 24 * 60 * 60 * 1_000;
     const newest = normalized('52345678901234567', 'Newest words', 3_000);
     const duplicate = normalized(
@@ -1216,7 +1216,7 @@ describe('ContextBackfillService', () => {
 
   it('anchors page zero below creates newer than the manifest ceiling', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = Date.UTC(2026, 6, 14, 12);
     const manifestNewest = normalized(
       '42345678901234567',
@@ -1293,7 +1293,7 @@ describe('ContextBackfillService', () => {
 
   it('commits unprocessed source pieces when page segments shift', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = 40 * 24 * 60 * 60 * 1_000;
     const sources = [
       normalized('42345678901234567', '33333333', 3_000),
@@ -1371,7 +1371,7 @@ describe('ContextBackfillService', () => {
 
   it('aggregates many same-hour segments through bounded pairs', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = 40 * 24 * 60 * 60 * 1_000;
     const sources = Array.from({ length: 8 }, (_, index) =>
       normalized(
@@ -1460,8 +1460,8 @@ describe('ContextBackfillService', () => {
     ];
     const liveDatabase = openChiefDatabase(':memory:');
     const backfillDatabase = openChiefDatabase(':memory:');
-    migrateChiefDatabase(liveDatabase);
-    migrateChiefDatabase(backfillDatabase);
+    await migrateChiefDatabase(liveDatabase);
+    await migrateChiefDatabase(backfillDatabase);
     const live = equivalenceContext(liveDatabase, now);
     const backfill = equivalenceContext(backfillDatabase, now);
     for (const source of sources) applyNormalized(live, source);
@@ -1521,7 +1521,7 @@ describe('ContextBackfillService', () => {
 
   it('validates configuration and resumable lifecycle state', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const options = {
       channelId,
       database,
@@ -1576,7 +1576,7 @@ describe('ContextBackfillService', () => {
 
   it('requires explicit replacement for any unfinished run', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const historyPage = page(
       [normalized('32345678901234567', 'Words', 1_000)],
       null,
@@ -1605,7 +1605,7 @@ describe('ContextBackfillService', () => {
 
   it('retries incomplete processing and missing recent ingestion safely', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const now = Date.UTC(2026, 6, 14, 12);
     const recent = normalized('32345678901234567', 'Recent words', now - 1_000);
     const budget = new UsageBudget({
@@ -1655,7 +1655,7 @@ describe('ContextBackfillService', () => {
 
   it('rejects invalid dry-run page proofs without advancing the manifest', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const source = normalized('32345678901234567', 'Words', 1_000);
     const stalled = new ContextBackfillService({
       channelId,

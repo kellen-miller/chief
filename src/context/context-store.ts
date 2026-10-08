@@ -1,5 +1,7 @@
-import * as queries from '../database/queries.js';
 import type Database from 'better-sqlite3';
+
+import { readSqliteStatement } from '../database/sqlite-statements.js';
+import * as queries from '../../gen/sql/application.js';
 
 import { hasSourceTombstone } from './source-scope.js';
 import type { ContextCompleteness, ContextTier } from './context-types.js';
@@ -98,14 +100,13 @@ export class ContextStore {
       }
       if (input.isInternal !== true) {
         this.#database
-          .prepare(
-            'insert into context_document_fts (rowid, content) values (?, ?)',
-          )
+          .prepare(readSqliteStatement('context/insertContextDocumentFts'))
           .run(documentId, input.summary);
         this.#database
           .prepare(
-            `insert into context_document_vectors (document_id, embedding)
-             values (?, ?)`,
+            readSqliteStatement(
+              'context/contextStoreActivateDocumentRevisionInsertContextDocumentVectors',
+            ),
           )
           .run(BigInt(documentId), JSON.stringify(Array.from(input.embedding)));
       }
@@ -199,16 +200,8 @@ export class ContextStore {
         throw new Error('higher context tier requires final parents');
       }
     }
-    const tombstoned = this.#database
-      .prepare(
-        `select exists(
-           select 1 from context_tombstones
-           where (scope_type = 'document' and scope_id = @documentKey)
-              or (scope_type = 'document'
-                  and scope_id = @documentGenerationScopeId)
-              or (scope_type = 'topic' and scope_id = @topicKey)
-         )`,
-      )
+    const tombstoned = queries
+      .contextStoreAssertInputsAvailableSelectContextTombstones(this.#database)
       .pluck()
       .get({
         documentGenerationScopeId:
@@ -228,10 +221,10 @@ export class ContextStore {
 
   #deleteSearchRows(documentId: number): void {
     this.#database
-      .prepare('delete from context_document_fts where rowid = ?')
+      .prepare(readSqliteStatement('context/deleteContextDocumentFts'))
       .run(documentId);
     this.#database
-      .prepare('delete from context_document_vectors where document_id = ?')
+      .prepare(readSqliteStatement('context/deleteContextDocumentVector'))
       .run(BigInt(documentId));
   }
 }

@@ -16,7 +16,6 @@ import {
 import { ConversationStore } from '../../src/conversation/conversation-store.js';
 import { discordSourceRevisionChecksum } from '../../src/discord/source-message.js';
 import {
-  DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID,
   migrateChiefDatabase,
   openChiefDatabase,
 } from '../../src/memory/database.js';
@@ -36,7 +35,7 @@ const nonActiveBackfillCases = [
   ['replaced', 'failed', 'replaced'],
 ] as const;
 
-function createHarness(now: number) {
+async function createHarness(now: number) {
   const database = openChiefDatabase(':memory:');
   let current = now;
   const service = new ChannelContextService({
@@ -47,7 +46,7 @@ function createHarness(now: number) {
     now: () => current,
     timeZone,
   });
-  migrateChiefDatabase(database);
+  await migrateChiefDatabase(database);
   return {
     contextStore: new ContextStore(database),
     database,
@@ -170,31 +169,6 @@ function source(
   };
 }
 
-function recordLegacySource(
-  database: ReturnType<typeof openChiefDatabase>,
-  occurredAt: number,
-): number {
-  const input = source(occurredAt);
-  return new ConversationStore(database).record({
-    attachmentMetadataJson: input.attachmentMetadataJson,
-    channelId,
-    content: input.content,
-    discordMessageId: input.messageId,
-    editedAt: input.editedAt,
-    guildId,
-    medium: 'text',
-    occurredAt: input.occurredAt,
-    platformEventId: input.platformEventId,
-    recentUntil: occurredAt + sevenDays,
-    replyToMessageId: input.replyToMessageId,
-    requestId: input.requestId,
-    retentionDeadline: occurredAt + thirtyDays,
-    role: input.role,
-    speakerId: input.speakerId,
-    speakerName: input.speakerName,
-  });
-}
-
 function lexicalIds(
   database: ReturnType<typeof openChiefDatabase>,
   table: 'context_document_fts' | 'conversation_event_fts',
@@ -263,9 +237,11 @@ function sourceJobInput(
 }
 
 describe('ChannelContextService', () => {
-  it('indexes upserts immediately and schedules one hourly job pair', () => {
+  it('indexes upserts immediately and schedules one hourly job pair', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
-    const { database, service, setNow } = createHarness(occurredAt + 1_000);
+    const { database, service, setNow } = await createHarness(
+      occurredAt + 1_000,
+    );
 
     const created = service.apply(source(occurredAt));
 
@@ -340,10 +316,10 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
-  it('keeps the first provisional deadline during continuous activity', () => {
+  it('keeps the first provisional deadline during continuous activity', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const firstNow = occurredAt + 1_000;
-    const { database, service, setNow } = createHarness(firstNow);
+    const { database, service, setNow } = await createHarness(firstNow);
     service.apply(source(occurredAt));
     const firstSchedule = database
       .prepare(
@@ -403,7 +379,7 @@ describe('ChannelContextService', () => {
       const occurredAt = Date.parse('2026-07-14T15:37:00Z');
       const now = occurredAt + 2 * 60 * 60 * 1_000;
       const database = openChiefDatabase(':memory:');
-      migrateChiefDatabase(database);
+      await migrateChiefDatabase(database);
       const budget = new UsageBudget({
         ceilingUsd: 10,
         indexingCeilingUsd: 3,
@@ -532,7 +508,7 @@ describe('ChannelContextService', () => {
       const occurredAt = Date.parse('2026-07-14T15:37:00Z');
       const now = occurredAt + 2 * 24 * 60 * 60 * 1_000;
       const database = openChiefDatabase(':memory:');
-      migrateChiefDatabase(database);
+      await migrateChiefDatabase(database);
       const { budget, service } = createPaidContextHarness(database, now);
       service.apply(source(occurredAt));
       const day = contextPeriod({
@@ -617,7 +593,7 @@ describe('ChannelContextService', () => {
       const occurredAt = Date.parse('2026-07-14T15:37:00Z');
       const now = occurredAt + 2 * 24 * 60 * 60 * 1_000;
       const database = openChiefDatabase(':memory:');
-      migrateChiefDatabase(database);
+      await migrateChiefDatabase(database);
       const { budget, service } = createPaidContextHarness(database, now);
       service.apply(source(occurredAt));
       await service.runNext(now);
@@ -702,9 +678,9 @@ describe('ChannelContextService', () => {
     },
   );
 
-  it('rejects context output prepared against a stale source checksum', () => {
+  it('rejects context output prepared against a stale source checksum', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
-    const { contextStore, database, service } = createHarness(
+    const { contextStore, database, service } = await createHarness(
       occurredAt + 1_000,
     );
     const created = service.apply(source(occurredAt));
@@ -746,9 +722,9 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
-  it('rejects source-derived context without a revision checksum', () => {
+  it('rejects source-derived context without a revision checksum', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
-    const { contextStore, database, service } = createHarness(
+    const { contextStore, database, service } = await createHarness(
       occurredAt + 1_000,
     );
     const created = service.apply(source(occurredAt));
@@ -777,9 +753,9 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
-  it('suppresses active context descendants before applying an edit', () => {
+  it('suppresses active context descendants before applying an edit', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
-    const { contextStore, database, service } = createHarness(
+    const { contextStore, database, service } = await createHarness(
       occurredAt + 1_000,
     );
     const created = service.apply(source(occurredAt));
@@ -837,9 +813,9 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
-  it('scrubs deletion descendants and blocks resurrection', () => {
+  it('scrubs deletion descendants and blocks resurrection', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
-    const { contextStore, database, service } = createHarness(
+    const { contextStore, database, service } = await createHarness(
       occurredAt + 1_000,
     );
     const created = service.apply(
@@ -983,7 +959,7 @@ describe('ChannelContextService', () => {
   it('distinguishes local forgetting from Discord deletion on replay', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     let captured: ContextForgetJournalEntry | undefined;
     const service = new ChannelContextService({
       channelId,
@@ -1024,7 +1000,7 @@ describe('ChannelContextService', () => {
 
     const restored = openChiefDatabase(':memory:');
     try {
-      migrateChiefDatabase(restored);
+      await migrateChiefDatabase(restored);
       const restoredService = new ChannelContextService({
         channelId,
         conversation: new ConversationStore(restored),
@@ -1052,7 +1028,7 @@ describe('ChannelContextService', () => {
   it('uploads authoritative deletion journals through the same outbox', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const uploadForgetJournal = vi.fn().mockResolvedValue(undefined);
     const service = new ChannelContextService({
       channelId,
@@ -1090,7 +1066,7 @@ describe('ChannelContextService', () => {
   it('scrubs authoritative descendants equivalently live and on replay', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const memory = new SqliteMemoryStore(database);
     let captured: ContextForgetJournalEntry | undefined;
     const service = new ChannelContextService({
@@ -1193,7 +1169,7 @@ describe('ChannelContextService', () => {
 
     const restored = openChiefDatabase(':memory:');
     try {
-      migrateChiefDatabase(restored);
+      await migrateChiefDatabase(restored);
       const restoredMemoryId = new SqliteMemoryStore(restored).applyMemory({
         canonicalText: 'AuthoritativeDeleteMarker restored durable memory.',
         confidence: 0.95,
@@ -1320,193 +1296,10 @@ describe('ChannelContextService', () => {
     }
   });
 
-  it('upgrades a pending 0004 journal through flush and replay', async () => {
-    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
-    const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database, DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID);
-    recordLegacySource(database, occurredAt);
-    const scopeId = `${guildId}/${channelId}/${source(occurredAt).messageId}`;
-    const tombstoneKey = `source:${scopeId}`;
-    const legacyChecksum = createHash('sha256')
-      .update(
-        JSON.stringify({
-          occurredAt: occurredAt + 1_000,
-          reason: 'discord-deleted',
-          scopeId,
-          scopeType: 'source',
-        }),
-      )
-      .digest('hex');
-    database
-      .prepare(
-        `insert into context_tombstones
-           (tombstone_key, scope_type, scope_id, reason, occurred_at, checksum)
-         values (?, 'source', ?, 'discord-deleted', ?, ?)`,
-      )
-      .run(tombstoneKey, scopeId, occurredAt + 1_000, legacyChecksum);
-    database
-      .prepare(
-        `insert into context_forget_journal
-           (journal_key, scope_id, tombstone_key, occurred_at, checksum)
-         values (?, ?, ?, ?, ?)`,
-      )
-      .run(
-        `forget:${scopeId}`,
-        scopeId,
-        tombstoneKey,
-        occurredAt + 1_000,
-        legacyChecksum,
-      );
-
-    migrateChiefDatabase(database);
-    let captured: ContextForgetJournalEntry | undefined;
-    const upgraded = new ChannelContextService({
-      channelId,
-      conversation: new ConversationStore(database),
-      database,
-      guildId,
-      memory: new SqliteMemoryStore(database),
-      timeZone,
-      uploadForgetJournal: (entry) => {
-        captured = entry;
-        return Promise.resolve();
-      },
-    });
-    await expect(
-      upgraded.flushForgetJournal(occurredAt + 2_000),
-    ).resolves.toEqual({ status: 'uploaded' });
-    if (captured === undefined) throw new Error('expected upgraded journal');
-    expect(captured.payload).toEqual({
-      documentIds: [],
-      documentKeys: [],
-      memoryIds: [],
-      reason: 'discord-deleted',
-      sourceScopeIds: [scopeId],
-      tombstoneKeys: [tombstoneKey],
-    });
-
-    const restored = openChiefDatabase(':memory:');
-    try {
-      migrateChiefDatabase(restored);
-      const restoredService = new ChannelContextService({
-        channelId,
-        conversation: new ConversationStore(restored),
-        database: restored,
-        guildId,
-        memory: new SqliteMemoryStore(restored),
-        timeZone,
-      });
-      restoredService.apply(source(occurredAt));
-      restoredService.replayForgetJournal(captured, occurredAt + 3_000);
-      expect(
-        restored
-          .prepare('select content_state from conversation_events')
-          .pluck()
-          .get(),
-      ).toBe('scrubbed');
-    } finally {
-      restored.close();
-      database.close();
-    }
-  });
-
-  it('preserves a pending 0004 local-forget reason through migration', async () => {
-    const occurredAt = Date.parse('2026-07-14T15:37:00Z');
-    const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database, DISCORD_SOURCE_LIFECYCLE_MIGRATION_ID);
-    const eventId = recordLegacySource(database, occurredAt);
-    const scopeId = `${guildId}/${channelId}/${source(occurredAt).messageId}`;
-    const tombstoneKey = `source:${scopeId}`;
-    const legacyChecksum = createHash('sha256')
-      .update(
-        JSON.stringify({
-          occurredAt: occurredAt + 1_000,
-          reason: 'locally-forgotten',
-          scopeId,
-          scopeType: 'source',
-        }),
-      )
-      .digest('hex');
-    database
-      .prepare(
-        `update conversation_events
-         set content = '', deleted_at = ?, content_state = 'scrubbed',
-             content_state_reason = 'locally-forgotten'
-         where id = ?`,
-      )
-      .run(occurredAt + 1_000, eventId);
-    database
-      .prepare(
-        `insert into context_tombstones
-           (tombstone_key, scope_type, scope_id, reason, occurred_at, checksum)
-         values (?, 'source', ?, 'locally-forgotten', ?, ?)`,
-      )
-      .run(tombstoneKey, scopeId, occurredAt + 1_000, legacyChecksum);
-    database
-      .prepare(
-        `insert into context_forget_journal
-           (journal_key, scope_id, tombstone_key, occurred_at, checksum)
-         values (?, ?, ?, ?, ?)`,
-      )
-      .run(
-        `forget:${scopeId}`,
-        scopeId,
-        tombstoneKey,
-        occurredAt + 1_000,
-        legacyChecksum,
-      );
-
-    migrateChiefDatabase(database);
-    let captured: ContextForgetJournalEntry | undefined;
-    const upgraded = new ChannelContextService({
-      channelId,
-      conversation: new ConversationStore(database),
-      database,
-      guildId,
-      memory: new SqliteMemoryStore(database),
-      timeZone,
-      uploadForgetJournal: (entry) => {
-        captured = entry;
-        return Promise.resolve();
-      },
-    });
-    await expect(
-      upgraded.flushForgetJournal(occurredAt + 2_000),
-    ).resolves.toEqual({ status: 'uploaded' });
-    if (captured === undefined) throw new Error('expected upgraded journal');
-    expect(captured.payload.reason).toBe('locally-forgotten');
-
-    const restored = openChiefDatabase(':memory:');
-    try {
-      migrateChiefDatabase(restored);
-      const restoredService = new ChannelContextService({
-        channelId,
-        conversation: new ConversationStore(restored),
-        database: restored,
-        guildId,
-        memory: new SqliteMemoryStore(restored),
-        timeZone,
-      });
-      const restoredSource = restoredService.apply(source(occurredAt));
-      restoredService.replayForgetJournal(captured, occurredAt + 3_000);
-      expect(
-        restored
-          .prepare(
-            'select content_state_reason from conversation_events where id = ?',
-          )
-          .pluck()
-          .get(restoredSource.eventId),
-      ).toBe('locally-forgotten');
-    } finally {
-      restored.close();
-      database.close();
-    }
-  });
-
   it('forgets one authored source across every active store', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const memory = new SqliteMemoryStore(database);
     const uploadForgetJournal = vi.fn().mockResolvedValue(undefined);
     const service = new ChannelContextService({
@@ -1684,7 +1477,7 @@ describe('ChannelContextService', () => {
   it('requires and consumes one administrator confirmation', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const memory = new SqliteMemoryStore(database);
     let now = occurredAt + 5_000;
     const service = new ChannelContextService({
@@ -1849,7 +1642,7 @@ describe('ChannelContextService', () => {
   it('fails closed before revealing a cross-member match', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       channelId,
       conversation: new ConversationStore(database),
@@ -1973,7 +1766,7 @@ describe('ChannelContextService', () => {
   it('refuses a member label shared by different Discord identities', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       channelId,
       conversation: new ConversationStore(database),
@@ -2028,7 +1821,7 @@ describe('ChannelContextService', () => {
   it('clarifies ambiguous narrow matches before offering broad confirmation', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       channelId,
       conversation: new ConversationStore(database),
@@ -2094,7 +1887,7 @@ describe('ChannelContextService', () => {
   it('anchors broad deletion to the complete named subject', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       channelId,
       conversation: new ConversationStore(database),
@@ -2156,7 +1949,7 @@ describe('ChannelContextService', () => {
   it('keeps every lowercase subject term as a deletion anchor', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       channelId,
       conversation: new ConversationStore(database),
@@ -2218,7 +2011,7 @@ describe('ChannelContextService', () => {
   it('does not select a sole raw source only through derived text', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       channelId,
       conversation: new ConversationStore(database),
@@ -2287,7 +2080,7 @@ describe('ChannelContextService', () => {
   it('discovers every exact broad match before acknowledging deletion', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       channelId,
       conversation: new ConversationStore(database),
@@ -2346,7 +2139,7 @@ describe('ChannelContextService', () => {
   it('refuses broad deletion beyond its complete discovery ceiling', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       channelId,
       conversation: new ConversationStore(database),
@@ -2412,7 +2205,7 @@ describe('ChannelContextService', () => {
   it('includes a provenance-free durable memory in an administrator purge', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const memory = new SqliteMemoryStore(database);
     let captured: ContextForgetJournalEntry | undefined;
     const service = new ChannelContextService({
@@ -2477,7 +2270,7 @@ describe('ChannelContextService', () => {
     if (captured === undefined) throw new Error('expected journal upload');
     const olderBackup = openChiefDatabase(':memory:');
     try {
-      migrateChiefDatabase(olderBackup);
+      await migrateChiefDatabase(olderBackup);
       new ChannelContextService({
         channelId,
         conversation: new ConversationStore(olderBackup),
@@ -2503,7 +2296,7 @@ describe('ChannelContextService', () => {
   it('scrubs durable-memory supersession history and private snapshots', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const memory = new SqliteMemoryStore(database);
     const service = new ChannelContextService({
       channelId,
@@ -2582,7 +2375,7 @@ describe('ChannelContextService', () => {
   it('rolls back every store when journal insertion fails', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       channelId,
       conversation: new ConversationStore(database),
@@ -2636,7 +2429,7 @@ describe('ChannelContextService', () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
     try {
-      migrateChiefDatabase(database);
+      await migrateChiefDatabase(database);
       const service = new ChannelContextService({
         channelId,
         conversation: new ConversationStore(database),
@@ -2858,7 +2651,7 @@ describe('ChannelContextService', () => {
   it('withholds acknowledgement until a failed journal upload retries', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const memory = new SqliteMemoryStore(database);
     const failing = new ChannelContextService({
       channelId,
@@ -2930,7 +2723,7 @@ describe('ChannelContextService', () => {
   it('tombstones expired raw evidence found through retained lineage', async () => {
     const occurredAt = Date.parse('2026-06-01T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const memory = new SqliteMemoryStore(database);
     const service = new ChannelContextService({
       channelId,
@@ -3004,7 +2797,7 @@ describe('ChannelContextService', () => {
   it('forgets a self-authored source after raw retention expires', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       channelId,
       conversation: new ConversationStore(database),
@@ -3065,7 +2858,7 @@ describe('ChannelContextService', () => {
     let captured: ContextForgetJournalEntry | undefined;
     const database = openChiefDatabase(':memory:');
     try {
-      migrateChiefDatabase(database);
+      await migrateChiefDatabase(database);
       const memory = new SqliteMemoryStore(database);
       const service = new ChannelContextService({
         channelId,
@@ -3156,7 +2949,7 @@ describe('ChannelContextService', () => {
 
       const restored = openChiefDatabase(backupPath);
       try {
-        migrateChiefDatabase(restored);
+        await migrateChiefDatabase(restored);
         const restarted = new ChannelContextService({
           channelId,
           conversation: new ConversationStore(restored),
@@ -3215,7 +3008,7 @@ describe('ChannelContextService', () => {
 
       const missingSource = openChiefDatabase(missingSourceBackupPath);
       try {
-        migrateChiefDatabase(missingSource);
+        await migrateChiefDatabase(missingSource);
         const sourceId = missingSource
           .prepare('select id from conversation_events')
           .pluck()
@@ -3255,10 +3048,10 @@ describe('ChannelContextService', () => {
     }
   });
 
-  it('ignores snapshot-local document IDs during journal replay', () => {
+  it('ignores snapshot-local document IDs during journal replay', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const service = new ChannelContextService({
       channelId,
       conversation: new ConversationStore(database),
@@ -3318,9 +3111,9 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
-  it('removes retained text from lexical search at raw expiry', () => {
+  it('removes retained text from lexical search at raw expiry', async () => {
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
-    const { database, service } = createHarness(occurredAt + 1_000);
+    const { database, service } = await createHarness(occurredAt + 1_000);
     service.apply(source(occurredAt));
 
     expect(service.maintain(occurredAt + thirtyDays)).toEqual({
@@ -3339,8 +3132,8 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
-  it('records delivered chunks once with Discord identity and time', () => {
-    const { database, service, setNow } = createHarness(1_000);
+  it('records delivered chunks once with Discord identity and time', async () => {
+    const { database, service, setNow } = await createHarness(1_000);
     const chunks = [
       {
         content: 'First chunk. ',
@@ -3436,8 +3229,8 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
-  it('attaches callback lineage when reconciliation won the source race', () => {
-    const { database, service } = createHarness(1_000);
+  it('attaches callback lineage when reconciliation won the source race', async () => {
+    const { database, service } = await createHarness(1_000);
     const messageId = '62345678901234567';
     const revisionChecksum = discordSourceRevisionChecksum({
       attachmentMetadataJson: '[]',
@@ -3490,8 +3283,8 @@ describe('ChannelContextService', () => {
     database.close();
   });
 
-  it('repairs durable delivered order after reverse reconciliation', () => {
-    const { database, service } = createHarness(1_000);
+  it('repairs durable delivered order after reverse reconciliation', async () => {
+    const { database, service } = await createHarness(1_000);
     const chunks = [
       {
         content: 'First chunk. ',
@@ -3551,8 +3344,8 @@ describe('ChannelContextService', () => {
 });
 
 describe('ContextStore', () => {
-  it('rejects a document without source or parent lineage atomically', () => {
-    const { contextStore, database } = createHarness(1_000);
+  it('rejects a document without source or parent lineage atomically', async () => {
+    const { contextStore, database } = await createHarness(1_000);
 
     expect(() =>
       contextStore.activateDocumentRevision(documentInput()),
@@ -3575,8 +3368,8 @@ describe('ContextStore', () => {
     database.close();
   });
 
-  it('replaces an active document and its search rows atomically', () => {
-    const { contextStore, database, service } = createHarness(1_000);
+  it('replaces an active document and its search rows atomically', async () => {
+    const { contextStore, database, service } = await createHarness(1_000);
     const created = service.apply(source(500));
     if (created.eventId === null) throw new Error('expected a source event');
     const base = {
@@ -3621,8 +3414,8 @@ describe('ContextStore', () => {
 
   it.each(['daily', 'weekly', 'long-term'] as const)(
     'rejects raw source lineage for $tier documents atomically',
-    (tier) => {
-      const { contextStore, database, service } = createHarness(1_000);
+    async (tier) => {
+      const { contextStore, database, service } = await createHarness(1_000);
       const created = service.apply(source(500));
       if (created.eventId === null) throw new Error('expected a source event');
       const eventId = created.eventId;
@@ -3654,8 +3447,8 @@ describe('ContextStore', () => {
     },
   );
 
-  it('rejects mixed raw and parent lineage for a higher tier atomically', () => {
-    const { contextStore, database, service } = createHarness(1_000);
+  it('rejects mixed raw and parent lineage for a higher tier atomically', async () => {
+    const { contextStore, database, service } = await createHarness(1_000);
     const created = service.apply(source(500));
     if (created.eventId === null) throw new Error('expected a source event');
     const eventId = created.eventId;
@@ -3709,8 +3502,8 @@ describe('ContextStore', () => {
     database.close();
   });
 
-  it('requires final parents for every higher context tier', () => {
-    const { contextStore, database, service } = createHarness(1_000);
+  it('requires final parents for every higher context tier', async () => {
+    const { contextStore, database, service } = await createHarness(1_000);
     const created = service.apply(source(500));
     if (created.eventId === null) throw new Error('expected a source event');
     const provisionalId = contextStore.activateDocumentRevision(
@@ -3769,8 +3562,8 @@ describe('ContextStore', () => {
     database.close();
   });
 
-  it('rejects a revision below the maximum without replacing search state', () => {
-    const { contextStore, database, service } = createHarness(1_000);
+  it('rejects a revision below the maximum without replacing search state', async () => {
+    const { contextStore, database, service } = await createHarness(1_000);
     const created = service.apply(source(500));
     if (created.eventId === null) throw new Error('expected a source event');
     const eventId = created.eventId;

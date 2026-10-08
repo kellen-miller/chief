@@ -16,7 +16,6 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
-  CHANNEL_CONTEXT_MIGRATION_ID,
   migrateChiefDatabase,
   openChiefDatabase,
 } from '../../src/memory/database.js';
@@ -26,6 +25,23 @@ const target = `registry/chief@sha256:${'a'.repeat(64)}`;
 const runContainerScript = resolve('scripts/run-container.sh');
 
 describe('container startup recovery preflight', () => {
+  it('ignores journals from the database before cutover', async () => {
+    const fixture = await createFixture();
+    const result = await runContainer(fixture, undefined, {
+      database: 'chief-v1',
+      target: 'chief-v1',
+      journalObjects: 'gs://chief-backups/forget-journal/old-entry.json#99',
+    });
+    expect(result.code, result.stderr).toBe(0);
+    const commands = await readFile(fixture.commandLog, 'utf8');
+    expect(commands).not.toContain(
+      'storage cp gs://chief-backups/forget-journal/old-entry',
+    );
+    expect(
+      await readFile(join(fixture.runtime, 'forget-journal.manifest'), 'utf8'),
+    ).toBe('');
+  });
+
   it('replays before secrets and skips an unchanged receipt', async () => {
     const fixture = await createFixture();
     const preDeploy = join(fixture.data, 'pre-deploy');
@@ -102,7 +118,7 @@ describe('container startup recovery preflight', () => {
     const fixture = await createFixture();
 
     const result = await runContainer(fixture, undefined, {
-      database: '0003_channel_context',
+      database: 'chief-v1',
       target: '0002_conversation_events',
     });
 
@@ -113,17 +129,17 @@ describe('container startup recovery preflight', () => {
     expect(commands).toContain('logger -t chief');
   });
 
-  it('starts with a real exact migration-0003 database', async () => {
+  it('starts with a real baseline database', async () => {
     const fixture = await createFixture();
     await rm(fixture.database);
     const database = openChiefDatabase(fixture.database);
-    migrateChiefDatabase(database, CHANNEL_CONTEXT_MIGRATION_ID);
+    await migrateChiefDatabase(database);
     database.close();
 
     const result = await runContainer(fixture, undefined, {
-      database: CHANNEL_CONTEXT_MIGRATION_ID,
+      database: 'chief-v1',
       realDatabaseCapability: true,
-      target: CHANNEL_CONTEXT_MIGRATION_ID,
+      target: 'chief-v1',
     });
 
     expect(result.code, result.stderr).toBe(0);
@@ -135,13 +151,15 @@ describe('container startup recovery preflight', () => {
 
   it('replays every retained generation without overwriting downloads', async () => {
     const fixture = await createFixture();
-    const firstGeneration = 'gs://chief-backups/forget-journal/entry.json#101';
-    const secondGeneration = 'gs://chief-backups/forget-journal/entry.json#202';
+    const firstGeneration =
+      'gs://chief-backups/forget-journal/v1/entry.json#101';
+    const secondGeneration =
+      'gs://chief-backups/forget-journal/v1/entry.json#202';
 
     const result = await runContainer(fixture, undefined, {
-      database: '0003_channel_context',
+      database: 'chief-v1',
       journalObjects: `${firstGeneration}\n${secondGeneration}`,
-      target: '0003_channel_context',
+      target: 'chief-v1',
     });
 
     expect(result.code, result.stderr).toBe(0);
@@ -210,7 +228,7 @@ set -euo pipefail
 printf 'gcloud %s\n' "$*" >>"$COMMAND_LOG"
 if [[ "$1 $2" == 'storage ls' ]]; then
   [[ "\${FAIL_LIST:-0}" == 1 ]] && exit 1
-  printf '%s\n' "\${JOURNAL_OBJECTS:-gs://chief-backups/forget-journal/entry.json#100}"
+  printf '%s\n' "\${JOURNAL_OBJECTS:-gs://chief-backups/forget-journal/v1/entry.json#100}"
 elif [[ "$1 $2" == 'storage cp' ]]; then
   cp "$JOURNAL_SOURCE" "\${@: -1}"
 elif [[ "$1" == secrets ]]; then
@@ -231,15 +249,15 @@ if [[ " $* " == *' database-capability '* ]]; then
     exec node --import tsx "$REPOSITORY/src/cli.ts" \
       database-capability --database "\${@: -1}"
   fi
-  printf '%s\n' "\${DATABASE_CAPABILITY:-0003_channel_context}"
+  printf '%s\n' "\${DATABASE_CAPABILITY:-chief-v1}"
   exit 0
 fi
 if [[ "$1 $2" == 'image inspect' ]]; then
-  printf '%s\n' "\${TARGET_CAPABILITY:-0003_channel_context}"
+  printf '%s\n' "\${TARGET_CAPABILITY:-chief-v1}"
   exit 0
 fi
-if [[ " $* " == *' verify-restore '*' --require-migration 0003_channel_context '* ]] &&
-   [[ "\${DATABASE_CAPABILITY:-0003_channel_context}" != 0003_channel_context ]]; then
+if [[ " $* " == *' verify-restore '*' --require-migration chief-v1 '* ]] &&
+   [[ "\${DATABASE_CAPABILITY:-chief-v1}" != chief-v1 ]]; then
   exit 1
 fi
 exit 0
@@ -281,8 +299,8 @@ async function runContainer(
     readonly realDatabaseCapability?: boolean;
     readonly target: string;
   } = {
-    database: '0003_channel_context',
-    target: '0003_channel_context',
+    database: 'chief-v1',
+    target: 'chief-v1',
   },
 ): Promise<{ readonly code: number | null; readonly stderr: string }> {
   return new Promise((resolvePromise, reject) => {
@@ -301,7 +319,7 @@ async function runContainer(
         JOURNAL_SOURCE: fixture.journal,
         JOURNAL_OBJECTS:
           capabilities.journalObjects ??
-          'gs://chief-backups/forget-journal/entry.json#100',
+          'gs://chief-backups/forget-journal/v1/entry.json#100',
         PATH: `${fixture.bin}:${process.env.PATH ?? ''}`,
         REAL_DATABASE_CAPABILITY: capabilities.realDatabaseCapability
           ? '1'

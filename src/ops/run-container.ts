@@ -64,14 +64,16 @@ export function runContainer(): void {
       ])
         .split('\n')
         .filter((object) =>
-          object.startsWith(`gs://${bucket}/forget-journal/`),
+          object.startsWith(`gs://${bucket}/forget-journal/v1/`),
         ),
     ),
   ].sort();
   let manifest = '';
   for (const object of objects) {
     const match =
-      /^gs:\/\/[^/]+\/forget-journal\/([^/#]+)\.json#([0-9]+)$/u.exec(object);
+      /^gs:\/\/[^/]+\/forget-journal\/v1\/([^/#]+)\.json#([0-9]+)$/u.exec(
+        object,
+      );
     if (!match?.[1] || !match[2] || ['.', '..'].includes(match[1]))
       throw new Error('invalid journal manifest');
     const destination = join(

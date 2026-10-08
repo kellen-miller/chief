@@ -1,5 +1,7 @@
-import * as queries from '../database/queries.js';
 import { createHash, randomBytes } from 'node:crypto';
+
+import { readSqliteStatement } from '../database/sqlite-statements.js';
+import * as queries from '../../gen/sql/application.js';
 
 import type Database from 'better-sqlite3';
 
@@ -665,10 +667,10 @@ export class ChannelContextService {
         .pluck()
         .all(now);
       const deleteFts = this.#database.prepare(
-        'delete from context_document_fts where rowid = ?',
+        readSqliteStatement('context/deleteContextDocumentFts'),
       );
       const deleteVector = this.#database.prepare(
-        'delete from context_document_vectors where document_id = ?',
+        readSqliteStatement('context/deleteContextDocumentVector'),
       );
       for (const documentId of expiringDocumentIds) {
         deleteFts.run(documentId);
@@ -678,11 +680,10 @@ export class ChannelContextService {
         const placeholders = expiringDocumentIds.map(() => '?').join(', ');
         this.#database
           .prepare(
-            `update context_documents
-             set content_state = 'scrubbed',
-                 content_state_reason = 'retention-expired', summary = '',
-                 updated_at = ?
-             where id in (${placeholders})`,
+            readSqliteStatement(
+              'context/channelContextServiceMaintainUpdateContextDocuments',
+              [placeholders],
+            ),
           )
           .run(now, ...expiringDocumentIds);
       }
@@ -1150,15 +1151,10 @@ export class ChannelContextService {
     const placeholders = ids.map(() => '?').join(', ');
     return this.#database
       .prepare(
-        `select distinct 'document:' || current.id as id, current.summary as text
-         from context_documents configured
-         join context_documents current
-           on current.document_key = configured.document_key
-         where configured.id in (${placeholders})
-           and configured.state in ('active', 'superseded')
-           and configured.content_state = 'available'
-           and current.state = 'active' and current.content_state = 'available'
-         order by current.period_start, current.id`,
+        readSqliteStatement(
+          'context/channelContextServiceJobSourcesSelectContextDocuments',
+          [placeholders],
+        ),
       )
       .all(...ids) as ContextSummarySource[];
   }
@@ -1386,8 +1382,9 @@ export class ChannelContextService {
     const placeholders = documentIds.map(() => '?').join(', ');
     const rows = this.#database
       .prepare(
-        `select id, revision from context_documents
-         where id in (${placeholders}) order by id`,
+        readSqliteStatement('context/selectContextDocumentRevisions', [
+          placeholders,
+        ]),
       )
       .all(...documentIds);
     return digest(rows);
@@ -1468,12 +1465,10 @@ export class ChannelContextService {
     }
 
     this.#database
-      .prepare('delete from conversation_event_fts where rowid = ?')
+      .prepare(readSqliteStatement('conversation/deleteConversationEventFts'))
       .run(eventId);
     this.#database
-      .prepare(
-        'insert into conversation_event_fts (rowid, content) values (?, ?)',
-      )
+      .prepare(readSqliteStatement('conversation/insertConversationEventFts'))
       .run(eventId, canonical.content);
     this.#scheduleHourlyJobs(canonical.occurredAt, backfillRunId);
     let memorySourceEventId: number | null = null;
@@ -1616,33 +1611,25 @@ export class ChannelContextService {
   ): void {
     const documentIds = this.#database
       .prepare(
-        `with recursive affected(id) as (
-           select document_id from context_document_events where event_id = ?
-           union
-           select p.document_id
-           from context_document_parents p
-           join affected a on p.parent_document_id = a.id
-         )
-         select distinct id from affected`,
+        readSqliteStatement(
+          'context/channelContextServiceSuppressDescendantsSelectContextDocumentEvents',
+        ),
       )
       .pluck()
       .all(eventId) as number[];
     for (const documentId of documentIds) {
       this.#database
-        .prepare('delete from context_document_fts where rowid = ?')
+        .prepare(readSqliteStatement('context/deleteContextDocumentFts'))
         .run(documentId);
       this.#database
-        .prepare('delete from context_document_vectors where document_id = ?')
+        .prepare(readSqliteStatement('context/deleteContextDocumentVector'))
         .run(BigInt(documentId));
     }
     if (documentIds.length === 0) return;
     const placeholders = documentIds.map(() => '?').join(', ');
     this.#database
       .prepare(
-        `update context_documents
-         set state = 'suppressed', content_state = 'scrubbed',
-             content_state_reason = ?, summary = '', updated_at = ?
-         where id in (${placeholders})`,
+        readSqliteStatement('context/suppressContextDocuments', [placeholders]),
       )
       .run(reason, now, ...documentIds);
   }
@@ -1656,34 +1643,28 @@ export class ChannelContextService {
     const placeholders = parentDocumentIds.map(() => '?').join(', ');
     const documentIds = this.#database
       .prepare(
-        `with recursive affected(id) as (
-           select document_id from context_document_parents
-           where parent_document_id in (${placeholders})
-           union
-           select p.document_id
-           from context_document_parents p
-           join affected a on p.parent_document_id = a.id
-         )
-         select distinct id from affected`,
+        readSqliteStatement(
+          'context/channelContextServiceSuppressDocumentDescendantsSelectContextDocumentParents',
+          [placeholders],
+        ),
       )
       .pluck()
       .all(...parentDocumentIds) as number[];
     for (const documentId of documentIds) {
       this.#database
-        .prepare('delete from context_document_fts where rowid = ?')
+        .prepare(readSqliteStatement('context/deleteContextDocumentFts'))
         .run(documentId);
       this.#database
-        .prepare('delete from context_document_vectors where document_id = ?')
+        .prepare(readSqliteStatement('context/deleteContextDocumentVector'))
         .run(BigInt(documentId));
     }
     if (documentIds.length === 0) return;
     const affectedPlaceholders = documentIds.map(() => '?').join(', ');
     this.#database
       .prepare(
-        `update context_documents
-         set state = 'suppressed', content_state = 'scrubbed',
-             content_state_reason = ?, summary = '', updated_at = ?
-         where id in (${affectedPlaceholders})`,
+        readSqliteStatement('context/suppressContextDocuments', [
+          affectedPlaceholders,
+        ]),
       )
       .run(reason, now, ...documentIds);
   }
@@ -1701,12 +1682,14 @@ export class ChannelContextService {
     });
     this.#database
       .prepare(
-        `update context_jobs
-         set status = 'failed', lease_expires_at = null,
-             last_error_category = 'source-invalidated'
-         where tier = 'hourly' and timezone = ?
-           and period_start = ? and period_end = ?
-           ${pendingOnly ? "and status != 'completed'" : ''}`,
+        readSqliteStatement(
+          'context/channelContextServiceInvalidateEventJobsUpdateContextJobs',
+          [
+            pendingOnly
+              ? readSqliteStatement('context/incompleteContextJobFilter')
+              : '',
+          ],
+        ),
       )
       .run(period.timeZone, period.start, period.end);
   }

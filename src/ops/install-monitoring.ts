@@ -29,7 +29,7 @@ RequiresMountsFor=/var/lib/chief
 
 [Service]
 Type=oneshot
-ExecStart=/opt/chief/node/bin/node /opt/chief/ops/cli.ts monitor
+ExecStart=/opt/chief/node/bin/node /opt/chief/src/ops/cli.ts monitor
 TimeoutStartSec=120
 `,
   );

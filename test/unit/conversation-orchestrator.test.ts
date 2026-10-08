@@ -62,15 +62,15 @@ function voiceTurn(input: {
   };
 }
 
-function createOrchestrator(
+async function createOrchestrator(
   agent: ChiefAgent,
   budget: UsageBudget,
   memories: readonly string[] = [],
   reservations?: ConversationReservationEstimates,
   queue?: PaidWorkQueue,
-): ConversationOrchestrator {
+): Promise<ConversationOrchestrator> {
   const database = openChiefDatabase(':memory:');
-  migrateChiefDatabase(database);
+  await migrateChiefDatabase(database);
   const store = new SqliteMemoryStore(database);
   const vector = new Float32Array(1_536).fill(0.4);
   for (const canonicalText of memories) {
@@ -146,9 +146,9 @@ function createAssembler(
   });
 }
 
-function createTextHarness() {
+async function createTextHarness() {
   const database = openChiefDatabase(':memory:');
-  migrateChiefDatabase(database);
+  await migrateChiefDatabase(database);
   const conversation = new ConversationStore(database);
   const context = createContext(database, conversation, () => 1_000);
   const store = new SqliteMemoryStore(database);
@@ -209,7 +209,7 @@ function tombstoneSource(
 describe('ConversationOrchestrator', () => {
   it('records no Chief source before Discord delivery', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
     const orchestrator = new ConversationOrchestrator({
@@ -262,7 +262,7 @@ describe('ConversationOrchestrator', () => {
 
   it('skips automatic memory for a suppressed replay', async () => {
     const { answerText, context, database, memory, orchestrator } =
-      createTextHarness();
+      await createTextHarness();
     const deletedMessageId = '52345678901234567';
     tombstoneSource(context, deletedMessageId);
     const observeAutomatic = vi.spyOn(memory, 'observeAutomatic');
@@ -331,7 +331,7 @@ describe('ConversationOrchestrator', () => {
 
   it('skips explicit memory and generation for a suppressed replay', async () => {
     const { answerText, context, database, extract, memory, orchestrator } =
-      createTextHarness();
+      await createTextHarness();
     const deletedMessageId = '52345678901234569';
     tombstoneSource(context, deletedMessageId);
     const observeExplicit = vi.spyOn(memory, 'observeExplicit');
@@ -375,7 +375,7 @@ describe('ConversationOrchestrator', () => {
     const now = Date.UTC(2026, 6, 14, 12);
     occurredAt = now;
     const record = vi.spyOn(ConversationStore.prototype, 'record');
-    const orchestrator = createOrchestrator(
+    const orchestrator = await createOrchestrator(
       {
         answerText: () =>
           Promise.resolve({ citations: [], content: 'Answer', usageUsd: 0.01 }),
@@ -419,10 +419,10 @@ describe('ConversationOrchestrator', () => {
     record.mockRestore();
   });
 
-  it('uses seven days for voice recency and raw retention', () => {
+  it('uses seven days for voice recency and raw retention', async () => {
     const now = Date.UTC(2026, 6, 14, 12);
     const record = vi.spyOn(ConversationStore.prototype, 'record');
-    const orchestrator = createOrchestrator(
+    const orchestrator = await createOrchestrator(
       {
         answerText: vi.fn(),
         interruptVoice: vi.fn(),
@@ -466,7 +466,7 @@ describe('ConversationOrchestrator', () => {
       openVoice: vi.fn(),
       transcribe: vi.fn(),
     };
-    const orchestrator = createOrchestrator(
+    const orchestrator = await createOrchestrator(
       agent,
       new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
     );
@@ -510,7 +510,7 @@ describe('ConversationOrchestrator', () => {
     const answerText = vi.fn<ChiefAgent['answerText']>(() =>
       Promise.resolve({ citations: [], content: 'answer', usageUsd: 0.01 }),
     );
-    const orchestrator = createOrchestrator(
+    const orchestrator = await createOrchestrator(
       {
         answerText,
         interruptVoice: vi.fn(),
@@ -551,7 +551,7 @@ describe('ConversationOrchestrator', () => {
     const transcribe = vi.fn<ChiefAgent['transcribe']>(() =>
       Promise.resolve({ text: 'hello', usageUsd: 0.01 }),
     );
-    const orchestrator = createOrchestrator(
+    const orchestrator = await createOrchestrator(
       {
         answerText: vi.fn(),
         interruptVoice: vi.fn(),
@@ -603,7 +603,7 @@ describe('ConversationOrchestrator', () => {
       }),
     );
     const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
-    const orchestrator = createOrchestrator(
+    const orchestrator = await createOrchestrator(
       {
         answerText: vi.fn(),
         interruptVoice: vi.fn(),
@@ -645,7 +645,7 @@ describe('ConversationOrchestrator', () => {
       openVoice: vi.fn(),
       transcribe: vi.fn(),
     };
-    const orchestrator = createOrchestrator(
+    const orchestrator = await createOrchestrator(
       agent,
       new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
     );
@@ -673,7 +673,7 @@ describe('ConversationOrchestrator', () => {
       openVoice: vi.fn(),
       transcribe: vi.fn(),
     };
-    const orchestrator = createOrchestrator(agent, budget);
+    const orchestrator = await createOrchestrator(agent, budget);
 
     await expect(
       orchestrator.handleText(textTurn({ prompt: 'research', requestId: '1' })),
@@ -695,7 +695,7 @@ describe('ConversationOrchestrator', () => {
       openVoice: vi.fn(),
       transcribe: vi.fn(),
     };
-    const orchestrator = createOrchestrator(
+    const orchestrator = await createOrchestrator(
       agent,
       new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       ['The annual trip is in October.'],
@@ -736,7 +736,7 @@ describe('ConversationOrchestrator', () => {
       openVoice: vi.fn(),
       transcribe: vi.fn(),
     };
-    const orchestrator = createOrchestrator(
+    const orchestrator = await createOrchestrator(
       agent,
       new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
     );
@@ -768,7 +768,7 @@ describe('ConversationOrchestrator', () => {
 
   it('reports a durable-memory database failure as a lost thread', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     vi.spyOn(store, 'retrieve').mockImplementation(() => {
       throw new Error('database unavailable');
@@ -831,7 +831,7 @@ describe('ConversationOrchestrator', () => {
     'acknowledges explicit memory only after commit for $name',
     async ({ content, expectedExtraction }) => {
       const database = openChiefDatabase(':memory:');
-      migrateChiefDatabase(database);
+      await migrateChiefDatabase(database);
       const store = new SqliteMemoryStore(database);
       const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
       const answerText = vi.fn<ChiefAgent['answerText']>();
@@ -907,7 +907,7 @@ describe('ConversationOrchestrator', () => {
 
   it('commits imperative correction and forget receipts', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const originalId = store.applyMemory({
       canonicalText: 'Dinner is at six.',
@@ -1028,7 +1028,7 @@ describe('ConversationOrchestrator', () => {
 
   it('routes explicit forgetting through historical context without paid work', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const conversation = new ConversationStore(database);
     const context = new ChannelContextService({
@@ -1142,7 +1142,7 @@ describe('ConversationOrchestrator', () => {
       transcribe: vi.fn(),
     };
     const audio = vi.fn();
-    const orchestrator = createOrchestrator(
+    const orchestrator = await createOrchestrator(
       agent,
       new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
     );
@@ -1235,7 +1235,7 @@ describe('ConversationOrchestrator', () => {
         sendAudio,
       }),
     );
-    const orchestrator = createOrchestrator(
+    const orchestrator = await createOrchestrator(
       {
         answerText: vi.fn(),
         interruptVoice: vi.fn(),
@@ -1301,7 +1301,7 @@ describe('ConversationOrchestrator', () => {
 
   it('reports a voice history database failure as a lost thread', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     vi.spyOn(conversation, 'recent').mockImplementation(() => {
       throw new Error('database unavailable');
@@ -1341,7 +1341,7 @@ describe('ConversationOrchestrator', () => {
   it('reports a voice reply persistence failure as a lost thread', async () => {
     let listener: ((event: ChiefVoiceEvent) => void) | undefined;
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const conversation = new ConversationStore(database);
     const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
     const orchestrator = new ConversationOrchestrator({
@@ -1399,7 +1399,7 @@ describe('ConversationOrchestrator', () => {
   it('maps a realtime memory database failure to a lost thread', async () => {
     let listener: ((event: ChiefVoiceEvent) => void) | undefined;
     const close = vi.fn(() => Promise.resolve());
-    const orchestrator = createOrchestrator(
+    const orchestrator = await createOrchestrator(
       {
         answerText: vi.fn(),
         interruptVoice: vi.fn(),
@@ -1447,7 +1447,7 @@ describe('ConversationOrchestrator', () => {
       transcribe: () => Promise.reject(new Error('provider failed')),
     };
     const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });
-    const orchestrator = createOrchestrator(agent, budget);
+    const orchestrator = await createOrchestrator(agent, budget);
 
     await expect(
       orchestrator.handleText(
@@ -1469,7 +1469,7 @@ describe('ConversationOrchestrator', () => {
       transcribe: () =>
         Promise.resolve({ text: 'Chief, hello', usageUsd: 0.01 }),
     };
-    const orchestrator = createOrchestrator(agent, budget);
+    const orchestrator = await createOrchestrator(agent, budget);
     await expect(
       orchestrator.transcribeVoice(new ArrayBuffer(2)),
     ).resolves.toBe('Chief, hello');
@@ -1509,7 +1509,7 @@ describe('ConversationOrchestrator', () => {
         }),
       transcribe: vi.fn(),
     };
-    const orchestrator = createOrchestrator(
+    const orchestrator = await createOrchestrator(
       agent,
       new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
     );
@@ -1525,7 +1525,6 @@ describe('ConversationOrchestrator', () => {
   });
 
   it('times out and closes a voice turn that never emits a terminal event', async () => {
-    vi.useFakeTimers();
     const close = vi.fn(() => Promise.resolve());
     const interrupt = vi.fn(() => {
       throw new Error('provider cleanup failed');
@@ -1543,10 +1542,11 @@ describe('ConversationOrchestrator', () => {
         }),
       transcribe: vi.fn(),
     };
-    const orchestrator = createOrchestrator(
+    const orchestrator = await createOrchestrator(
       agent,
       new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
     );
+    vi.useFakeTimers();
 
     const result = orchestrator.handleVoice(
       voiceTurn({ pcm: new ArrayBuffer(2), requestId: 'stuck' }),
@@ -1568,7 +1568,6 @@ describe('ConversationOrchestrator', () => {
   });
 
   it('releases the FIFO when opening a voice session times out', async () => {
-    vi.useFakeTimers();
     try {
       const answerText = vi.fn(() =>
         Promise.resolve({ citations: [], content: 'online', usageUsd: 0.01 }),
@@ -1579,10 +1578,11 @@ describe('ConversationOrchestrator', () => {
         openVoice: () => new Promise(() => undefined),
         transcribe: vi.fn(),
       };
-      const orchestrator = createOrchestrator(
+      const orchestrator = await createOrchestrator(
         agent,
         new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       );
+      vi.useFakeTimers();
       const voice = orchestrator.handleVoice(
         voiceTurn({ pcm: new ArrayBuffer(2), requestId: 'stuck-connect' }),
         { audio: vi.fn(), transcript: vi.fn() },
@@ -1605,7 +1605,6 @@ describe('ConversationOrchestrator', () => {
   });
 
   it('cleans up a turn when synchronous audio serialization fails', async () => {
-    vi.useFakeTimers();
     try {
       const answerText = vi.fn(() =>
         Promise.resolve({ citations: [], content: 'online', usageUsd: 0.01 }),
@@ -1625,10 +1624,11 @@ describe('ConversationOrchestrator', () => {
           }),
         transcribe: vi.fn(),
       };
-      const orchestrator = createOrchestrator(
+      const orchestrator = await createOrchestrator(
         agent,
         new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       );
+      vi.useFakeTimers();
 
       await expect(
         orchestrator.handleVoice(
@@ -1658,7 +1658,6 @@ describe('ConversationOrchestrator', () => {
   });
 
   it('releases the FIFO when transcription times out', async () => {
-    vi.useFakeTimers();
     try {
       const answerText = vi.fn(() =>
         Promise.resolve({ citations: [], content: 'online', usageUsd: 0.01 }),
@@ -1669,10 +1668,11 @@ describe('ConversationOrchestrator', () => {
         openVoice: vi.fn(),
         transcribe: () => new Promise(() => undefined),
       };
-      const orchestrator = createOrchestrator(
+      const orchestrator = await createOrchestrator(
         agent,
         new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       );
+      vi.useFakeTimers();
       const transcription = orchestrator.transcribeVoice(new ArrayBuffer(2));
       const text = orchestrator.handleText(
         textTurn({

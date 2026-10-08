@@ -95,6 +95,11 @@ jobs:
             --project="${{ vars.GCP_PROJECT_ID }}" \
             --zone="${{ vars.GCP_ZONE }}" \
             --tunnel-through-iap --quiet
+          gcloud compute scp gen/sql/monitoring.ts \
+            "chief:/tmp/chief-monitoring-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.ts" \
+            --project="${{ vars.GCP_PROJECT_ID }}" \
+            --zone="${{ vars.GCP_ZONE }}" \
+            --tunnel-through-iap --quiet
           gcloud compute ssh chief \
             --project="${{ vars.GCP_PROJECT_ID }}" \
             --zone="${{ vars.GCP_ZONE }}" \
@@ -112,14 +117,15 @@ jobs:
             sudo /opt/chief/configure-google-cloud-apt.sh
             sudo install -m 0750 /tmp/install-node.sh /opt/chief/install-node.sh
             sudo /opt/chief/install-node.sh
-            sudo install -d -m 0750 /opt/chief/ops
-            sudo install -m 0640 /tmp/chief-ops-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/*.ts /opt/chief/ops/
-            sudo /opt/chief/node/bin/node /opt/chief/ops/cli.ts install-services
-            sudo /opt/chief/node/bin/node /opt/chief/ops/cli.ts install-monitoring \
+            sudo install -d -m 0750 /opt/chief/src/ops /opt/chief/gen/sql
+            sudo install -m 0640 /tmp/chief-monitoring-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.ts /opt/chief/gen/sql/monitoring.ts
+            sudo install -m 0640 /tmp/chief-ops-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/*.ts /opt/chief/src/ops/
+            sudo /opt/chief/node/bin/node /opt/chief/src/ops/cli.ts install-services
+            sudo /opt/chief/node/bin/node /opt/chief/src/ops/cli.ts install-monitoring \
               '${{ vars.DISCORD_MONITORING_CHANNEL_ID }}' \
               '${{ vars.DISCORD_GUILD_ID }}' \
               '${{ vars.GCP_PROJECT_ID }}'
-            sudo /opt/chief/node/bin/node /opt/chief/ops/cli.ts deploy \
+            sudo /opt/chief/node/bin/node /opt/chief/src/ops/cli.ts deploy \
               --image '${{ steps.image.outputs.reference }}' \
               --backup-bucket '${{ vars.CHIEF_BACKUP_BUCKET }}'"
 

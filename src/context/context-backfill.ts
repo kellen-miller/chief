@@ -1,5 +1,7 @@
-import * as queries from '../database/queries.js';
 import { createHash, randomUUID } from 'node:crypto';
+
+import { readSqliteStatement } from '../database/sqlite-statements.js';
+import * as queries from '../../gen/sql/application.js';
 
 import type Database from 'better-sqlite3';
 
@@ -488,20 +490,14 @@ export class ContextBackfillService {
   public status(runId?: number): ContextBackfillStatus | null {
     const row = this.#database
       .prepare(
-        `select id as runId, run_key as runKey, status,
-                eligible_count as eligibleCount,
-                already_ingested_count as alreadyIngestedCount,
-                eligible_bytes as eligibleBytes,
-                eligible_tokens as eligibleTokens,
-                estimated_usage_usd as estimatedUsageUsd,
-                maximum_usage_usd as maximumUsageUsd,
-                actual_usage_usd as actualUsageUsd,
-                oldest_occurred_at as oldestOccurredAt,
-                newest_occurred_at as newestOccurredAt,
-                page_count as pageCount, pause_reason as pauseReason
-         from context_backfills
-         where scope_id = ? ${runId === undefined ? '' : 'and id = ?'}
-         order by id desc limit 1`,
+        readSqliteStatement(
+          'context/contextBackfillStatusSelectContextBackfills',
+          [
+            runId === undefined
+              ? ''
+              : readSqliteStatement('context/backfillRunIdFilter'),
+          ],
+        ),
       )
       .get(
         ...(runId === undefined ? [this.#scopeId()] : [this.#scopeId(), runId]),

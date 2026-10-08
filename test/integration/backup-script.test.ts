@@ -1,8 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   symlinkSync,
@@ -24,7 +26,7 @@ import { backup } from '../../src/ops/backup.ts';
 afterEach(() => vi.unstubAllEnvs());
 
 describe('online host backup', () => {
-  it('backs up, verifies and uploads a real migrated database', () => {
+  it('backs up, verifies and uploads a real migrated database', async () => {
     const root = mkdtempSync(join(tmpdir(), 'chief-online-backup-'));
     const runtime = join(root, 'runtime');
     const data = join(root, 'data');
@@ -50,11 +52,14 @@ describe('online host backup', () => {
         ],
         { timeout: 20_000 },
       );
+      cpSync(resolve('sql'), join(runtime, 'dist', 'sql'), {
+        recursive: true,
+      });
       writeFileSync(join(runtime, 'package.json'), '{"type":"module"}');
       symlinkSync(resolve('node_modules'), join(runtime, 'node_modules'));
       const database = openChiefDatabase(join(data, 'chief.db'));
       try {
-        migrateChiefDatabase(database);
+        await migrateChiefDatabase(database);
         database
           .prepare(
             `insert into usage_ledger
@@ -93,12 +98,24 @@ copyFileSync(source, join(process.env.TEST_UPLOADED, basename(source)));
       for (const command of ['docker', 'gcloud'])
         chmodSync(join(bin, command), 0o755);
       vi.stubEnv('CHIEF_CONFIG_FILE', config);
+      vi.stubEnv('CHIEF_DATA_DIR', data);
       vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? ''}`);
       vi.stubEnv('TEST_DATA', data);
       vi.stubEnv('TEST_RUNTIME', runtime);
       vi.stubEnv('TEST_UPLOADED', uploaded);
 
       backup([]);
+
+      const receiptPath = join(data, 'backup-monitoring.json');
+      const receipt = readFileSync(receiptPath, 'utf8');
+      expect(receipt).toMatch(/^\{"completed_at":\d+\}$/u);
+      writeFileSync(join(bin, 'gcloud'), '#!/bin/sh\nexit 1\n', {
+        mode: 0o755,
+      });
+      expect(() => {
+        backup([]);
+      }).toThrow('gcloud failed');
+      expect(readFileSync(receiptPath, 'utf8')).toBe(receipt);
 
       const files = readdirSync(uploaded);
       expect(files).toHaveLength(1);
@@ -113,6 +130,40 @@ copyFileSync(source, join(process.env.TEST_UPLOADED, basename(source)));
         expect(restored.pragma('integrity_check', { simple: true })).toBe('ok');
       } finally {
         restored.close();
+      }
+      // A new SQL file is sufficient: no source registry or constants change.
+      const migrationPath = join(
+        runtime,
+        'dist',
+        'sql',
+        'migrations',
+        '0015_file_discovery.sql',
+      );
+      const sql =
+        'create table file_discovery_test (id integer primary key);\n';
+      writeFileSync(migrationPath, sql);
+      const migrateArgs = [
+        join(runtime, 'dist', 'src', 'cli.js'),
+        'migrate',
+        '--database',
+        join(data, 'chief.db'),
+      ];
+      execFileSync(process.execPath, migrateArgs, {
+        cwd: runtime,
+        timeout: 20_000,
+      });
+      const upgraded = openChiefDatabase(join(data, 'chief.db'));
+      try {
+        expect(
+          upgraded
+            .prepare(
+              "select name from sqlite_master where name = 'file_discovery_test'",
+            )
+            .pluck()
+            .get(),
+        ).toBe('file_discovery_test');
+      } finally {
+        upgraded.close();
       }
     } finally {
       rmSync(root, { recursive: true, force: true });

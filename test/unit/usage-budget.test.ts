@@ -8,9 +8,9 @@ import { SqliteUsageLedger } from '../../src/usage/sqlite-usage-ledger.js';
 import { UsageBudget } from '../../src/usage/usage-budget.js';
 
 describe('UsageBudget', () => {
-  it('persists reservation category and priority across restart', () => {
+  it('persists reservation category and priority across restart', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const ledger = new SqliteUsageLedger(database);
 
     ledger.record({
@@ -113,9 +113,9 @@ describe('UsageBudget', () => {
     });
   });
 
-  it('keeps in-memory accounting unchanged when atomic work rolls back', () => {
+  it('keeps in-memory accounting unchanged when atomic work rolls back', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const budget = new UsageBudget({
       ceilingUsd: 10,
       ledger: new SqliteUsageLedger(database),
@@ -154,9 +154,9 @@ describe('UsageBudget', () => {
     expect(budget.recordActual(0.1).warningRaised).toBe(false);
   });
 
-  it('restores actual usage and reservations after a restart', () => {
+  it('restores actual usage and reservations after a restart', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const ledger = new SqliteUsageLedger(database);
     const now = () => Date.UTC(2026, 6, 11);
     const first = new UsageBudget({
@@ -186,9 +186,9 @@ describe('UsageBudget', () => {
     database.close();
   });
 
-  it('starts a fresh budget at the next UTC month', () => {
+  it('starts a fresh budget at the next UTC month', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const ledger = new SqliteUsageLedger(database);
     let current = Date.UTC(2026, 6, 31, 23, 59);
     const budget = new UsageBudget({
@@ -209,9 +209,9 @@ describe('UsageBudget', () => {
     database.close();
   });
 
-  it('reconciles a crossing call to its occurrence month', () => {
+  it('reconciles a crossing call to its occurrence month', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const ledger = new SqliteUsageLedger(database);
     let current = Date.UTC(2026, 6, 31, 23, 59);
     const budget = new UsageBudget({
@@ -246,9 +246,9 @@ describe('UsageBudget', () => {
     database.close();
   });
 
-  it('keeps backfill spend monotonic across a UTC-month reset', () => {
+  it('keeps backfill spend monotonic across a UTC-month reset', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     database
       .prepare(
         `insert into context_backfills

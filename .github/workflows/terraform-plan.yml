@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/terraform-plan.yml'
       - 'infra/**'
+      - 'gen/sql/monitoring.ts'
       - 'scripts/check-terraform-plan.sh'
       - 'src/ops/**'
   workflow_dispatch:

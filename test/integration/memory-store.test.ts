@@ -33,7 +33,7 @@ async function createStore(): Promise<{
   const directory = await mkdtemp(join(tmpdir(), 'chief-memory-'));
   directories.push(directory);
   const database = openChiefDatabase(join(directory, 'chief.db'));
-  migrateChiefDatabase(database);
+  await migrateChiefDatabase(database);
   return { database, directory, store: new SqliteMemoryStore(database) };
 }
 

@@ -126,18 +126,14 @@ export function pruneRecoveryArtifacts(
 }
 
 export function verifyImageCapability(database: string, image: string): void {
-  const target =
-    execCommand('docker', [
-      'image',
-      'inspect',
-      '--format',
-      '{{ index .Config.Labels "io.chief.database-capability" }}',
-      image,
-    ]).trim() || '0002_conversation_events';
-  if (
-    !['0002_conversation_events', '0003_channel_context'].includes(database) ||
-    (database === '0003_channel_context' && target !== '0003_channel_context')
-  )
+  const target = execCommand('docker', [
+    'image',
+    'inspect',
+    '--format',
+    '{{ index .Config.Labels "io.chief.database-capability" }}',
+    image,
+  ]).trim();
+  if (database !== 'chief-v1' || target !== database)
     throw new Error('target image cannot run database schema');
 }
 

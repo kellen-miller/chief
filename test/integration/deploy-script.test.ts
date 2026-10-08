@@ -60,7 +60,7 @@ describe('deploy transaction', { timeout: 20_000 }, () => {
     expect(commands).toContain(
       'verify-restore --backup ' +
         join(fixture.data, 'chief.db') +
-        ' --require-migration 0003_channel_context',
+        ' --require-migration chief-v1',
     );
     const login = commands
       .split('\n')

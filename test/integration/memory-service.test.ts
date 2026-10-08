@@ -13,7 +13,7 @@ const vector = new Float32Array(1_536).fill(0.4);
 describe('MemoryService', () => {
   it('commits an explicit proposal at the 0.75 boundary before receipt', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const extract = vi.fn(() =>
       Promise.resolve({
@@ -126,7 +126,7 @@ describe('MemoryService', () => {
     },
   ])('frames a $name without losing content', async ({ content, expected }) => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const extract = vi.fn(() =>
       Promise.resolve({ proposals: [], usageUsd: 0.002 }),
     );
@@ -172,7 +172,7 @@ describe('MemoryService', () => {
     'Chief remember the two cities',
   ])('short-circuits the empty remember command %j', async (content) => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const extract = vi.fn(() =>
       Promise.resolve({ proposals: [], usageUsd: 0.002 }),
     );
@@ -211,7 +211,7 @@ describe('MemoryService', () => {
 
   it('truthfully rejects an explicit proposal below 0.75', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const embed = vi.fn(() =>
       Promise.resolve({ embedding: vector, usageUsd: 0.001 }),
@@ -262,7 +262,7 @@ describe('MemoryService', () => {
 
   it('supersedes and conflicts through explicit correction receipts', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const originalId = store.applyMemory({
       canonicalText: 'Dinner is at six.',
@@ -352,7 +352,7 @@ describe('MemoryService', () => {
 
   it('rolls back every prepared proposal when one mutation fails', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const service = new MemoryService({
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
@@ -413,7 +413,7 @@ describe('MemoryService', () => {
 
   it('rejects sensitive explicit memory and reports budget pause truthfully', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const budget = new UsageBudget({ ceilingUsd: 1, warningUsd: 0.5 });
     const service = new MemoryService({
@@ -474,7 +474,7 @@ describe('MemoryService', () => {
 
   it('forgets a lexical explicit target and reports ambiguity when absent', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const memoryId = store.applyMemory({
       canonicalText: 'Dinner is at seven',
@@ -531,7 +531,7 @@ describe('MemoryService', () => {
 
   it('requires source authorship or current moderation to forget', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const ownerSource = {
       content: 'Dinner is at seven',
@@ -598,7 +598,7 @@ describe('MemoryService', () => {
 
   it('preserves self-forget authority after raw source retention', async () => {
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const ownerSource = {
       content: 'Dinner is at seven',

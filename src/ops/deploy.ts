@@ -131,7 +131,7 @@ export function deploy(arguments_: readonly string[]): void {
           '--backup',
           database,
           '--require-migration',
-          '0003_channel_context',
+          'chief-v1',
         ],
         { timeout: 120_000 },
       );

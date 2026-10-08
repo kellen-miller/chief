@@ -55,7 +55,7 @@ export function backup(arguments_: readonly string[]): void {
       'exec',
       'chief',
       'node',
-      'dist/cli.js',
+      'dist/src/cli.js',
       'backup',
       '--database',
       '/var/lib/chief/chief.db',
@@ -71,12 +71,12 @@ export function backup(arguments_: readonly string[]): void {
       'exec',
       'chief',
       'node',
-      'dist/cli.js',
+      'dist/src/cli.js',
       'verify-restore',
       '--backup',
       backupPath,
       '--require-migration',
-      '0003_channel_context',
+      'chief-v1',
     ],
     { timeout: 120_000 },
   );
@@ -86,6 +86,10 @@ export function backup(arguments_: readonly string[]): void {
     backupPath,
     `gs://${bucket}/backups/`,
   ]);
+  atomicWrite(
+    join(paths.data, 'backup-monitoring.json'),
+    JSON.stringify({ completed_at: Math.floor(Date.now() / 1000) }),
+  );
 }
 
 export function restore(arguments_: readonly string[]): void {
@@ -156,7 +160,7 @@ export function restoreDrill(arguments_: readonly string[]): void {
       '--backup',
       database,
       '--require-migration',
-      '0003_channel_context',
+      'chief-v1',
     ],
     { timeout: 120_000 },
   );

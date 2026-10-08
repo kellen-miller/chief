@@ -297,6 +297,7 @@ resource "google_compute_instance" "chief" {
       discord_voice_channel_id          = var.discord_voice_channel_id
       discord_monitoring_channel_id     = var.discord_monitoring_channel_id
       install_node_script               = file("${path.module}/../../scripts/install-node.sh")
+      monitoring_queries                = file("${path.module}/../../gen/sql/monitoring.ts")
       operations_sources                = { for name in fileset("${path.module}/../../src/ops", "*.ts") : name => file("${path.module}/../../src/ops/${name}") }
       project_id                        = var.project_id
       usage_indexing_ceiling_usd        = var.usage_indexing_ceiling_usd

@@ -31,7 +31,7 @@ describe('conversation quality replay', () => {
   it('keeps Teddy constraints through the Polk follow-up', async () => {
     const { replay: turns } = await loadConversationQualityFixture();
     const database = openChiefDatabase(':memory:');
-    migrateChiefDatabase(database);
+    await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
     const vector = new Float32Array(1_536).fill(0.4);
     const budget = new UsageBudget({ ceilingUsd: 10, warningUsd: 5 });

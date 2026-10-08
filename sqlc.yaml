@@ -6,17 +6,27 @@ plugins:
       sha256: 685124bdee17518a6ee95dd9107a6d95c3be2990a465a1f1a1e9a37911240e57
 sql:
   - engine: sqlite
-    schema: sql/schema.sql
-    queries: sql/queries.sql
+    schema: sql/migrations
+    queries:
+      - sql/queries/context.sql
+      - sql/queries/context-backfill.sql
+      - sql/queries/context-deletion.sql
+      - sql/queries/conversation.sql
+      - sql/queries/evaluation.sql
+      - sql/queries/memory.sql
+      - sql/queries/recovery.sql
+      - sql/queries/usage.sql
     codegen:
       - plugin: typescript
-        out: src/database
+        out: gen/sql
         options:
           driver: better-sqlite3
           sqlite:
             emit: prepared
-            filename: queries.ts
+            filename: application.ts
             parameter_types:
+              contextStoreAssertInputsAvailableSelectContextTombstones:
+                '3': string | null
               contextBackfillRecordManifestPageUpdateContextBackfills:
                 '7': string | null
                 '10': string | null
@@ -24,3 +34,14 @@ sql:
                 '4': number | null
               conversationSearchTextSourceGroupsSelectConversationEvents:
                 '5': number | null
+  - engine: sqlite
+    schema: sql/migrations
+    queries: sql/queries/monitoring.sql
+    codegen:
+      - plugin: typescript
+        out: gen/sql
+        options:
+          driver: better-sqlite3
+          sqlite:
+            emit: functions
+            filename: monitoring.ts

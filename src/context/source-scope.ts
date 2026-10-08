@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3';
 
+import { readSqliteStatement } from '../database/sqlite-statements.js';
+
 const DISCORD_SNOWFLAKE = /^\d{17,20}$/u;
 
 export function discordSourceSnowflake(scopeId: string): string | null {
@@ -27,11 +29,10 @@ export function hasSourceTombstone(
   return (
     database
       .prepare(
-        `select exists(
-           select 1 from context_tombstones
-           where scope_type = 'source'
-             and scope_id in (${aliases.map(() => '?').join(', ')})
-         )`,
+        readSqliteStatement(
+          'context/sourceScopeHasSourceTombstoneSelectContextTombstones',
+          [aliases.map(() => '?').join(', ')],
+        ),
       )
       .pluck()
       .get(...aliases) === 1

@@ -81,18 +81,33 @@ monitoring remains available while the bot is stopped. Bash only provisions the
 initial host/apt/Node environment or forwards existing script entrypoints to
 `src/ops/cli.ts`. Terraform owns GCP resources and systemd bootstrap.
 
-Ordinary database statements live in `sql/queries.sql`. `pnpm generate:sql`
-derives `sql/schema.sql` from Chief's real migrations, runs sqlc 1.31.1, and emits
+Ordinary database statements are grouped by domain in `sql/queries/*.sql`. `pnpm generate:sql`
+reads `sql/migrations/` directly with sqlc 1.31.1 and emits
 synchronous `better-sqlite3` statements and binding/row types into
-`src/database/queries.ts`. Generation uses our
+`gen/sql/application.ts`. All generated code lives under `gen/` (future protobuf
+output belongs there too). SQLite extension queries, dynamic SQL, and recovery
+statements unsupported by sqlc live in named sections grouped by domain under
+`sql/queries/sqlite/`; handwritten
+TypeScript loads those files rather than embedding SQL. Generation uses our
 [sqlc TypeScript plugin fork](https://github.com/kellen-miller/sqlc-gen-typescript),
 pinned to a WASM release and SHA256 in `sqlc.yaml`. The fork supports synchronous
 prepared statements, named/positional bindings, SQLite types, alias casing, and
 scalar `pluck()` types. CI checks regeneration for drift.
 
-Transactions, domain validation/mapping, migration checksums, FTS5/sqlite-vec,
-dynamic SQL, and queries using SQLite syntax unsupported by sqlc remain in their
-owning TypeScript modules. sqlc does not execute migrations or replace recovery
-verification. SQLite alias casing and scalar `pluck()` results are preserved.
-`sqlc.yaml` records narrow parameter type overrides for nullable comparisons and
+Five baseline migrations under `sql/migrations/` group memory, conversation,
+context, usage, and monitoring tables. Knex discovers SQL files in filename
+order and runs them on Chief's existing `better-sqlite3` connection, preserving
+sqlite-vec. Knex owns ordering, transactions, locks, and the sole migration
+ledger. sqlc reads those same files; no schema snapshot, migration catalog,
+legacy IDs, checksums, or data-repair callbacks are maintained. Startup awaits
+migrations before serving work. Run migrations with
+`pnpm chief -- migrate --database /path/to/chief.db`.
+
+This is a hard cutover to a fresh database. Run the one-time
+`scripts/cutover-database.ts` script over SSH before deploying; see
+[the cutover procedure](docs/operations.md#database-cutover). Previous databases
+and backups require their previous image and are not upgraded automatically.
+
+Transactions, domain validation, and recovery verification remain in TypeScript;
+all SQL text lives under `sql/`. `sqlc.yaml` records narrow parameter type overrides for nullable comparisons and
 CASE parameters that sqlc infers incorrectly; they do not alter executable SQL.

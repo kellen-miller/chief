@@ -8,7 +8,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').cpSync('sql', 'dist/sql', { recursive: true })\"",
     "chief": "tsx src/cli.ts",
     "eval:conversation": "tsx scripts/evaluate-conversation-quality.ts",
     "format": "prettier --write .",
@@ -20,7 +20,7 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm build",
-    "generate:sql": "tsx scripts/generate-sql-schema.ts && sqlc generate && prettier --write src/database/queries.ts",
+    "generate:sql": "sqlc generate && prettier --write gen/sql",
     "ops": "node src/ops/cli.ts"
   },
   "dependencies": {
@@ -32,6 +32,7 @@
     "@openai/agents": "0.13.2",
     "better-sqlite3": "12.11.1",
     "discord.js": "14.26.5",
+    "knex": "3.3.0",
     "openai": "6.46.0",
     "pino": "10.3.1",
     "sqlite-vec": "0.1.9",

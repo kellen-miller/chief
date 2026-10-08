@@ -6,7 +6,7 @@ export default defineConfig({
       exclude: [
         'src/cli.ts',
         'src/ops/cli.ts',
-        'src/database/queries.ts',
+        'gen/**',
         'src/runtime.ts',
         'src/agent/chief-agent.ts',
         'src/discord/gateway.ts',

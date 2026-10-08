@@ -55,7 +55,7 @@ If pinned `@discordjs/voice` 0.19.2 fails DAVE receive, upgrade to a verified fi
 - `GET /healthz` remains HTTP 200 when only `diagnostics.context.degraded` is true, but returns HTTP 503 when database, Discord, disk, or maintenance critical readiness fails.
 - Run `context-backfill --dry-run`, review its content-free counts/cost estimate, activate a spend-limited sample, and stop/restart or exhaust its run ceiling. Confirm `--status` and `--resume RUN_ID` continue without duplicate context or Discord writes.
 - Inspect `backups/` and every current/noncurrent `forget-journal/` generation,
-  verify one current backup with explicit migration 0003 mode, and confirm
+  verify one current backup with explicit chief-v1 mode, and confirm
   journals contain identifiers/checksum only—no deleted text or summary. In the
   drill bucket, retain two generations of one journal name and prove startup
   downloads both by generation without overwriting either local file; its
@@ -68,5 +68,5 @@ If pinned `@discordjs/voice` 0.19.2 fails DAVE receive, upgrade to a verified fi
   refuses it before stopping the service or reading Discord secrets; pair that
   old image with its pre-migration database and prove the supported rollback
   path remains available.
-- Force journal listing failure, malformed JSON, checksum mismatch, and migration-0002 replay in the approved drill environment. Each failure must stop before Discord; successful replay must remain idempotent.
+- Force journal listing failure, malformed JSON, checksum mismatch, and pre-cutover database rejection in the approved drill environment. Each failure must stop before Discord; successful replay must remain idempotent.
 - Stop the VM and confirm the uptime alert; force a watchdog and backup failure and confirm redacted email alerts.

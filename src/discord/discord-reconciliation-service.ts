@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3';
 
+import * as queries from '../../gen/sql/application.js';
+
 import type { NormalizedTextSource } from '../app/conversation-orchestrator.js';
 
 const RAW_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -147,20 +149,14 @@ export class DiscordReconciliationService {
       const scanUpperBoundMessageId =
         mode === 'full' ? timestampSnowflakeUpperBound(startedAt) : null;
       this.#database.transaction(() => {
-        this.#database
-          .prepare(
-            `delete from discord_reconciliation_seen
-             where scope_id = ? and pass_key = ?`,
+        queries
+          .discordReconciliationServiceRunPassDeleteDiscordReconciliationSeen(
+            this.#database,
           )
           .run(stateScopeId, passKey);
-        this.#database
-          .prepare(
-            `update discord_reconciliation_state
-             set phase = ?, pass_key = ?, cursor_message_id = null,
-                 covered_oldest_message_id = null,
-                 covered_newest_message_id = null,
-                 scan_upper_bound_message_id = ?, updated_at = ?
-             where scope_id = ?`,
+        queries
+          .discordReconciliationServiceRunPassUpdateDiscordReconciliationState(
+            this.#database,
           )
           .run(mode, passKey, scanUpperBoundMessageId, startedAt, stateScopeId);
       })();
@@ -222,14 +218,10 @@ export class DiscordReconciliationService {
     page: DiscordHistoryPage,
     observedAt: number,
   ): void {
-    const insertSeen = this.#database.prepare(
-      `insert into discord_reconciliation_seen
-         (scope_id, pass_key, message_id, observed_at, revision_checksum)
-       values (?, ?, ?, ?, ?)
-       on conflict(scope_id, pass_key, message_id) do update set
-         observed_at = excluded.observed_at,
-         revision_checksum = excluded.revision_checksum`,
-    );
+    const insertSeen =
+      queries.discordReconciliationServiceApplyPageInsertDiscordReconciliationSeen(
+        this.#database,
+      );
     this.#database.transaction(() => {
       for (const item of page.items) {
         insertSeen.run(
@@ -262,12 +254,9 @@ export class DiscordReconciliationService {
       state.coveredNewestMessageId,
       page.coverage?.newestMessageId ?? null,
     );
-    this.#database
-      .prepare(
-        `update discord_reconciliation_state
-         set cursor_message_id = ?, covered_oldest_message_id = ?,
-             covered_newest_message_id = ?, updated_at = ?
-         where scope_id = ?`,
+    queries
+      .discordReconciliationServiceUpdateProgressUpdateDiscordReconciliationState(
+        this.#database,
       )
       .run(page.nextCursor, oldest, newest, now, stateScopeId);
   }
@@ -280,37 +269,19 @@ export class DiscordReconciliationService {
     deletedAt: number,
   ): Promise<void> {
     const seen = new Set(
-      this.#database
-        .prepare(
-          `select message_id from discord_reconciliation_seen
-           where scope_id = ? and pass_key = ?`,
+      queries
+        .discordReconciliationServiceInferCoveredDeletionsSelectDiscordReconciliationSeen(
+          this.#database,
         )
         .pluck()
-        .all(stateScopeId, passKey) as string[],
+        .all(stateScopeId, passKey),
     );
-    const indexed = this.#database
-      .prepare(
-        `select distinct c.discord_message_id
-         from conversation_events c
-         where c.guild_id = ? and c.channel_id = ? and c.medium = 'text'
-           and (
-             c.content_state = 'available'
-             or (
-               c.content_state = 'scrubbed'
-               and c.content_state_reason = 'retention-expired'
-               and exists (
-                 select 1 from source_events s
-                 where s.platform_source_id = c.discord_message_id
-                   and s.medium = 'text'
-                   and s.source_scope_id =
-                     c.guild_id || '/' || c.channel_id || '/' ||
-                     c.discord_message_id
-               )
-             )
-           )`,
+    const indexed = queries
+      .discordReconciliationServiceInferCoveredDeletionsSelectConversationEvents(
+        this.#database,
       )
       .pluck()
-      .all(this.#guildId, this.#channelId) as string[];
+      .all(this.#guildId, this.#channelId);
     for (const messageId of indexed) {
       if (
         withinSnowflakeRange(messageId, oldestMessageId, newestMessageId) &&
@@ -331,26 +302,18 @@ export class DiscordReconciliationService {
     let highWater = state.highWaterMessageId;
     if (mode === 'incremental') {
       highWater = maximumSnowflake(highWater, state.coveredNewestMessageId);
-      const ids = this.#database
-        .prepare(
-          `select message_id from discord_reconciliation_seen
-           where scope_id = ? and pass_key = ?`,
+      const ids = queries
+        .discordReconciliationServiceCompletePassSelectDiscordReconciliationSeen(
+          this.#database,
         )
         .pluck()
-        .all(stateScopeId, passKey) as string[];
+        .all(stateScopeId, passKey);
       for (const id of ids) highWater = maximumSnowflake(highWater, id);
     }
     this.#database.transaction(() => {
-      this.#database
-        .prepare(
-          `update discord_reconciliation_state
-           set high_water_message_id = ?, phase = null, pass_key = null,
-               cursor_message_id = null, covered_oldest_message_id = null,
-               covered_newest_message_id = null, last_complete_at = ?,
-               scan_upper_bound_message_id = null,
-               last_full_scan_at = case when ? = 'full' then ?
-                                        else last_full_scan_at end,
-               updated_at = ? where scope_id = ?`,
+      queries
+        .discordReconciliationServiceCompletePassUpdateDiscordReconciliationState(
+          this.#database,
         )
         .run(
           highWater,
@@ -360,20 +323,18 @@ export class DiscordReconciliationService {
           completedAt,
           stateScopeId,
         );
-      this.#database
-        .prepare(
-          `delete from discord_reconciliation_seen
-           where scope_id = ? and pass_key like ? and pass_key <> ?`,
+      queries
+        .discordReconciliationServiceCompletePassDeleteDiscordReconciliationSeen(
+          this.#database,
         )
         .run(stateScopeId, `${mode}:%`, passKey);
     })();
   }
 
   #ensureState(scopeId: string, now: number): void {
-    this.#database
-      .prepare(
-        `insert into discord_reconciliation_state (scope_id, updated_at)
-         values (?, ?) on conflict(scope_id) do nothing`,
+    queries
+      .discordReconciliationServiceEnsureStateInsertDiscordReconciliationState(
+        this.#database,
       )
       .run(scopeId, now);
   }
@@ -381,16 +342,9 @@ export class DiscordReconciliationService {
   #state(mode?: DiscordHistoryMode): ReconciliationState {
     const scopeId =
       mode === undefined ? this.#scopeId : this.#stateScopeId(mode);
-    const state = this.#database
-      .prepare(
-        `select high_water_message_id as highWaterMessageId, phase,
-                pass_key as passKey, cursor_message_id as cursorMessageId,
-                covered_oldest_message_id as coveredOldestMessageId,
-                covered_newest_message_id as coveredNewestMessageId,
-                scan_upper_bound_message_id as scanUpperBoundMessageId,
-                last_complete_at as lastCompleteAt,
-                last_full_scan_at as lastFullScanAt
-         from discord_reconciliation_state where scope_id = ?`,
+    const state = queries
+      .discordReconciliationServiceStateSelectDiscordReconciliationState(
+        this.#database,
       )
       .get(scopeId) as ReconciliationState | undefined;
     if (state === undefined) throw new Error('reconciliation state missing');
