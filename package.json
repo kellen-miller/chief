@@ -33,7 +33,7 @@
     "better-sqlite3": "13.0.3",
     "discord.js": "14.27.0",
     "knex": "3.3.0",
-    "openai": "6.49.0",
+    "openai": "7.28.0",
     "pino": "10.4.0",
     "sqlite-vec": "0.1.9",
     "zod": "4.6.5"
