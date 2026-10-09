@@ -34,6 +34,10 @@ pnpm verify
 pnpm chief -- smoke
 ```
 
+Builds and type checks use TypeScript 7 through the `@typescript/native` alias.
+The `typescript` alias supplies the TypeScript 6 API required by ESLint. Keep
+both until typescript-eslint supports the native compiler API.
+
 The tests use fake provider and deployment boundaries and never make paid OpenAI calls. To run the real bot, export the `.env` values and use `pnpm chief -- run`. Register guild commands once with `pnpm chief -- register-commands`.
 
 The optional `pnpm eval:conversation` command uses the configured OpenAI key and
