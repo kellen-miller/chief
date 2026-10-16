@@ -49,6 +49,12 @@ the watchdog's GCP email events. Explicit database, disk, and maintenance failur
 alert immediately. Routine reconnect/resume events stay in local logs. Raw
 `chief_health_failed` events contribute to daily counts without generating a
 second notification. Gateway and shard errors still alert immediately.
+Fresh Discord sessions restore readiness and reconcile missed messages, just as
+resumed sessions do. Startup still waits for initialization and reconciliation.
+Local logs distinguish `discord_shard_ready`, `discord_shard_resumed`, and
+`discord_shard_reconnecting`. Terminal disconnects log
+`discord_shard_disconnected` with only the shard ID and close code; discord.js
+does not expose close codes for routine reconnects through this event.
 Watchdog probe diagnostics emit `chief_health_probe_failed` with a bounded reason
 (`timeout`, `connection`, `http`, or `response`), HTTP status, and readiness problem;
 no response bodies or raw errors are logged. Watchdog failure history persists in
