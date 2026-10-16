@@ -61,6 +61,7 @@ export class DiscordGateway {
   readonly #client: Client;
   readonly #options: DiscordGatewayOptions;
   #ready = false;
+  #started = false;
   #reconciliation: GatewayReconciliation | undefined;
   #text: DiscordTextController | undefined;
   #textChannel: TextChannel | undefined;
@@ -135,12 +136,28 @@ export class DiscordGateway {
       this.#ready = false;
       this.#options.logger.warn({ shardId }, 'discord_shard_reconnecting');
     });
-    this.#client.on(Events.ShardResume, (shardId, replayedEvents) => {
+    this.#client.on(Events.ShardDisconnect, (event, shardId) => {
+      this.#ready = false;
+      this.#options.logger.warn(
+        { closeCode: event.code, shardId },
+        'discord_shard_disconnected',
+      );
+    });
+    this.#client.on(Events.ShardReady, (shardId) => {
+      this.#options.logger.info({ shardId }, 'discord_shard_ready');
+      if (!this.#started) return;
+
       this.#ready = true;
+      void this.#reconcile('ready');
+    });
+    this.#client.on(Events.ShardResume, (shardId, replayedEvents) => {
       this.#options.logger.info(
         { replayedEvents, shardId },
         'discord_shard_resumed',
       );
+      if (!this.#started) return;
+
+      this.#ready = true;
       void this.#reconcile('resume');
     });
     this.#client.on(Events.InteractionCreate, (interaction) => {
@@ -191,10 +208,12 @@ export class DiscordGateway {
       }),
     });
     await this.#reconcile('startup');
+    this.#started = true;
     this.#ready = true;
   }
 
   public async stop(): Promise<void> {
+    this.#started = false;
     this.#ready = false;
     await this.#options.voice.leave();
     await this.#client.destroy();
@@ -297,7 +316,7 @@ export class DiscordGateway {
     };
   }
 
-  async #reconcile(trigger: 'resume' | 'startup'): Promise<void> {
+  async #reconcile(trigger: 'ready' | 'resume' | 'startup'): Promise<void> {
     const reconciliation = this.#reconciliation;
     if (reconciliation === undefined) return;
     try {
