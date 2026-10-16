@@ -3,6 +3,20 @@ name: Deploy
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'gen/**'
+      - 'sql/**'
+      - 'infra/**'
+      - 'scripts/**'
+      - 'patches/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.env*'
+      - 'package.json'
+      - 'pnpm*'
+      - 'tsconfig*'
+      - '.github/workflows/deploy.yml'
 
 concurrency:
   group: chief-production
