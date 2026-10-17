@@ -115,7 +115,7 @@ jobs:
           persist-credentials: false
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e
         with:
-          terraform_version: v1.16.5
+          terraform_version: v1.16.6
         if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).terraform) }}
       - name: Set up Node project
         uses: kellen-miller/ci/.github/actions/setup-node@d1c91763535a5866b55282018f301d921b22bcd5
@@ -135,7 +135,7 @@ jobs:
           persist-credentials: false
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e
         with:
-          terraform_version: v1.16.5
+          terraform_version: v1.16.6
         if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).terraform) }}
       - name: Set up Node project
         uses: kellen-miller/ci/.github/actions/setup-node@d1c91763535a5866b55282018f301d921b22bcd5
