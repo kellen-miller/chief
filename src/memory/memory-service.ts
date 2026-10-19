@@ -7,6 +7,7 @@ import {
   type SqliteMemoryStore,
 } from './memory-store.js';
 
+import { logJobFailure, type JobStage } from '../jobs/job-failure.js';
 export type MemoryAction =
   'conflict' | 'create' | 'forget' | 'no-op' | 'supersede';
 
@@ -141,6 +142,7 @@ export class MemoryService {
     );
     if (!reservation.allowed) return { status: 'budget-paused' };
 
+    let stage: JobStage = 'source-load';
     try {
       if (input.intent === 'forget') {
         const target = extractForgetTarget(input.source.content);
@@ -157,6 +159,7 @@ export class MemoryService {
           )
             ? []
             : [{ action: 'forget', targetMemoryId: candidate.id }];
+        stage = 'persistence';
         const applied = this.#options.store.applyPreparedMutationBatch({
           completedAt: input.now,
           ...(input.source.revisionChecksum === undefined
@@ -181,6 +184,7 @@ export class MemoryService {
           ? explicitRememberExtractionContent(input.source.content)
           : input.source.content;
       if (extractionContent === null) {
+        stage = 'persistence';
         this.#options.store.applyPreparedMutationBatch({
           completedAt: input.now,
           ...(input.source.revisionChecksum === undefined
@@ -195,6 +199,7 @@ export class MemoryService {
         return { status: 'ambiguous' };
       }
 
+      stage = 'extraction';
       const extraction = await this.#options.extract({
         candidateMemories: this.#options.store.findLexical(
           input.source.content,
@@ -208,6 +213,7 @@ export class MemoryService {
           (proposal) => proposal.sensitivity === 'sensitive',
         )
       ) {
+        stage = 'persistence';
         this.#options.store.applyPreparedMutationBatch({
           completedAt: input.now,
           ...(input.source.revisionChecksum === undefined
@@ -222,6 +228,7 @@ export class MemoryService {
         return { status: 'rejected-sensitive' };
       }
 
+      stage = 'mutation-preparation';
       const prepared = await this.#prepareMutations(
         extraction.proposals,
         input.source,
@@ -229,6 +236,7 @@ export class MemoryService {
         input.now,
         true,
       );
+      stage = 'persistence';
       const applied = this.#options.store.applyPreparedMutationBatch({
         completedAt: input.now,
         ...(input.source.revisionChecksum === undefined
@@ -237,6 +245,7 @@ export class MemoryService {
         mutations: prepared.mutations,
         sourceEventId: input.sourceEventId,
       });
+      stage = 'accounting';
       this.#options.budget.reconcile(
         reservation.id,
         extraction.usageUsd + prepared.embeddingUsageUsd,
@@ -255,7 +264,8 @@ export class MemoryService {
         return { memoryIds, status: 'forgotten' };
       }
       return { memoryIds, status: 'created' };
-    } catch {
+    } catch (error) {
+      logJobFailure({ jobKind: 'explicit-memory', stage }, error);
       this.#options.budget.reconcile(reservation.id, this.#options.estimateUsd);
       return { status: 'failed' };
     }
@@ -282,6 +292,7 @@ export class MemoryService {
       return { notBefore, status: 'budget-deferred' };
     }
 
+    let stage: JobStage = 'source-load';
     try {
       const source = this.#options.store.getJobSource(job.id);
       if (source === null) {
@@ -292,6 +303,7 @@ export class MemoryService {
       const forgetTarget = extractForgetTarget(source.content);
       if (forgetTarget !== null) {
         const candidate = this.#options.store.findLexical(forgetTarget, 1)[0];
+        stage = 'persistence';
         this.#options.store.applyPreparedMutationBatch({
           completedAt: now,
           expectedRevisionChecksum: source.revisionChecksum,
@@ -310,11 +322,13 @@ export class MemoryService {
         this.#options.budget.cancel(reservation.id);
         return { status: 'completed' };
       }
+      stage = 'extraction';
       const extraction = await this.#options.extract({
         candidateMemories: this.#options.store.findLexical(source.content, 10),
         content: source.content,
         explicitIntent: null,
       });
+      stage = 'mutation-preparation';
       const prepared = await this.#prepareMutations(
         extraction.proposals,
         source,
@@ -322,6 +336,7 @@ export class MemoryService {
         now,
         false,
       );
+      stage = 'persistence';
       this.#options.store.applyPreparedMutationBatch({
         completedAt: now,
         expectedRevisionChecksum: source.revisionChecksum,
@@ -329,12 +344,17 @@ export class MemoryService {
         mutations: prepared.mutations,
         sourceEventId: source.id,
       });
+      stage = 'accounting';
       this.#options.budget.reconcile(
         reservation.id,
         extraction.usageUsd + prepared.embeddingUsageUsd,
       );
       return { status: 'completed' };
-    } catch {
+    } catch (error) {
+      logJobFailure(
+        { jobKind: 'memory', jobId: job.id, attempt: job.attemptCount, stage },
+        error,
+      );
       this.#options.budget.reconcile(reservation.id, this.#options.estimateUsd);
       const notBefore = now + retryDelay(job.attemptCount);
       const status = this.#options.store.retryJob(

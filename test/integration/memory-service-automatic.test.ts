@@ -6,6 +6,7 @@ import {
 } from '../../src/memory/database.js';
 import { SqliteMemoryStore } from '../../src/memory/memory-store.js';
 import { MemoryService } from '../../src/memory/memory-service.js';
+import * as jobFailures from '../../src/jobs/job-failure.js';
 import { UsageBudget } from '../../src/usage/usage-budget.js';
 
 const vector = new Float32Array(1_536).fill(0.4);
@@ -226,6 +227,8 @@ describe('MemoryService automatic extraction', () => {
   });
 
   it('reports idle and terminates a repeatedly failing job', async () => {
+    const failureLog = vi.spyOn(jobFailures, 'logJobFailure');
+    const failure = new Error('transient provider failure');
     const database = openChiefDatabase(':memory:');
     await migrateChiefDatabase(database);
     const store = new SqliteMemoryStore(database);
@@ -233,7 +236,7 @@ describe('MemoryService automatic extraction', () => {
       budget: new UsageBudget({ ceilingUsd: 10, warningUsd: 5 }),
       embed: vi.fn(),
       estimateUsd: 0.1,
-      extract: () => Promise.reject(new Error('transient provider failure')),
+      extract: () => Promise.reject(failure),
       maxAttempts: 1,
       store,
     });
@@ -254,6 +257,11 @@ describe('MemoryService automatic extraction', () => {
     expect(
       database.prepare('select status from memory_jobs').pluck().get(),
     ).toBe('failed');
+    expect(failureLog).toHaveBeenCalledWith(
+      { jobKind: 'memory', jobId: 1, attempt: 1, stage: 'extraction' },
+      failure,
+    );
+    failureLog.mockRestore();
     database.close();
   });
 
