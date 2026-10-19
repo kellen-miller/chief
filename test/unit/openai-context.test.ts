@@ -1,4 +1,5 @@
-import { run } from '@openai/agents';
+import { Agent, run } from '@openai/agents';
+import { z } from 'zod';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@openai/agents', async (importOriginal) => ({
@@ -19,9 +20,9 @@ describe('createOpenAiContextSummarizer', () => {
         return Promise.resolve({
           finalOutput: {
             confidence: 0.9,
-            sourceIds: ['event:1'],
+            sourceIndexes: [0],
             summary: 'The group discussed Project Marigold.',
-            topicProposals: [{ label: 'Marigold', sourceIds: ['event:1'] }],
+            topicProposals: [{ label: 'Marigold', sourceIndexes: [0] }],
           },
           state: { usage: { inputTokens: 100, outputTokens: 40 } },
         });
@@ -56,32 +57,119 @@ describe('createOpenAiContextSummarizer', () => {
     expect(call[2].signal).toBeInstanceOf(AbortSignal);
   });
 
-  it('rejects model references outside the supplied source set', async () => {
+  it('constrains summary and topic references to each request source set', async () => {
+    let sourceCount = 1;
+    const runAgent = vi.fn((agent: unknown) => {
+      if (
+        !(agent instanceof Agent) ||
+        !(agent.outputType instanceof z.ZodObject)
+      ) {
+        throw new Error('expected structured context agent');
+      }
+
+      const valid = {
+        confidence: 0.9,
+        sourceIndexes: [0],
+        summary: 'Supported summary.',
+        topicProposals: [{ label: 'Topic', sourceIndexes: [0] }],
+      };
+      expect(agent.outputType.safeParse(valid).success).toBe(true);
+      expect(
+        agent.outputType.safeParse({ ...valid, sourceIndexes: [sourceCount] })
+          .success,
+      ).toBe(false);
+      expect(
+        agent.outputType.safeParse({
+          ...valid,
+          topicProposals: [{ label: 'Topic', sourceIndexes: [sourceCount] }],
+        }).success,
+      ).toBe(false);
+      return Promise.resolve({
+        finalOutput: valid,
+        state: { usage: { inputTokens: 10, outputTokens: 5 } },
+      });
+    });
     const summarizer = createOpenAiContextSummarizer({
       apiKey: 'test-key',
-      dependencies: {
-        runAgent: () =>
-          Promise.resolve({
-            finalOutput: {
-              confidence: 0.9,
-              sourceIds: ['event:private'],
-              summary: 'Unsupported content.',
-              topicProposals: [],
-            },
-            state: { usage: { inputTokens: 10, outputTokens: 5 } },
-          }),
-      },
+      dependencies: { runAgent },
       model: 'configured-memory-model',
       pricing: { inputPerMillionUsd: 2, outputPerMillionUsd: 4 },
     });
-
     await expect(
       summarizer.summarize({
         completeness: 'final',
-        sources: [{ id: 'event:1', text: 'Public source.' }],
+        sources: [
+          { id: 'document:2', text: 'Historical summary citing event:1.' },
+        ],
+        tier: 'long-term',
+      }),
+    ).resolves.toMatchObject({
+      sourceIds: ['document:2'],
+      topicProposals: [{ sourceIds: ['document:2'] }],
+    });
+    sourceCount = 2;
+    await expect(
+      summarizer.summarize({
+        completeness: 'final',
+        sources: [
+          { id: 'document:3', text: 'First source.' },
+          { id: 'document:4', text: 'Second source.' },
+        ],
+        tier: 'long-term',
+      }),
+    ).resolves.toMatchObject({ sourceIds: ['document:3'] });
+  });
+
+  it.each(['summary', 'topic'] as const)(
+    'rejects %s references outside the supplied source set',
+    async (reference) => {
+      const summarizer = createOpenAiContextSummarizer({
+        apiKey: 'test-key',
+        dependencies: {
+          runAgent: () =>
+            Promise.resolve({
+              finalOutput: {
+                confidence: 0.9,
+                sourceIndexes: [reference === 'summary' ? 999 : 0],
+                summary: 'Unsupported content.',
+                topicProposals:
+                  reference === 'topic'
+                    ? [{ label: 'Topic', sourceIndexes: [999] }]
+                    : [],
+              },
+              state: { usage: { inputTokens: 10, outputTokens: 5 } },
+            }),
+        },
+        model: 'configured-memory-model',
+        pricing: { inputPerMillionUsd: 2, outputPerMillionUsd: 4 },
+      });
+
+      await expect(
+        summarizer.summarize({
+          completeness: 'final',
+          sources: [{ id: 'event:1', text: 'Public source.' }],
+          tier: 'hourly',
+        }),
+      ).rejects.toThrow('context summary referenced an unknown source');
+    },
+  );
+
+  it('rejects empty input before starting a paid request', async () => {
+    const runAgent = vi.fn();
+    const summarizer = createOpenAiContextSummarizer({
+      apiKey: 'test-key',
+      dependencies: { runAgent },
+      model: 'configured-memory-model',
+      pricing: { inputPerMillionUsd: 2, outputPerMillionUsd: 4 },
+    });
+    await expect(
+      summarizer.summarize({
+        completeness: 'final',
+        sources: [],
         tier: 'hourly',
       }),
-    ).rejects.toThrow('context summary referenced an unknown source');
+    ).rejects.toThrow('context summarization requires sources');
+    expect(runAgent).not.toHaveBeenCalled();
   });
 
   it('rejects a missing structured provider result', async () => {
@@ -111,7 +199,7 @@ describe('createOpenAiContextSummarizer', () => {
     vi.mocked(run).mockResolvedValueOnce({
       finalOutput: {
         confidence: 0.8,
-        sourceIds: ['event:1'],
+        sourceIndexes: [0],
         summary: 'The group discussed the supplied source.',
         topicProposals: [],
       },
