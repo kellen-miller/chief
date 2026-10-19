@@ -95,6 +95,7 @@ const errorCodes = new Set([
 // messages can contain submitted text, credentials, or generated output.
 const errorReasons = new Set([
   'context summarization returned no structured output',
+  'context summarization requires sources',
   'memory extraction returned no structured output',
   'OpenAI returned an invalid memory embedding',
   'context summary referenced an unknown source',
