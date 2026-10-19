@@ -25,6 +25,28 @@ backfill counts, and one bounded reason: `provider`, `overall-budget`,
 `indexing-budget`, `run-budget`, or `backlog`. It never includes source IDs,
 speaker IDs, topics, summaries, prompts, or provider errors.
 
+Job failures emit structured `chief_job_failed` error logs before retry handling.
+Each record identifies the job kind, local numeric job/run ID and attempt when
+available, and stage (summarization, embedding, extraction, persistence, etc.).
+Diagnostics retain known application failure reasons, error classes, allowlisted
+provider/network/SQLite codes, HTTP status, provider request ID, validation codes,
+and bounded code locations and cause chains. Arbitrary error messages, response
+bodies, validation values/paths, prompts, and generated text are excluded.
+Unknown errors still retain their safe type and code locations; raw provider
+messages are not stored.
+
+`context_jobs` and `memory_jobs` track current state, attempts, and retry timing;
+context jobs also retain the coarse `last_error_category` used by retry policy.
+They do not store complete result/error history. Detailed failures live only in
+logs; no separate failure table is maintained. The context category `provider`
+is a retry category and can include output-validation or persistence errors;
+use the log's stage and diagnostics to distinguish the actual cause.
+
+```bash
+gcloud logging read 'resource.type="gce_instance" AND jsonPayload.msg="chief_job_failed"' \
+  --limit=50 --format=json
+```
+
 ## Discord monitoring
 
 `#chief-monitoring` is visible to everyone in the server. The host-side

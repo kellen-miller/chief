@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 
+import { logJobFailure, type JobStage } from '../jobs/job-failure.js';
 import { readSqliteStatement } from '../database/sqlite-statements.js';
 import * as queries from '../../gen/sql/application.js';
 
@@ -532,11 +533,13 @@ export class ChannelContextService {
     result: ReturnType<ContextDeletionStore['delete']>,
     now: number,
   ): Promise<ContextForgetReceipt> {
+    let stage: JobStage = 'journal-upload';
     try {
       if (this.#uploadForgetJournal === undefined) {
         throw new Error('forget journal uploader is unavailable');
       }
       await this.#uploadForgetJournal(result.journal);
+      stage = 'persistence';
       deletion.markJournalUploaded(result.journalId, now);
       return {
         documentCount: result.documentCount,
@@ -544,7 +547,15 @@ export class ChannelContextService {
         sourceCount: result.sourceCount,
         status: 'forgotten',
       };
-    } catch {
+    } catch (error) {
+      logJobFailure(
+        {
+          jobKind: 'forget-journal',
+          jobId: result.journalId,
+          stage,
+        },
+        error,
+      );
       deletion.markJournalFailed(result.journalId, now);
       return {
         documentCount: result.documentCount,
@@ -569,14 +580,24 @@ export class ChannelContextService {
     });
     const pending = deletion.nextForgetJournal(now);
     if (pending === null) return { status: 'idle' };
+    let stage: JobStage = 'journal-upload';
     try {
       if (this.#uploadForgetJournal === undefined) {
         throw new Error('forget journal uploader is unavailable');
       }
       await this.#uploadForgetJournal(pending.entry);
+      stage = 'persistence';
       deletion.markJournalUploaded(pending.id, now);
       return { status: 'uploaded' };
-    } catch {
+    } catch (error) {
+      logJobFailure(
+        {
+          jobKind: 'forget-journal',
+          jobId: pending.id,
+          stage,
+        },
+        error,
+      );
       deletion.markJournalFailed(pending.id, now);
       return { status: 'failed' };
     }
@@ -812,6 +833,16 @@ export class ChannelContextService {
       summarizer === undefined ||
       embed === undefined
     ) {
+      logJobFailure(
+        {
+          jobKind: 'context',
+          jobId: job.id,
+          attempt: job.attemptCount,
+          tier: job.tier,
+          stage: 'configuration',
+        },
+        new Error('context providers are unavailable'),
+      );
       this.#retryJob(job, now + retryDelay(job.attemptCount), 'provider');
       return job.attemptCount >= DEFAULT_MAX_ATTEMPTS
         ? { status: 'failed' }
@@ -853,8 +884,10 @@ export class ChannelContextService {
       .channelContextRunNextUpdateContextJobs2(this.#database)
       .run(reservation.id, job.id);
 
+    let stage: JobStage = 'summarization';
     try {
       const plan = await this.#summarizeSources(job, sourceGroups, summarizer);
+      stage = 'embedding';
       const embedded = await embed(plan.finalResult.summary);
       const usageUsd =
         plan.segments.reduce(
@@ -882,6 +915,7 @@ export class ChannelContextService {
           status: 'budget-deferred',
         };
       }
+      stage = 'persistence';
       let documentId = 0;
       const commit = this.#database.transaction((): boolean => {
         const commitNow = this.#now();
@@ -986,7 +1020,17 @@ export class ChannelContextService {
         status: 'completed',
         tier: job.tier,
       };
-    } catch {
+    } catch (error) {
+      logJobFailure(
+        {
+          jobKind: 'context',
+          jobId: job.id,
+          attempt: job.attemptCount,
+          tier: job.tier,
+          stage,
+        },
+        error,
+      );
       budget.reconcileConservatively(reservation.id);
       queries
         .channelContextRunNextUpdateContextJobs5(this.#database)

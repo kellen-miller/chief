@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import { logJobFailure, type JobStage } from '../jobs/job-failure.js';
 import { readSqliteStatement } from '../database/sqlite-statements.js';
 import * as queries from '../../gen/sql/application.js';
 
@@ -280,6 +281,7 @@ export class ContextBackfillService {
         this.#existingRevision(normalized.messageId),
       ]),
     );
+    let stage: JobStage = 'summarization';
     try {
       const segmentResult = await summarizeBackfill(
         summarizer,
@@ -290,6 +292,7 @@ export class ContextBackfillService {
         segmentResult,
         priorSegments,
       );
+      stage = 'embedding';
       const embedded = await embed(aggregate.result.summary);
       const usageUsd =
         segmentResult.usageUsd +
@@ -300,6 +303,7 @@ export class ContextBackfillService {
         this.#pause(run.runId, 'usage-contract', now);
         return { reason: 'usage-contract', status: 'budget-paused' };
       }
+      stage = 'persistence';
       const commit = this.#database.transaction(() => {
         this.#assertSegmentCommitCurrent(
           run.runId,
@@ -390,7 +394,8 @@ export class ContextBackfillService {
       });
       budget.reconcileWith(reservation.id, usageUsd, commit);
       return { status: 'completed', runId: run.runId };
-    } catch {
+    } catch (error) {
+      logJobFailure({ jobKind: 'backfill', jobId: run.runId, stage }, error);
       budget.reconcileConservatively(reservation.id);
       return { status: 'retry' };
     }

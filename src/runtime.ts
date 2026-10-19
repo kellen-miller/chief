@@ -1,6 +1,7 @@
 import { mkdir, readFile, statfs, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
+import { jobErrorDiagnostics } from './jobs/job-failure.js';
 import * as queries from '../gen/sql/application.js';
 
 import pino from 'pino';
@@ -352,7 +353,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
       })
       .catch((error: unknown) => {
         logger.error(
-          { errorName: runtimeErrorName(error) },
+          { errors: jobErrorDiagnostics(error) },
           'background_worker_failed',
         );
       })
@@ -369,7 +370,7 @@ export async function startChief(config: ChiefConfig): Promise<ChiefRuntime> {
         maintenanceAt = now;
       } catch (error) {
         logger.error(
-          { errorName: runtimeErrorName(error) },
+          { errors: jobErrorDiagnostics(error) },
           'memory_maintenance_failed',
         );
       }

@@ -1,3 +1,4 @@
+import * as jobFailures from '../../src/jobs/job-failure.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ChannelContextService } from '../../src/context/channel-context-service.js';
@@ -1021,6 +1022,7 @@ describe('ChannelContextService rollups', () => {
   });
 
   it('recovers failed provider jobs after a day without retrying invalidated sources', async () => {
+    const failureLog = vi.spyOn(jobFailures, 'logJobFailure');
     const occurredAt = Date.parse('2026-07-14T15:37:00Z');
     let current = occurredAt + 1_000;
     let providerAvailable = false;
@@ -1099,6 +1101,18 @@ describe('ChannelContextService rollups', () => {
       status: 'idle',
     });
     expect(summarize).toHaveBeenCalledTimes(5);
+    expect(failureLog).toHaveBeenCalledTimes(5);
+    expect(failureLog).toHaveBeenLastCalledWith(
+      {
+        jobKind: 'context',
+        jobId: 2,
+        attempt: 5,
+        tier: 'hourly',
+        stage: 'summarization',
+      },
+      expect.any(Error),
+    );
+    failureLog.mockRestore();
     expect(service.status(current)).toMatchObject({
       degraded: true,
       failedJobs: 2,
