@@ -84,9 +84,9 @@ interface TranscriptionUsage {
 
 interface RealtimeUsage {
   readonly inputTokens: number;
-  readonly inputTokensDetails: readonly Readonly<Record<string, number>>[];
+  readonly inputTokensDetails: readonly Readonly<Record<string, unknown>>[];
   readonly outputTokens: number;
-  readonly outputTokensDetails: readonly Readonly<Record<string, number>>[];
+  readonly outputTokensDetails: readonly Readonly<Record<string, unknown>>[];
 }
 
 export function calculateTranscriptionCost(
@@ -146,7 +146,7 @@ export interface RealtimeSessionFactoryOptions {
 }
 
 export interface RealtimeResearchResult {
-  readonly inputTokenDetails?: readonly Readonly<Record<string, number>>[];
+  readonly inputTokenDetails?: readonly Readonly<Record<string, unknown>>[];
   readonly inputTokens: number;
   readonly output: string;
   readonly outputTokens: number;
@@ -803,7 +803,7 @@ function collectUrls(value: unknown): string[] {
 
 function priceRealtimeDirection(
   totalTokens: number,
-  details: readonly Readonly<Record<string, number>>[],
+  details: readonly Readonly<Record<string, unknown>>[],
   audioPerMillionUsd: number,
   textPerMillionUsd: number,
 ): number {
@@ -820,15 +820,14 @@ function priceRealtimeDirection(
 }
 
 function sumDetail(
-  details: readonly Readonly<Record<string, number>>[],
+  details: readonly Readonly<Record<string, unknown>>[],
   snakeCaseKey: string,
   camelCaseKey: string,
 ): number {
-  return details.reduce(
-    (total, detail) =>
-      total + (detail[snakeCaseKey] ?? detail[camelCaseKey] ?? 0),
-    0,
-  );
+  return details.reduce((total, detail) => {
+    const value = detail[snakeCaseKey] ?? detail[camelCaseKey];
+    return total + (typeof value === 'number' ? value : 0);
+  }, 0);
 }
 
 async function waitForRealtimeUsage(session: RealtimeSession): Promise<void> {

@@ -191,7 +191,7 @@ async function fetchResolved(
 async function defaultResolver(
   hostname: string,
 ): Promise<readonly LookupAddress[]> {
-  return dnsLookup(hostname, { all: true, verbatim: true });
+  return dnsLookup(hostname, { all: true, order: 'verbatim' });
 }
 
 function isTextContentType(contentType: string): boolean {
