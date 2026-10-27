@@ -104,11 +104,12 @@ describe('Discord gateway readiness', () => {
     client.emit(Events.ShardReady, 0, undefined);
     expect(info).toHaveBeenCalledWith({ shardId: 0 }, 'discord_shard_ready');
 
-    client.emit(
-      Events.ShardDisconnect,
-      { code: 4014, reason: 'private provider detail', wasClean: true },
-      0,
-    );
+    const disconnect = {
+      code: 4014,
+      reason: 'private provider detail',
+      wasClean: true,
+    };
+    client.emit(Events.ShardDisconnect, disconnect, 0);
     expect(gateway.ready).toBe(false);
     expect(warn).toHaveBeenCalledWith(
       { closeCode: 4014, shardId: 0 },

@@ -34,7 +34,7 @@ import { serializeContextPayload } from '../context/context-payload.js';
 import { safeFetchText } from '../web/safe-fetch.js';
 
 export interface AgentExecutionResult {
-  readonly inputTokenDetails?: readonly Readonly<Record<string, number>>[];
+  readonly inputTokenDetails?: readonly Readonly<Record<string, unknown>>[];
   readonly inputTokens: number;
   readonly output: string | undefined;
   readonly outputTokens: number;
@@ -48,7 +48,9 @@ interface ExecutionRunResult {
   readonly state: {
     readonly usage: {
       readonly inputTokens: number;
-      readonly inputTokensDetails?: readonly Readonly<Record<string, number>>[];
+      readonly inputTokensDetails?: readonly Readonly<
+        Record<string, unknown>
+      >[];
       readonly outputTokens: number;
     };
   };
@@ -61,7 +63,7 @@ export interface TextExecutionDependencies {
     signal: AbortSignal,
   ) => Promise<{
     readonly inputTokens: number;
-    readonly inputTokenDetails?: readonly Readonly<Record<string, number>>[];
+    readonly inputTokenDetails?: readonly Readonly<Record<string, unknown>>[];
     readonly output: string;
     readonly outputTokens: number;
     readonly valueForCitations: unknown;
@@ -315,7 +317,7 @@ export function createExecution(
     const calls = new ToolCallBudget(6, 3);
     const signal = AbortSignal.timeout(90_000);
     let researchInputTokens = 0;
-    const researchInputTokenDetails: Readonly<Record<string, number>>[] = [];
+    const researchInputTokenDetails: Readonly<Record<string, unknown>>[] = [];
     let researchOutputTokens = 0;
     const agent = new Agent({
       instructions: INSTRUCTIONS,
