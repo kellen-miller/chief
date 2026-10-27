@@ -6,7 +6,7 @@ export interface TextTokenPricing {
 }
 
 export interface TextTokenUsage {
-  readonly inputTokenDetails?: readonly Readonly<Record<string, number>>[];
+  readonly inputTokenDetails?: readonly Readonly<Record<string, unknown>>[];
   readonly inputTokens: number;
   readonly outputTokens: number;
 }
@@ -44,13 +44,18 @@ export function createResearchRequest(model: string, input: string) {
 }
 
 function sumDetail(
-  details: readonly Readonly<Record<string, number>>[] | undefined,
+  details: readonly Readonly<Record<string, unknown>>[] | undefined,
   key: string,
 ): number {
   return (
     details?.reduce((total, detail) => {
       const value = detail[key] ?? 0;
-      return total + (Number.isFinite(value) && value > 0 ? value : 0);
+      return (
+        total +
+        (typeof value === 'number' && Number.isFinite(value) && value > 0
+          ? value
+          : 0)
+      );
     }, 0) ?? 0
   );
 }
