@@ -1,4 +1,14 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["local>kellen-miller/.github:renovate-config"]
+  "extends": ["local>kellen-miller/.github:renovate-config"],
+  "packageRules": [
+    {
+      "description": "Update Terraform CLI pins and required_version constraints together.",
+      "matchPackageNames": ["terraform", "hashicorp/terraform"],
+      "groupName": "terraform runtime",
+      "automerge": false,
+      "autoApprove": false,
+      "minimumReleaseAge": "3 days"
+    }
+  ]
 }
