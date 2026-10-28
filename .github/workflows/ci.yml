@@ -120,7 +120,7 @@ jobs:
       - name: Set up Node project
         uses: kellen-miller/ci/.github/actions/setup-node@d1c91763535a5866b55282018f301d921b22bcd5
         with:
-          node-version: '24'
+          node-version: '26'
       - run: pnpm format:check
       - run: terraform fmt -check -recursive infra
         if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).terraform) }}
@@ -140,7 +140,7 @@ jobs:
       - name: Set up Node project
         uses: kellen-miller/ci/.github/actions/setup-node@d1c91763535a5866b55282018f301d921b22bcd5
         with:
-          node-version: '24'
+          node-version: '26'
         if:
           ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).app || fromJSON(needs.changes.outputs.changes).sql)
           }}
@@ -177,7 +177,7 @@ jobs:
       - name: Set up Node project
         uses: kellen-miller/ci/.github/actions/setup-node@d1c91763535a5866b55282018f301d921b22bcd5
         with:
-          node-version: '24'
+          node-version: '26'
       - run: pnpm test:coverage
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).tests) }}
@@ -191,7 +191,7 @@ jobs:
       - name: Set up Node project
         uses: kellen-miller/ci/.github/actions/setup-node@d1c91763535a5866b55282018f301d921b22bcd5
         with:
-          node-version: '24'
+          node-version: '26'
       - run: pnpm build
       - run: docker build --tag chief:test .
       - run: docker run --rm chief:test smoke
