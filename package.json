@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@12.15.0",
+  "packageManager": "pnpm@12.16.1",
   "engines": {
     "node": ">=24"
   },
@@ -33,7 +33,7 @@
     "better-sqlite3": "13.0.3",
     "discord.js": "14.27.0",
     "knex": "3.3.0",
-    "openai": "7.43.0",
+    "openai": "7.45.1",
     "pino": "10.4.0",
     "sqlite-vec": "0.1.9",
     "zod": "4.6.7"
@@ -48,7 +48,7 @@
     "prettier": "3.9.10",
     "tsx": "4.23.15",
     "typescript": "npm:@typescript/typescript6@6.0.2",
-    "typescript-eslint": "8.72.0",
+    "typescript-eslint": "8.72.1",
     "vitest": "5.0.5"
   }
 }
