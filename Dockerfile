@@ -4,11 +4,11 @@ FROM node:26-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends build-essential ca-certificates libopus-dev python3 \
     && rm -rf /var/lib/apt/lists/*
-RUN corepack enable && corepack prepare pnpm@11.9.0 --activate
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches ./patches
-RUN pnpm install --frozen-lockfile
+RUN npm install --global "$(node -p "require('./package.json').packageManager")" \
+    && pnpm install --frozen-lockfile
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 COPY gen ./gen
