@@ -8,7 +8,7 @@ permissions:
   contents: read
 jobs:
   detect-changes:
-    name: Chief / Change detection
+    name: Change detection
     runs-on: ubuntu-latest
     outputs:
       changes: ${{ steps.paths.outputs.changes }}
@@ -107,7 +107,7 @@ jobs:
               ]
             }
   formatting-validation:
-    name: Chief / Formatting validation
+    name: Formatting validation
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
@@ -127,7 +127,7 @@ jobs:
         if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).terraform) }}
     needs: detect-changes
   static-analysis:
-    name: Chief / Static analysis and generated SQL validation
+    name: Static analysis and generated SQL validation
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
@@ -169,7 +169,7 @@ jobs:
         if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).terraform) }}
     needs: detect-changes
   package-verification:
-    name: Chief / Package tests with coverage
+    name: Package tests with coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -183,7 +183,7 @@ jobs:
     needs: detect-changes
     if: ${{ !cancelled() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).tests) }}
   container-verification:
-    name: Chief / Container build and smoke tests
+    name: Container build and smoke tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

@@ -53,10 +53,10 @@ describe('repository policy', () => {
   it('keeps the four required pull-request checks', async () => {
     const workflow = await read('.github/workflows/ci.yml');
     const requiredChecks = [
-      'Chief / Formatting validation',
-      'Chief / Static analysis and generated SQL validation',
-      'Chief / Package tests with coverage',
-      'Chief / Container build and smoke tests',
+      'Formatting validation',
+      'Static analysis and generated SQL validation',
+      'Package tests with coverage',
+      'Container build and smoke tests',
     ];
     for (const name of requiredChecks) {
       expect(workflow).toContain(`name: ${name}`);

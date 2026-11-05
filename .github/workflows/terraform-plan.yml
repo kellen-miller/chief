@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   terraform-plan:
-    name: Terraform / Plan and configuration validation
+    name: Plan and configuration validation
     runs-on: ubuntu-latest
     env:
       TF_IN_AUTOMATION: 'true'

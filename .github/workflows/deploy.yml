@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   production-deployment:
-    name: Chief production / Deployment
+    name: Deployment
     runs-on: ubuntu-latest
     environment: production
     env:
