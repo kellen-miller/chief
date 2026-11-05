@@ -1,4 +1,4 @@
-name: CI
+name: Chief
 'on':
   pull_request: null
 concurrency:
@@ -8,6 +8,7 @@ permissions:
   contents: read
 jobs:
   changes:
+    name: Chief / Change detection
     runs-on: ubuntu-latest
     outputs:
       changes: ${{ steps.paths.outputs.changes }}
@@ -106,7 +107,7 @@ jobs:
               ]
             }
   format:
-    name: Format
+    name: Chief / Formatting validation
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
@@ -126,7 +127,7 @@ jobs:
         if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).terraform) }}
     needs: changes
   lint:
-    name: Lint
+    name: Chief / Static analysis and generated SQL validation
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
@@ -168,7 +169,7 @@ jobs:
         if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).terraform) }}
     needs: changes
   test:
-    name: Test
+    name: Chief / Package tests with coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -182,7 +183,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).tests) }}
   build:
-    name: Build
+    name: Chief / Container build and smoke tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

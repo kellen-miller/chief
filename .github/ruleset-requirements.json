@@ -1,11 +1,11 @@
 {
   "checks": [
-    "Build",
-    "Format",
-    "Lint",
-    "Test",
+    "Chief / Container build and smoke tests",
+    "Chief / Formatting validation",
+    "Chief / Static analysis and generated SQL validation",
+    "Chief / Package tests with coverage",
     "Renovate / Config validation",
     "GitHub Actions / Workflow validation",
-    "Code duplication (CPD)"
+    "Code duplication / Duplicate detection"
   ]
 }

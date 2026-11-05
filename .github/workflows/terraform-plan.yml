@@ -1,4 +1,4 @@
-name: Terraform Plan
+name: Terraform
 
 on:
   pull_request:
@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   plan:
-    name: Terraform Plan
+    name: Terraform / Plan and configuration validation
     runs-on: ubuntu-latest
     env:
       TF_IN_AUTOMATION: 'true'

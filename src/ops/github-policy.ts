@@ -29,9 +29,12 @@ export const githubPolicy = {
         parameters: {
           strict_required_status_checks_policy: true,
           do_not_enforce_on_create: false,
-          required_status_checks: ['Format', 'Lint', 'Test', 'Build'].map(
-            (context) => ({ context }),
-          ),
+          required_status_checks: [
+            'Chief / Formatting validation',
+            'Chief / Static analysis and generated SQL validation',
+            'Chief / Package tests with coverage',
+            'Chief / Container build and smoke tests',
+          ].map((context) => ({ context })),
         },
       },
     ],
