@@ -6,6 +6,6 @@
     "Chief / Package tests with coverage",
     "Renovate / Config validation",
     "GitHub Actions / Workflow validation",
-    "Code duplication / Duplicate detection"
+    "Code duplication / JSCPD scan"
   ]
 }

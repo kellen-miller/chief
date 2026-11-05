@@ -7,7 +7,7 @@ concurrency:
 permissions:
   contents: read
 jobs:
-  changes:
+  detect-changes:
     name: Chief / Change detection
     runs-on: ubuntu-latest
     outputs:
@@ -106,7 +106,7 @@ jobs:
                 ".shellcheckrc"
               ]
             }
-  format:
+  formatting-validation:
     name: Chief / Formatting validation
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
@@ -117,16 +117,16 @@ jobs:
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e
         with:
           terraform_version: v1.17.1
-        if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).terraform) }}
+        if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).terraform) }}
       - name: Set up Node project
         uses: kellen-miller/ci/.github/actions/setup-node@d1c91763535a5866b55282018f301d921b22bcd5
         with:
           node-version: '26'
       - run: pnpm format:check
       - run: terraform fmt -check -recursive infra
-        if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).terraform) }}
-    needs: changes
-  lint:
+        if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).terraform) }}
+    needs: detect-changes
+  static-analysis:
     name: Chief / Static analysis and generated SQL validation
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
@@ -137,38 +137,38 @@ jobs:
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e
         with:
           terraform_version: v1.17.1
-        if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).terraform) }}
+        if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).terraform) }}
       - name: Set up Node project
         uses: kellen-miller/ci/.github/actions/setup-node@d1c91763535a5866b55282018f301d921b22bcd5
         with:
           node-version: '26'
         if:
-          ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).app || fromJSON(needs.changes.outputs.changes).sql)
+          ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).app || fromJSON(needs.detect-changes.outputs.changes).sql)
           }}
       - run: pnpm lint
-        if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).app) }}
+        if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).app) }}
       - run: pnpm typecheck
-        if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).app) }}
+        if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).app) }}
       - uses: sqlc-dev/setup-sqlc@7247af29a59647b720868511024240c31dd7c411
         with:
           sqlc-version: 1.31.1
-        if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).sql) }}
+        if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).sql) }}
       - run: pnpm generate:sql
-        if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).sql) }}
+        if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).sql) }}
       - run: git diff --exit-code -- gen/sql
-        if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).sql) }}
+        if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).sql) }}
       - run: shellcheck scripts/*.sh
-        if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).shell) }}
+        if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).shell) }}
       - run: terraform -chdir=infra/bootstrap init -backend=false
-        if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).terraform) }}
+        if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).terraform) }}
       - run: terraform -chdir=infra/bootstrap validate -no-color
-        if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).terraform) }}
+        if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).terraform) }}
       - run: terraform -chdir=infra/app init -backend=false
-        if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).terraform) }}
+        if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).terraform) }}
       - run: terraform -chdir=infra/app validate -no-color
-        if: ${{ success() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).terraform) }}
-    needs: changes
-  test:
+        if: ${{ success() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).terraform) }}
+    needs: detect-changes
+  package-verification:
     name: Chief / Package tests with coverage
     runs-on: ubuntu-latest
     steps:
@@ -180,9 +180,9 @@ jobs:
         with:
           node-version: '26'
       - run: pnpm test:coverage
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).tests) }}
-  build:
+    needs: detect-changes
+    if: ${{ !cancelled() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).tests) }}
+  container-verification:
     name: Chief / Container build and smoke tests
     runs-on: ubuntu-latest
     steps:
@@ -200,5 +200,5 @@ jobs:
         run:
           docker run --rm --entrypoint node --volume "$PWD/src/ops:/workspace/src/ops:ro" --volume "$PWD/gen:/workspace/gen:ro" chief:test /workspace/src/ops/cli.ts
           configure-github-ruleset --dry-run
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || fromJSON(needs.changes.outputs.changes).app) }}
+    needs: detect-changes
+    if: ${{ !cancelled() && (needs.detect-changes.result != 'success' || fromJSON(needs.detect-changes.outputs.changes).app) }}

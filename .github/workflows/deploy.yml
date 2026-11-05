@@ -27,7 +27,7 @@ permissions:
   id-token: write
 
 jobs:
-  deploy:
+  production-deployment:
     name: Chief production / Deployment
     runs-on: ubuntu-latest
     environment: production
