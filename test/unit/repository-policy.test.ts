@@ -50,9 +50,15 @@ describe('repository policy', () => {
     }
   });
 
-  it('keeps the four stable pull-request checks', async () => {
+  it('keeps the four required pull-request checks', async () => {
     const workflow = await read('.github/workflows/ci.yml');
-    for (const name of ['Format', 'Lint', 'Test', 'Build']) {
+    const requiredChecks = [
+      'Formatting validation',
+      'Static analysis and generated SQL validation',
+      'Package tests with coverage',
+      'Container build and smoke tests',
+    ];
+    for (const name of requiredChecks) {
       expect(workflow).toContain(`name: ${name}`);
     }
     const { githubPolicy } = await import('../../src/ops/github-policy.ts');
@@ -61,7 +67,7 @@ describe('repository policy', () => {
     );
     expect(
       checks?.parameters?.required_status_checks?.map((check) => check.context),
-    ).toEqual(['Format', 'Lint', 'Test', 'Build']);
+    ).toEqual(requiredChecks);
     expect(
       githubPolicy.ruleset.rules.find((rule) => rule.type === 'pull_request')
         ?.parameters?.required_approving_review_count,

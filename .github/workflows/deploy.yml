@@ -1,4 +1,4 @@
-name: Deploy
+name: Chief production
 
 on:
   push:
@@ -27,8 +27,8 @@ permissions:
   id-token: write
 
 jobs:
-  deploy:
-    name: Deploy production
+  production-deployment:
+    name: Deployment
     runs-on: ubuntu-latest
     environment: production
     env:
