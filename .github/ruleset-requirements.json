@@ -4,8 +4,8 @@
     "Formatting validation",
     "Static analysis and generated SQL validation",
     "Package tests with coverage",
-    "Renovate / Config validation",
-    "GitHub Actions / Workflow validation",
+    "renovate.json / Config validation",
+    ".github/workflows / Workflow validation",
     "JSCPD scan"
   ]
 }
