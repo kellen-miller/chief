@@ -28,9 +28,12 @@ export function deploymentMaintenance(
 
 export async function probeHealth(): Promise<HealthProbe> {
   const signal = AbortSignal.timeout(5000);
+  const port = process.env.CHIEF_HEALTH_PORT ?? '8080';
   let status: number | null = null;
   try {
-    const response = await fetch('http://127.0.0.1:8080/healthz', { signal });
+    const response = await fetch(`http://127.0.0.1:${port}/healthz`, {
+      signal,
+    });
     status = response.status;
     const reason = status === 200 ? 'response' : 'http';
     if (status !== 200 && status !== 503) return { health: {}, reason, status };
