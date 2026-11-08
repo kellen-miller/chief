@@ -60,8 +60,12 @@ describe('persistent health watchdog', () => {
     const server = createServer((_, response) => {
       response.writeHead(health.ready ? 200 : 503).end(JSON.stringify(health));
     });
-    server.listen(8080, '127.0.0.1');
+    server.listen(0, '127.0.0.1');
     await once(server, 'listening');
+    const address = server.address();
+    if (address === null || typeof address === 'string')
+      throw new Error('expected TCP server address');
+    vi.stubEnv('CHIEF_HEALTH_PORT', String(address.port));
     try {
       for (const scenario of [
         'transient',
