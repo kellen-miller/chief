@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@12.16.1",
+  "packageManager": "pnpm@12.18.0",
   "engines": {
     "node": ">=24"
   },
@@ -24,16 +24,16 @@
     "ops": "node src/ops/cli.ts"
   },
   "dependencies": {
-    "@discordjs/opus": "0.10.0",
+    "@discordjs/opus": "0.11.0",
     "@discordjs/voice": "0.19.2",
     "@google-cloud/secret-manager": "7.2.0",
     "@google-cloud/storage": "8.4.0",
     "@js-temporal/polyfill": "0.5.1",
     "@openai/agents": "0.21.0",
     "better-sqlite3": "13.0.3",
-    "discord.js": "14.28.0",
+    "discord.js": "14.28.1",
     "knex": "3.3.0",
-    "openai": "7.47.0",
+    "openai": "7.51.0",
     "pino": "10.4.0",
     "sqlite-vec": "0.1.9",
     "zod": "4.6.7"
@@ -43,12 +43,12 @@
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "26.6.6",
     "@typescript/native": "npm:typescript@7.0.2",
-    "@vitest/coverage-v8": "5.0.5",
+    "@vitest/coverage-v8": "5.1.0",
     "eslint": "10.14.0",
     "prettier": "3.9.10",
     "tsx": "4.23.15",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "typescript-eslint": "8.72.1",
-    "vitest": "5.0.5"
+    "vitest": "5.1.0"
   }
 }
