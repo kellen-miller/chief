@@ -6,7 +6,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY patches ./patches
 RUN npm install --global "$(node -p "require('./package.json').packageManager")" \
     && pnpm install --frozen-lockfile
 COPY tsconfig.json tsconfig.build.json ./
