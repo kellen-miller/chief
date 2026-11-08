@@ -9,7 +9,6 @@ on:
       - 'sql/**'
       - 'infra/**'
       - 'scripts/**'
-      - 'patches/**'
       - 'Dockerfile'
       - '.dockerignore'
       - '.env*'
